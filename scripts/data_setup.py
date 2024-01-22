@@ -410,15 +410,23 @@ def prepare_dataset_for_detectron(directory: str, class_labels: list) -> list:
 
 def register_datasets(root_dir: str, class_labels: list):
     """
-    Registers datasets for training, validation, and testing in Detectron2.
-
+    Registers and retrieves the sizes of training, validation, and test datasets in Detectron2,
+    along with the number of classes.
     Args:
-        - root_dir (str): The root directory where dataset directories ('train', 'val', 'test') are located.
-        - class_labels (list): List of class labels for the dataset.
+        root_dir (str): The root directory where dataset directories ('train', 'val', 'test') are located.
+        class_labels (list): List of class labels for the dataset.
 
-    This function registers each dataset (train, val, test) with Detectron2, preparing it for training and evaluation.
-    If a dataset is already registered, it skips re-registration.
+    Returns:
+        tuple: A tuple containing the sizes of the training, validation, and test datasets, 
+            and the number of classes.
+
+    This function registers each dataset (train, val, test) with Detectron2, preparing it for 
+    training and evaluation. If a dataset is already registered, it skips re-registration and 
+    retrieves the dataset size.
     """
+    
+    dataset_sizes = {}
+    
     # Iterate over each dataset type (train, val, test)
     for dataset_name in ["train", "val", "test"]:
         # Construct the directory path for the current dataset type
@@ -438,6 +446,12 @@ def register_datasets(root_dir: str, class_labels: list):
         else:
             # Print a message if the dataset is already registered
             print(f"Dataset '{dataset_name}' already registered.")
+        
+        # Retrieve the dataset and calculate its size
+        dataset_dicts = DatasetCatalog.get(dataset_name)
+        dataset_sizes[dataset_name] = len(dataset_dicts)
+
+    return dataset_sizes['train'], dataset_sizes['val'], dataset_sizes["test"]
             
 def find_duplicated_images(source_dir: Path, destination_dir: Path) -> List:
     """

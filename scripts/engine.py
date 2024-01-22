@@ -1,5 +1,6 @@
 from detectron2.config import get_cfg
 from detectron2 import model_zoo
+from detectron2.config import CfgNode
 
 
 def setup_cfg(
@@ -23,7 +24,7 @@ def setup_cfg(
     batch_size_per_image: int,
     warm_steps: int,
     gamma: float,
-) -> get_cfg().CONFIG_CLASS:
+) -> CfgNode:
     """
     Sets up and returns a Detectron2 configuration for training a model with custom settings.
 

@@ -3,7 +3,7 @@ from typing import Optional
 from detectron2.engine import DefaultTrainer
 from detectron2.evaluation import COCOEvaluator
 from detectron2.data import build_detection_train_loader
-from detectron2.config import get_cfg
+from detectron2.config import CfgNode
 
 from data_setup import dataset_mapper
 
@@ -12,7 +12,7 @@ class FaceTrainer(DefaultTrainer):
     @classmethod
     def build_evaluator(
         cls,
-        cfg: get_cfg().CONFIG_CLASS,
+        cfg: CfgNode,
         dataset_name: str,
         output_folder: Optional[str] = None,
     ):
@@ -20,7 +20,7 @@ class FaceTrainer(DefaultTrainer):
         Creates an evaluator for the specified dataset.
 
         Args:
-            cfg (get_cfg().CONFIG_CLASS): Configuration for the model and training.
+            cfg (CfgNode): Configuration for the model and training.
             dataset_name (str): Name of the dataset for evaluation.
             output_folder (Optional[str]): Output folder to store evaluation results.
 
@@ -31,7 +31,7 @@ class FaceTrainer(DefaultTrainer):
         return COCOEvaluator(dataset_name, cfg, True, output_folder)
 
     @classmethod
-    def build_train_loader(cls, cfg: get_cfg().CONFIG_CLASS):
+    def build_train_loader(cls, cfg: CfgNode):
         """
         Creates a data loader for training.
 

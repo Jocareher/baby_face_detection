@@ -1,0 +1,24 @@
+DATA:
+  train_dataset: "train"
+  val_dataset: "val"
+  num_workers: 4
+
+MODEL:
+  base_config_path: "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
+  rotated_bbox_config_path: "rotated_bbox_config.yaml"
+  pretrained_model_url: "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
+  num_classes: 5
+  device: "cuda"
+  freeze_backbone: False
+  freeze_at_block: 3
+
+TRAINING:
+  ims_per_batch: 4
+  checkpoint_period: 1000
+  base_lr: 0.0025 
+  max_iter:  139025 # (num_epochs * (len(train_data) / batch_size))
+  batch_size_per_image: 128
+  lr_decay_steps: 83415, 111220
+  warm_steps: 1000
+  gamma: 0.1
+

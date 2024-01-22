@@ -127,7 +127,7 @@ def create_coco_format(data_pairs: list) -> list:
     return data_list
 
 
-def rotate_bbox(annotation: dict, transforms: List[Transform]) -> dict:
+def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
     """
     Rotates bounding boxes in the annotation according to the specified transformations.
 
@@ -162,7 +162,7 @@ def rotate_bbox(annotation: dict, transforms: List[Transform]) -> dict:
     return annotation
 
 
-def get_shape_augmentations() -> List[Transform]:
+def get_shape_augmentations() -> List[T.Transform]:
     """
     Creates a list of optional shape augmentation transformations.
 

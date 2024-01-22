@@ -73,7 +73,19 @@ def main():
     )
 
     os.makedirs(model_and_train_config.OUTPUT_DIR, exist_ok=True)
+    
+    # Check model defined config
+    print(f"\nThe model is being trained with the following configuration: "
+          f"\nBatch size: {model_and_train_config.SOLVER.IMS_PER_BATCH}"
+          f"\nCheckpoint period: {model_and_train_config.SOLVER.CHECKPOINT_PERIOD}"
+          f"\nBase learning rate: {model_and_train_config.SOLVER.BASE_LR}"
+          f"\nMax iters: {model_and_train_config.SOLVER.MAX_ITER}"
+          f"\nBatch size per ROI heads: {model_and_train_config.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE}"
+          f"\nSolver steps: {model_and_train_config.SOLVER.STEPS}"
+          f"\nWarm-up iters: {model_and_train_config.SOLVER.WARMUP_ITERS}"
+          f"\nGamma: {model_and_train_config.SOLVER.GAMMA}")
 
+    # 
     trainer = train.FaceTrainer(model_and_train_config)
 
     trainer.resume_or_load(resume=False)

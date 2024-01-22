@@ -49,7 +49,7 @@ def setup_cfg(
         - gamma (float): Factor for learning rate decay.
 
     Returns:
-        get_cfg().CONFIG_CLASS: Configured Detectron2 configuration object for training.
+        CfgNode: Configured Detectron2 configuration object for training.
     """
     cfg = get_cfg()
     # Load the base configuration from a pre-defined model in the model zoo
@@ -101,5 +101,5 @@ def setup_cfg(
     cfg.SOLVER.GAMMA = gamma  # Learning rate decay factor
 
     # Additional configurations can be set here as needed
-
+    
     return cfg

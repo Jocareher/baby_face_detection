@@ -1,4 +1,12 @@
-DATA:
+DATASET:
+  root_dir: "data/face_dataset"
+  class_labels: ["3/4_left_sideview",
+    "3/4_rigth_sideview",
+    "Frontal",
+    "Left_sideview",
+    "Right_sideview"]
+
+DATALOADER:
   train_dataset: "train"
   val_dataset: "val"
   num_workers: 4
@@ -16,9 +24,8 @@ TRAINING:
   ims_per_batch: 4
   checkpoint_period: 1000
   base_lr: 0.0025 
-  max_iter:  139025 # (num_epochs * (len(train_data) / batch_size))
+  epochs:  100
   batch_size_per_image: 128
-  lr_decay_steps: 83415, 111220
   warm_steps: 1000
   gamma: 0.1
 

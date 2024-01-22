@@ -14,7 +14,14 @@ module load CUDA/12.2.2
 # Load Anaconda module
 module load Anaconda3/2020.02
 
-conda create -n detectron python=3.10.13
+# Check if the Conda environment 'detectron' already exists
+if ! conda info --envs | grep -q detectron; then
+    echo "Creating conda environment 'detectron'"
+    conda create -n detectron python=3.10.13 -y
+else
+    echo "Conda environment 'detectron' already exists"
+fi
+
 source activate detectron
 
 pip3 install torch torchvision

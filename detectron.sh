@@ -6,8 +6,8 @@
 #SBATCH --mem=30GB
 #SBATCH --gres=gpu:2
 #SBATCH --time=infinite
-#SBATCH -o slurm.%N.%J.%u.out # STDOUT
-#SBATCH -e slurm.%N.%J.%u.err # STDERR
+#SBATCH -o /home/jreyes/face_detectron2/output/detectron_fe%J.%u.out # STDOUT
+#SBATCH -e /home/jreyes/face_detectron2/output/detectron_fe%J.%u.err # STDERR
 
 # Load CUDA module
 module load CUDA/12.2.2

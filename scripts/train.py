@@ -5,6 +5,8 @@ from detectron2.evaluation import COCOEvaluator
 from detectron2.data import build_detection_train_loader
 from detectron2.config import get_cfg
 
+from data_setup import dataset_mapper
+
 class FaceTrainer(DefaultTrainer):
     @classmethod
     def build_evaluator(cls, cfg: get_cfg().CONFIG_CLASS, dataset_name: str, output_folder: Optional[str] = None):
@@ -34,4 +36,4 @@ class FaceTrainer(DefaultTrainer):
             DataLoader: A data loader for training.
         """
         # Return a custom data loader for training, using 'dataset_mapper'
-        return build_detection_train_loader(cfg)
+        return build_detection_train_loader(cfg, mapper = dataset_mapper)

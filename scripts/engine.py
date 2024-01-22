@@ -85,7 +85,7 @@ Returns:
     cfg.SOLVER.IMS_PER_BATCH = ims_per_batch  # Number of images per batch
     cfg.SOLVER.CHECKPOINT_PERIOD = checkpoint_period  # Frequency of checkpoint saving
     cfg.SOLVER.BASE_LR = base_lr  # Starting learning rate
-    cfg.SOLVER.MAX_ITER = epochs * (len(train_data_size) // ims_per_batch)  # Maximum iterations for training
+    cfg.SOLVER.MAX_ITER = epochs * (train_data_size // ims_per_batch)  # Maximum iterations for training
     cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = batch_size_per_image  # Batch size per image in ROI heads
     cfg.SOLVER.STEPS = (int(cfg.SOLVER.MAX_ITER * 0.6), int(cfg.SOLVER.MAX_ITER * 0.8))  # Iterations at which to decay learning rate
     cfg.SOLVER.WARMUP_ITERS = warm_steps  # Iterations for warmup phase at start of training

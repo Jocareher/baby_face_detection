@@ -14,7 +14,13 @@ import hashlib
 from typing import List, Tuple
 from pathlib import Path
 
-def create_data_pairs(input_path: str, detectron_img_path: str, detectron_annot_path: str, dir_type: str = 'train') -> list:
+
+def create_data_pairs(
+    input_path: str,
+    detectron_img_path: str,
+    detectron_annot_path: str,
+    dir_type: str = "train",
+) -> list:
     """
     Creates pairs of image and annotation file paths.
 
@@ -29,28 +35,31 @@ def create_data_pairs(input_path: str, detectron_img_path: str, detectron_annot_
     """
 
     # Find all JPEG image paths in the specified directory
-    img_paths = sorted(Path(input_path + dir_type + '/images/').glob('*.jpg'))
+    img_paths = sorted(Path(input_path + dir_type + "/images/").glob("*.jpg"))
 
     # Initialize a list to hold the pairs
     pairs = []
     for img_path in img_paths:
         # Extract the base filename without extension
-        file_name_tmp = str(img_path).split('/')[-1].split('.')
+        file_name_tmp = str(img_path).split("/")[-1].split(".")
         # Remove the file extension
         file_name_tmp.pop(-1)
         # Rejoin the remaining filename parts
-        file_name = '.'.join((file_name_tmp))
+        file_name = ".".join((file_name_tmp))
 
         # Construct the full path to the corresponding annotation file
-        label_path = Path(input_path + dir_type + '/labels/' + file_name + '.txt')
+        label_path = Path(input_path + dir_type + "/labels/" + file_name + ".txt")
 
         # Check if the annotation file exists, and if so, add the image and annotation paths to the list
         if label_path.is_file():
-            line_img = detectron_img_path + dir_type+'/images/'+ file_name + '.jpg'
-            line_annot = detectron_annot_path+dir_type+'/labels/' + file_name + '.txt'
+            line_img = detectron_img_path + dir_type + "/images/" + file_name + ".jpg"
+            line_annot = (
+                detectron_annot_path + dir_type + "/labels/" + file_name + ".txt"
+            )
             pairs.append([line_img, line_annot])
 
     return pairs
+
 
 def create_coco_format(data_pairs: list) -> list:
     """
@@ -72,7 +81,12 @@ def create_coco_format(data_pairs: list) -> list:
         img_h, img_w = cv2.imread(filename).shape[:2]
 
         # Initialize a dictionary for this image
-        img_item = {'file_name': filename, 'image_id': i, 'height': img_h, 'width': img_w}
+        img_item = {
+            "file_name": filename,
+            "image_id": i,
+            "height": img_h,
+            "width": img_w,
+        }
 
         # Print the image number and filename
         print(str(i), filename)
@@ -84,7 +98,7 @@ def create_coco_format(data_pairs: list) -> list:
 
             for line in lines:
                 # Split the line into components and strip newline if present
-                box = line[:-1].split(' ') if line[-1] == "\n" else line.split(' ')
+                box = line[:-1].split(" ") if line[-1] == "\n" else line.split(" ")
 
                 # Parse annotation components
                 class_id, x_c, y_c, width, height = map(float, box[:5])
@@ -100,7 +114,7 @@ def create_coco_format(data_pairs: list) -> list:
                     "bbox": [x1, y1, x2, y2],
                     "bbox_mode": BoxMode.XYXY_ABS,
                     "category_id": int(class_id),
-                    "iscrowd": 0
+                    "iscrowd": 0,
                 }
                 annotations.append(annotation)
 
@@ -112,11 +126,12 @@ def create_coco_format(data_pairs: list) -> list:
 
     return data_list
 
+
 def rotate_bbox(annotation: dict, transforms: List[Transform]) -> dict:
     """
     Rotates bounding boxes in the annotation according to the specified transformations.
 
-    This function checks the bounding box mode in the annotation and applies rotation 
+    This function checks the bounding box mode in the annotation and applies rotation
     transformations if supported. It handles only the BoxMode.XYWHA_ABS mode currently.
 
     Args:
@@ -134,10 +149,10 @@ def rotate_bbox(annotation: dict, transforms: List[Transform]) -> dict:
     """
     # Check if the bounding box mode is XYWHA_ABS for rotation capability
     if annotation["bbox_mode"] == BoxMode.XYWHA_ABS:
-        rotated_bbox = np.asarray([annotation['bbox']])
+        rotated_bbox = np.asarray([annotation["bbox"]])
         for transform in transforms:
             # Apply the rotation transformation if it's supported by the transform
-            if hasattr(transform, 'apply_rotated_box'):
+            if hasattr(transform, "apply_rotated_box"):
                 rotated_bbox = transform.apply_rotated_box(rotated_bbox)
         annotation["bbox"] = rotated_bbox[0]
     else:
@@ -161,8 +176,12 @@ def get_shape_augmentations() -> List[Transform]:
     # Define and return a list of shape-related augmentations
     return [
         T.RandomFlip(),  # Randomly flips the image
-        T.RandomRotation(angle=[-30, 30], expand=True),  # Randomly rotates the image within -30 to 30 degrees
-        T.RandomCrop("relative_range", (0.8, 0.8)),  # Randomly crops the image in the specified relative range
+        T.RandomRotation(
+            angle=[-30, 30], expand=True
+        ),  # Randomly rotates the image within -30 to 30 degrees
+        T.RandomCrop(
+            "relative_range", (0.8, 0.8)
+        ),  # Randomly crops the image in the specified relative range
     ]
 
 
@@ -179,12 +198,14 @@ def get_color_augmentations() -> T.AugmentationList:
                             AugmentationList object.
     """
     # Define and return an augmentation list with color-related transformations
-    return T.AugmentationList([
-        T.RandomBrightness(0.8, 1.2),  
-        T.RandomContrast(0.8, 1.2),    
-        T.RandomSaturation(0.8, 1.2),  
-        T.RandomLighting(0.8)          
-    ])
+    return T.AugmentationList(
+        [
+            T.RandomBrightness(0.8, 1.2),
+            T.RandomContrast(0.8, 1.2),
+            T.RandomSaturation(0.8, 1.2),
+            T.RandomLighting(0.8),
+        ]
+    )
 
 
 def dataset_mapper(dataset_dict: dict) -> dict:
@@ -203,11 +224,11 @@ def dataset_mapper(dataset_dict: dict) -> dict:
         dict: The updated dataset dictionary with transformed images and annotations.
 
     Note:
-        This function applies transformations only to non-crowd annotations. In the context 
+        This function applies transformations only to non-crowd annotations. In the context
         of Detectron2, non-crowd annotations refer to individual object instances in an image
-        marked for detection. Crowd annotations, which denote densely packed objects of the 
-        same class where individual instances are not distinctly marked, are not transformed. 
-        This distinction is crucial for training models on images with both clear individual 
+        marked for detection. Crowd annotations, which denote densely packed objects of the
+        same class where individual instances are not distinctly marked, are not transformed.
+        This distinction is crucial for training models on images with both clear individual
         instances and densely populated areas.
     """
     # Read the image in BGR format
@@ -219,12 +240,10 @@ def dataset_mapper(dataset_dict: dict) -> dict:
     image = color_aug_input.image
 
     # Apply shape augmentations and get the resulting transforms
-    image, image_transforms = T.apply_transform_gens(
-        get_shape_augmentations(), image)
+    image, image_transforms = T.apply_transform_gens(get_shape_augmentations(), image)
 
     # Convert the image to a PyTorch tensor
-    dataset_dict["image"] = torch.as_tensor(
-        image.transpose(2, 0, 1).astype("float32"))
+    dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
 
     # Apply transformations to annotations, filtering out crowd objects
     annotations = [
@@ -234,21 +253,21 @@ def dataset_mapper(dataset_dict: dict) -> dict:
     ]
 
     # Convert the updated annotations to rotated instances
-    instances = utils.annotations_to_instances_rotated(
-        annotations, image.shape[:2])
+    instances = utils.annotations_to_instances_rotated(annotations, image.shape[:2])
 
     # Filter out empty instances
     dataset_dict["instances"] = utils.filter_empty_instances(instances)
 
     return dataset_dict
 
+
 def process_and_save_json(file_path: str, output_directory: str):
     """
     Reads a JSON file containing annotations, filters out entries with a specific label,
     and saves individual JSON files for each valid entry.
 
-    This function reads a master JSON file containing annotations for multiple images, 
-    filters out any image data marked with the label 'doubt', and then saves the remaining 
+    This function reads a master JSON file containing annotations for multiple images,
+    filters out any image data marked with the label 'doubt', and then saves the remaining
     image data as individual JSON files in a specified directory.
 
     Args:
@@ -259,27 +278,38 @@ def process_and_save_json(file_path: str, output_directory: str):
         If the output directory does not exist, it will be created.
     """
     # Read the JSON file from the provided file path
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         annotations = json.load(file)
 
     # Check if the output directory exists, create if not
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
-        
+
     for image_data in annotations:
         # Skip images with the "doubt" label
-        if any(label.get('rectanglelabels', []) == ['doubt'] for label in image_data.get('label', [])):
+        if any(
+            label.get("rectanglelabels", []) == ["doubt"]
+            for label in image_data.get("label", [])
+        ):
             continue
 
         # Generate and save individual JSON file for each valid image
-        image_name = image_data['image'].split('/')[-1].split('.')[0]
+        image_name = image_data["image"].split("/")[-1].split(".")[0]
         individual_json_path = os.path.join(output_directory, f"{image_name}.json")
 
-        with open(individual_json_path, 'w') as outfile:
+        with open(individual_json_path, "w") as outfile:
             json.dump(image_data, outfile, indent=4)
-            
 
-def convert_bbox_format(x: float, y: float, width: float, height: float, rotation: float, original_width: int, original_height: int) -> tuple:
+
+def convert_bbox_format(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    rotation: float,
+    original_width: int,
+    original_height: int,
+) -> tuple:
     """
     Converts bounding box format from Label Studio to Detectron2 specifications.
 
@@ -343,56 +373,63 @@ def label_studio_to_detectron_dataset(directory: str, class_labels: List[str]) -
     # Iterate over each file in the directory
     for filename in files:
         # Skip files that are not JSON files
-        if '.json' not in filename:
+        if ".json" not in filename:
             continue
-        
+
         # Construct full path to the JSON file
         path = os.path.join(directory, filename)
         # Open and read the JSON file
-        with open(path, 'rt') as f:
+        with open(path, "rt") as f:
             data = json.load(f)
 
         # Initialize list to store annotations for the current image
         annotations = []
         # Iterate over each annotation in the JSON file
-        for annotation in data['label']:
+        for annotation in data["label"]:
             # Extract the label (class) of the annotation
-            label = annotation['rectanglelabels'][0]
+            label = annotation["rectanglelabels"][0]
             # Add label to the classes list if it's not already present
             if label not in classes:
                 classes.append(label)
 
             # Convert Label Studio bbox format to Detectron2 bbox format
             cx, cy, w, h, a = convert_bbox_format(
-                x=annotation['x'],
-                y=annotation['y'],
-                width=annotation['width'],
-                height=annotation['height'],
-                rotation=annotation['rotation'],
-                original_width=annotation['original_width'],
-                original_height=annotation['original_height']
+                x=annotation["x"],
+                y=annotation["y"],
+                width=annotation["width"],
+                height=annotation["height"],
+                rotation=annotation["rotation"],
+                original_width=annotation["original_width"],
+                original_height=annotation["original_height"],
             )
 
             # Add the converted bbox to the annotations list
-            annotations.append({
-                "bbox_mode": 4,  # Oriented bounding box format
-                "category_id": class_labels.index(label),  # Map label to category ID
-                "bbox": (cx, cy, w, h, a)  # Bounding box data
-            })
+            annotations.append(
+                {
+                    "bbox_mode": 4,  # Oriented bounding box format
+                    "category_id": class_labels.index(
+                        label
+                    ),  # Map label to category ID
+                    "bbox": (cx, cy, w, h, a),  # Bounding box data
+                }
+            )
 
         # Construct the full path to the corresponding image file
-        image_file_name = os.path.join(directory, data['image'].split('/')[-1])
+        image_file_name = os.path.join(directory, data["image"].split("/")[-1])
 
         # Add image data to the images list
-        images.append({
-            "id": data['id'],  # Image ID
-            "file_name": image_file_name,  # Path to image file
-            "height": annotation['original_height'],  # Image height
-            "width": annotation['original_width'],  # Image width
-            "annotations": annotations  # Annotations for the image
-        })
+        images.append(
+            {
+                "id": data["id"],  # Image ID
+                "file_name": image_file_name,  # Path to image file
+                "height": annotation["original_height"],  # Image height
+                "width": annotation["original_width"],  # Image width
+                "annotations": annotations,  # Annotations for the image
+            }
+        )
 
     return images
+
 
 def prepare_dataset_for_detectron(directory: str, class_labels: list) -> list:
     """
@@ -417,16 +454,16 @@ def register_datasets(root_dir: str, class_labels: list):
         class_labels (list): List of class labels for the dataset.
 
     Returns:
-        tuple: A tuple containing the sizes of the training, validation, and test datasets, 
+        tuple: A tuple containing the sizes of the training, validation, and test datasets,
             and the number of classes.
 
-    This function registers each dataset (train, val, test) with Detectron2, preparing it for 
-    training and evaluation. If a dataset is already registered, it skips re-registration and 
+    This function registers each dataset (train, val, test) with Detectron2, preparing it for
+    training and evaluation. If a dataset is already registered, it skips re-registration and
     retrieves the dataset size.
     """
-    
+
     dataset_sizes = {}
-    
+
     # Iterate over each dataset type (train, val, test)
     for dataset_name in ["train", "val", "test"]:
         # Construct the directory path for the current dataset type
@@ -439,24 +476,25 @@ def register_datasets(root_dir: str, class_labels: list):
             # until the dataset is actually needed
             DatasetCatalog.register(
                 dataset_name,
-                lambda d=dataset_dir: prepare_dataset_for_detectron(d, class_labels)
+                lambda d=dataset_dir: prepare_dataset_for_detectron(d, class_labels),
             )
             # Set metadata (like class labels) for the dataset
             MetadataCatalog.get(dataset_name).set(thing_classes=class_labels)
         else:
             # Print a message if the dataset is already registered
             print(f"Dataset '{dataset_name}' already registered.")
-        
+
         # Retrieve the dataset and calculate its size
         dataset_dicts = DatasetCatalog.get(dataset_name)
         dataset_sizes[dataset_name] = len(dataset_dicts)
 
-    return dataset_sizes['train'], dataset_sizes['val'], dataset_sizes["test"]
-            
+    return dataset_sizes["train"], dataset_sizes["val"], dataset_sizes["test"]
+
+
 def find_duplicated_images(source_dir: Path, destination_dir: Path) -> List:
     """
     Finds and moves duplicate images from one folder to another.
-    
+
     Args:
         - source_dir: Folder where the original images are located.
         - destination_dir: Folder where the duplicate images will be moved.
@@ -476,7 +514,7 @@ def find_duplicated_images(source_dir: Path, destination_dir: Path) -> List:
     # Iterate over all files in the source folder
     for filename in os.listdir(source_dir):
         # Check if the file is an image
-        if filename.endswith(('png', 'jpg', 'jpeg', 'JPG')):
+        if filename.endswith(("png", "jpg", "jpeg", "JPG")):
             # Construct the full file path
             file_path = os.path.join(source_dir, filename)
 
@@ -498,6 +536,7 @@ def find_duplicated_images(source_dir: Path, destination_dir: Path) -> List:
                 hashes[img_hash] = filename
 
     return duplicate_files
+
 
 def remove_images_with_label_5(images_folder: str, labels_folder: str) -> None:
     """

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from data_setup import convert_bbox_format
 
+
 def draw_bounding_boxes(image, annotations):
     """
     Draws bounding boxes on an image, including support for rotated boxes.
@@ -19,10 +20,16 @@ def draw_bounding_boxes(image, annotations):
                     Bbox format can be either [x1, y1, x2, y2] or [cx, cy, w, h, angle].
     """
     for annotation in annotations:
-        bbox = annotation['bbox']
+        bbox = annotation["bbox"]
         if len(bbox) == 4:  # Non-rotated bbox
             # Draw the bounding box
-            cv2.rectangle(image, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 2)
+            cv2.rectangle(
+                image,
+                (int(bbox[0]), int(bbox[1])),
+                (int(bbox[2]), int(bbox[3])),
+                (0, 255, 0),
+                2,
+            )
         elif len(bbox) == 5:  # Rotated bbox
             cx, cy, w, h, angle = bbox
             # Calculate the four corners of the rotated bbox
@@ -34,10 +41,16 @@ def draw_bounding_boxes(image, annotations):
         else:
             print(f"Invalid bbox format: {bbox}")
             continue
-        
+
     return image
 
-def visualize_transformations(image_path: str, annotations: List[Dict], transform_gens: List, metadata: Optional[Dict] = None) -> None:
+
+def visualize_transformations(
+    image_path: str,
+    annotations: List[Dict],
+    transform_gens: List,
+    metadata: Optional[Dict] = None,
+) -> None:
     """
     Visualizes the effect of transformations on an image, supporting both rotated and non-rotated bounding boxes.
 
@@ -55,22 +68,36 @@ def visualize_transformations(image_path: str, annotations: List[Dict], transfor
 
     # Convert annotations to XYXY_ABS format if needed and check for rotation
     for annot in annotations:
-        if 'bbox_mode' in annot and annot['bbox_mode'] != BoxMode.XYXY_ABS:
-            if len(annot['bbox']) == 5:  # Check for rotated bbox format
-                annot['bbox'] = convert_bbox_format(*annot['bbox'], original_image.shape[1], original_image.shape[0])
+        if "bbox_mode" in annot and annot["bbox_mode"] != BoxMode.XYXY_ABS:
+            if len(annot["bbox"]) == 5:  # Check for rotated bbox format
+                annot["bbox"] = convert_bbox_format(
+                    *annot["bbox"], original_image.shape[1], original_image.shape[0]
+                )
             else:
-                annot['bbox'] = BoxMode.convert(annot['bbox'], annot['bbox_mode'], BoxMode.XYXY_ABS)
+                annot["bbox"] = BoxMode.convert(
+                    annot["bbox"], annot["bbox_mode"], BoxMode.XYXY_ABS
+                )
 
     # Draw bounding boxes on the original image
     original_image_with_boxes = draw_bounding_boxes(original_image.copy(), annotations)
 
     # Apply transformations to the image and the bounding boxes
-    transform_list = TransformList([t.get_transform(original_image) for t in transform_gens])
+    transform_list = TransformList(
+        [t.get_transform(original_image) for t in transform_gens]
+    )
     transformed_image = transform_list.apply_image(transformed_image)
 
     # Update bounding boxes for the transformed image and draw them
-    transformed_annotations = [dict(annot, bbox=transform_list.apply_box(np.array(annot['bbox']).reshape(1, -1))[0]) for annot in annotations]
-    transformed_image_with_boxes = draw_bounding_boxes(transformed_image, transformed_annotations)
+    transformed_annotations = [
+        dict(
+            annot,
+            bbox=transform_list.apply_box(np.array(annot["bbox"]).reshape(1, -1))[0],
+        )
+        for annot in annotations
+    ]
+    transformed_image_with_boxes = draw_bounding_boxes(
+        transformed_image, transformed_annotations
+    )
 
     # Display the original and transformed images using matplotlib
     plt.figure(figsize=(12, 6))

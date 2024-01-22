@@ -28,14 +28,12 @@ def main():
     # DATALOADER config
     train_dataset = config["DATALOADER"]["train_dataset"]
     val_dataset = config["DATALOADER"]["val_dataset"]
-    num_workers = config["DATALOADER"]["num_workers "]
+    num_workers = config["DATALOADER"]["num_workers"]
 
     # Model config
     base_config_path = config["MODEL"]["base_config_path"]
-    rotated_bbox_config_path = config["MODEL"]["rotated_bbox_config.yaml"]
-    pretrained_model_url = config["MODEL"][
-        "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
-    ]
+    rotated_bbox_config_path = config["MODEL"]["rotated_bbox_config_path"]
+    pretrained_model_url = config["MODEL"]["pretrained_model_url"]
     num_classes = config["MODEL"]["num_classes"]
     device = config["MODEL"]["device"]
     freeze_backbone = config["MODEL"]["freeze_backbone"]

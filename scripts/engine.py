@@ -13,7 +13,6 @@ def setup_cfg(
     num_classes: int,
     num_workers: int,
     device: str,
-    pretrained_weights_url: str,
     freeze_backbone: bool,
     freeze_at_block: int,
     ims_per_batch: int,
@@ -29,7 +28,7 @@ def setup_cfg(
     Sets up and returns a Detectron2 configuration for training a model with custom settings.
 
     Args:
-        - base_config_path (str): Path to the base configuration file.
+        - base_config_path (str): Path to the backbone configuration file.
         - rotated_bbox_config_path (str): Path to the configuration file for rotated bounding boxes.
         - pretrained_model_url (str): URL to get the configuration file of the pretrained model.
         - train_dataset (str): Name of the training dataset.
@@ -38,7 +37,6 @@ def setup_cfg(
         - num_classes (int): Number of classes for ROI heads.
         - num_workers (int): Number of data loading workers.
         - device (str): Model device type ('cuda' for GPU or 'cpu').
-        - pretrained_weights_url (str): URL to the pre-trained weights.
         - freeze_backbone (bool): Flag to freeze the backbone layers.
         - freeze_at_block (int): The stage in the backbone at which to stop freezing (only if freeze_backbone is True).
         - ims_per_batch (int): Number of images per batch during training.
@@ -57,11 +55,11 @@ def setup_cfg(
     # Load the base configuration from a pre-defined model in the model zoo
     cfg.merge_from_file(model_zoo.get_config_file(base_config_path))
 
+    # Set URL for the pre-trained model's configuration
+    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(pretrained_model_url)
+
     # Incorporate custom configurations for handling rotated bounding boxes
     cfg.merge_from_file(rotated_bbox_config_path)
-
-    # Set URL for the pre-trained model's configuration
-    cfg.MODEL.WEIGHTS = pretrained_model_url
 
     # Specify the names of the training and validation datasets
     cfg.DATASETS.TRAIN = (train_dataset,)
@@ -78,9 +76,6 @@ def setup_cfg(
 
     # Choose the computation device for model training (CPU or GPU)
     cfg.MODEL.DEVICE = device
-
-    # Specify the URL for pre-trained weights to initialize the model
-    cfg.MODEL.WEIGHTS = pretrained_weights_url
 
     # Optionally freeze the early layers of the model's backbone
     if freeze_backbone:

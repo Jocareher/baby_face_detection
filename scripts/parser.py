@@ -79,7 +79,7 @@ def parse_arguments():
     args = parser.parse_args()
 
     # Load and update configuration
-    config_file = "../configs/config_train.yaml"
+    config_file = "./configs/config_train.yaml"
     with open(config_file, "r") as file:
         config = yaml.safe_load(file)
 

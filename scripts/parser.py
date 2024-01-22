@@ -9,6 +9,11 @@ def parse_arguments():
     Parses command line arguments provided by the user, updating the model configuration accordingly,
     and returns the updated configuration.
     """
+    
+    # Load and update configuration
+    config_file = "./configs/config_train.yaml"
+    with open(config_file, "r") as file:
+        config = yaml.safe_load(file)
 
     parser = argparse.ArgumentParser(
         description="Update Detectron2 training configuration."
@@ -77,11 +82,6 @@ def parse_arguments():
     )
 
     args = parser.parse_args()
-
-    # Load and update configuration
-    config_file = "./configs/config_train.yaml"
-    with open(config_file, "r") as file:
-        config = yaml.safe_load(file)
 
     # Update config with provided arguments
     config["DATASET"]["root_dir"] = args.root_dir

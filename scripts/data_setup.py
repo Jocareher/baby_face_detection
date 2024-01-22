@@ -132,7 +132,7 @@ def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
     Rotates bounding boxes in the annotation according to the specified transformations.
 
     This function checks the bounding box mode in the annotation and applies rotation
-    transformations if supported. It handles only the BoxMode.XYWHA_ABS mode currently.
+    transformations if supported. It currently handles only the BoxMode.XYWHA_ABS mode.
 
     Args:
         annotation: A dictionary containing annotation details, including the bounding box
@@ -147,16 +147,18 @@ def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
         This function currently only supports annotations in the XYWHA_ABS box mode and will
         skip transformations for other modes.
     """
-    # Check if the bounding box mode is XYWHA_ABS for rotation capability
     if annotation["bbox_mode"] == BoxMode.XYWHA_ABS:
-        rotated_bbox = np.asarray([annotation["bbox"]])
+        # Directly convert to a PyTorch tensor instead of first creating a list of numpy arrays
+        rotated_bbox = torch.as_tensor(annotation["bbox"], dtype=torch.float32).unsqueeze(0)
+        
         for transform in transforms:
-            # Apply the rotation transformation if it's supported by the transform
             if hasattr(transform, "apply_rotated_box"):
+                # Ensure that rotated_bbox is a PyTorch tensor before applying the transformation
                 rotated_bbox = transform.apply_rotated_box(rotated_bbox)
-        annotation["bbox"] = rotated_bbox[0]
+
+        annotation["bbox"] = rotated_bbox.squeeze(0).numpy()
     else:
-        # Other bounding box modes are currently not handled
+        # Other box modes are currently not handled
         pass
 
     return annotation

@@ -31,7 +31,7 @@ def parse_arguments():
     parser.add_argument(
         "--num_workers", default=4, type=int, help="Number of data loading workers."
     )
-    parser.add_argument("--device", default="cuda", type=bool, help="Computation device for model training")
+    parser.add_argument("--device", default="cuda", type=str, help="Computation device for model training")
     parser.add_argument(
         "--base_config_path",
         default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml",

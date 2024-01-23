@@ -31,6 +31,7 @@ def parse_arguments():
     parser.add_argument(
         "--num_workers", default=4, type=int, help="Number of data loading workers."
     )
+    parser.add_argument("--device", default="cuda", type=bool, help="Computation device for model training")
     parser.add_argument(
         "--base_config_path",
         default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml",
@@ -90,6 +91,7 @@ def parse_arguments():
     config["MODEL"]["rotated_bbox_config_path"] = os.path.join(
         os.path.dirname(config_file), "rotated_bbox_config.yaml"
     )
+    config["MODEL"]["device"] = args.device
     config["MODEL"]["pretrained_model_url"] = args.pretrained_model_url
     config["MODEL"]["freeze_backbone"] = args.freeze_backbone
     config["MODEL"]["freeze_at_block"] = args.freeze_at_block

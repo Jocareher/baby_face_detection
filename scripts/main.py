@@ -87,9 +87,8 @@ def main():
         f"\nGamma: {model_and_train_config.SOLVER.GAMMA}"
     )
 
-    #
+    # Initialize the trainer
     trainer = train.FaceTrainer(model_and_train_config)
-
     trainer.resume_or_load(resume=False)
 
     # Measure training time

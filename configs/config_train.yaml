@@ -20,6 +20,7 @@ MODEL:
   device: "cuda"
   freeze_backbone: False
   freeze_at_block: 3
+  output_dir: "./output"
 
 TRAINING:
   ims_per_batch: 4

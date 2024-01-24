@@ -38,7 +38,7 @@ def main_worker():  # local_rank, config
     device = config["MODEL"]["device"]
     freeze_backbone = config["MODEL"]["freeze_backbone"]
     freeze_at_block = config["MODEL"]["freeze_at_block"]
-    ouput_dir = "./output"
+    ouput_dir = config["MODEL"]["output_dir"]
 
     # Training config
     ims_per_batch = config["TRAINING"]["ims_per_batch"]

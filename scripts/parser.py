@@ -25,6 +25,8 @@ def parse_arguments():
         default="data/face_dataset",
         help="Root directory for the datasets.",
     )
+    
+    parser.add_argument("--output_dir", default="./output", type=str, help="Directory where to save the weights")
     parser.add_argument(
         "--batch_size", default=4, type=int, help="Batch size for training."
     )

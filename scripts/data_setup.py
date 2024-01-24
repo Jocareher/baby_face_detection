@@ -11,7 +11,7 @@ from PIL import Image
 import os
 import json
 import hashlib
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from pathlib import Path
 
 
@@ -127,24 +127,30 @@ def create_coco_format(data_pairs: list) -> list:
     return data_list
 
 
-def resize_image(image, target_size):
+def resize_image(image: Image.Image, target_size: int) -> Tuple[Image.Image, float]:
     """
     Resize an image maintaining its aspect ratio.
 
     Args:
-        image (PIL.Image): The original image.
-        target_size (int): The desired maximum size (either width or height).
+        - image (PIL.Image.Image): The original image.
+        - target_size (int): The desired maximum size (either width or height).
 
     Returns:
-        PIL.Image: The resized image.
-        float: The scaling factor applied to the image dimensions.
+        - PIL.Image.Image: The resized image.
+        - float: The scaling factor applied to the image dimensions.
     """
+    # Get the maximum dimension of the image
     original_size = max(image.size)
+    # Check if resizing is necessary
     if original_size <= target_size:
         return image, 1.0  # No scaling applied
+
+    # Calculate the scaling ratio
     ratio = target_size / float(original_size)
+    # Calculate the new size maintaining the aspect ratio
     new_size = tuple([int(x * ratio) for x in image.size])
-    return image.resize(new_size, Image.ANTIALIAS), ratio
+    # Resize and return the image and the scaling ratio
+    return image.resize(new_size, Image.Resampling.LANCZOS), ratio
 
 
 def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
@@ -186,7 +192,7 @@ def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
     return annotation
 
 
-def adjust_bbox_for_resizing(annotation, scale_factor):
+def adjust_bbox_for_resizing(annotation: Dict, scale_factor: float) -> Dict:
     """
     Adjusts bounding box coordinates according to the scaling factor.
 
@@ -197,9 +203,11 @@ def adjust_bbox_for_resizing(annotation, scale_factor):
     Returns:
         dict: The updated annotation with adjusted bounding box.
     """
+    # Extract the bounding box coordinates
     bbox = annotation["bbox"]
     # Adjust the bounding box coordinates
     adjusted_bbox = [coord * scale_factor for coord in bbox]
+    # Update the bounding box in the annotation
     annotation["bbox"] = adjusted_bbox
     return annotation
 
@@ -250,7 +258,7 @@ def get_color_augmentations() -> T.AugmentationList:
     )
 
 
-def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
+def dataset_mapper(dataset_dict: dict, target_size: int = 512) -> dict:
     """
     Maps and applies transformations to the dataset dictionary.
 
@@ -259,11 +267,11 @@ def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
     training with augmented data.
 
     Args:
-        - dataset_dict: A dictionary containing dataset information, including file names and
-                    annotations.
+        dataset_dict (dict): A dictionary containing dataset information, including file names and annotations.
+        target_size (int, optional): Target size for image resizing. Default is 512.
 
     Returns:
-        dict: The updated dataset dictionary with transformed images and annotations.
+        dict: The updated dataset dictionary with transformed images and annotations
 
     Note:
         This function applies transformations only to non-crowd annotations. In the context
@@ -276,7 +284,7 @@ def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
     # Read the image in BGR format
     image = utils.read_image(dataset_dict["file_name"], format="BGR")
 
-    # Resize image
+    # Resize image using PIL
     pil_image = Image.fromarray(image)
     pil_image, scale_factor = resize_image(pil_image, target_size)
     image = np.array(pil_image)
@@ -284,26 +292,20 @@ def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
     # Apply color augmentations
     color_aug_input = T.AugInput(image)
     get_color_augmentations()(color_aug_input)
-    image = color_aug_input.image
 
     # Apply shape augmentations and get the resulting transforms
-    image, image_transforms = T.apply_transform_gens(get_shape_augmentations(), image)
+    image, image_transforms = T.apply_transform_gens(get_shape_augmentations(), color_aug_input.image)
 
-    # Convert the image to a PyTorch tensor
+    # Convert the image to a PyTorch tensor and free memory
     dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
-    # Delete image for releasing memory
-    del image
+    del image  # Free memory
 
-    # Apply transformations to annotations, filtering out crowd objects
     # Apply transformations to annotations, adjusting bbox for resizing
-    annotations = [
-        adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor)
-        for obj in dataset_dict.pop("annotations")
-        if obj.get("iscrowd", 0) == 0
-    ]
+    annotations = [adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor)
+                   for obj in dataset_dict.pop("annotations") if obj.get("iscrowd", 0) == 0]
 
     # Convert the updated annotations to rotated instances
-    instances = utils.annotations_to_instances_rotated(annotations, image.shape[:2])
+    instances = utils.annotations_to_instances_rotated(annotations, pil_image.size)
 
     # Filter out empty instances
     dataset_dict["instances"] = utils.filter_empty_instances(instances)

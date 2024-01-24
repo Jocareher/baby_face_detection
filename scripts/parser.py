@@ -109,6 +109,7 @@ def parse_arguments():
     config["MODEL"]["pretrained_model_url"] = args.pretrained_model_url
     config["MODEL"]["freeze_backbone"] = args.freeze_backbone
     config["MODEL"]["freeze_at_block"] = args.freeze_at_block
+    config["MODEL"]["output_dir"] = args.output_dir
     config["TRAINING"]["ims_per_batch"] = args.ims_per_batch
     config["TRAINING"]["checkpoint_period"] = args.checkpoint_period
     config["TRAINING"]["base_lr"] = args.base_lr

@@ -9,7 +9,7 @@ def parse_arguments():
     Parses command line arguments provided by the user, updating the model configuration accordingly,
     and returns the updated configuration.
     """
-    
+
     # Load and update configuration
     config_file = "./configs/config_train.yaml"
     with open(config_file, "r") as file:
@@ -31,8 +31,18 @@ def parse_arguments():
     parser.add_argument(
         "--num_workers", default=4, type=int, help="Number of data loading workers."
     )
-    parser.add_argument("--num_gpus", default=2, type=int, help="Number of gpus (for multi-gpu training)")
-    parser.add_argument("--device", default="cuda", type=str, help="Computation device for model training")
+    parser.add_argument(
+        "--num_gpus",
+        default=2,
+        type=int,
+        help="Number of gpus (for multi-gpu training)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        type=str,
+        help="Computation device for model training",
+    )
     parser.add_argument(
         "--base_config_path",
         default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml",
@@ -104,7 +114,7 @@ def parse_arguments():
     config["TRAINING"]["batch_size_per_image"] = args.batch_size_per_image
     config["TRAINING"]["warm_steps"] = args.warm_steps
     config["TRAINING"]["gamma"] = args.gamma
-    
+
     return config
 
 

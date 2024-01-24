@@ -1,10 +1,11 @@
 #!/bin/bash
-#SBATCH -J detectron
+#SBATCH -J multi_dect
 #SBATCH -p short
-#SBATCH -N 1
-#### SBATCH --nodelist=node026
+#SBATCH -N 2
 #SBATCH --chdir=/home/jreyes/face_detectron2
-#SBATCH --gres=gpu:tesla:1
+#SBATCH --mem=30g
+#SBATCH --gres=gpu:2 # Number of gpus per node
+#SBATCH --tasks-per-node=2 # Tasks per node
 #SBATCH -o /home/jreyes/face_detectron2/detectron_fe%J.%u.out # STDOUT
 #SBATCH -e /home/jreyes/face_detectron2/detectron_fe%J.%u.err # STDERR
 
@@ -29,4 +30,7 @@ pip install --user -r requirements.txt
 
 python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
 
-python3 ./scripts/main.py --ims_per_batch 2 --batch_size_per_image 128 --num_workers 2
+export MASTER_ADDR=localhost
+export MASTER_PORT=12345 
+
+python3 /home/jreyes/face_detectron2/scripts/main.py --ims_per_batch 4 --num_gpus 2 --batch_size_per_image 64

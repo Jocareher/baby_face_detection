@@ -245,7 +245,7 @@ def get_color_augmentations() -> T.AugmentationList:
     )
 
 
-def dataset_mapper(dataset_dict: dict) -> dict:
+def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
     """
     Maps and applies transformations to the dataset dictionary.
 
@@ -270,6 +270,11 @@ def dataset_mapper(dataset_dict: dict) -> dict:
     """
     # Read the image in BGR format
     image = utils.read_image(dataset_dict["file_name"], format="BGR")
+    
+    # Resize image
+    pil_image = Image.fromarray(image)
+    pil_image, scale_factor = resize_image(pil_image, target_size)
+    image = np.array(pil_image)
 
     # Apply color augmentations
     color_aug_input = T.AugInput(image)
@@ -281,13 +286,12 @@ def dataset_mapper(dataset_dict: dict) -> dict:
 
     # Convert the image to a PyTorch tensor
     dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
+    # Delete image for releasing memory
+    del image
 
     # Apply transformations to annotations, filtering out crowd objects
-    annotations = [
-        rotate_bbox(obj, image_transforms)
-        for obj in dataset_dict.pop("annotations")
-        if obj.get("iscrowd", 0) == 0
-    ]
+    # Apply transformations to annotations, adjusting bbox for resizing
+    annotations = [adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor) for obj in dataset_dict.pop("annotations") if obj.get("iscrowd", 0) == 0]
 
     # Convert the updated annotations to rotated instances
     instances = utils.annotations_to_instances_rotated(annotations, image.shape[:2])

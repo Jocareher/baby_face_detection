@@ -19,26 +19,89 @@ def parse_arguments():
     with open(config_file, "r") as file:
         config = yaml.safe_load(file)
 
-    parser = argparse.ArgumentParser(description="Update Detectron2 training configuration.")
+    parser = argparse.ArgumentParser(
+        description="Update Detectron2 training configuration."
+    )
 
     # Define command line arguments
-    parser.add_argument("--root_dir", default="data/face_dataset", help="Root directory for the datasets.")
-    parser.add_argument("--output_dir", default="./output", type=str, help="Directory where to save the weights")
-    parser.add_argument("--batch_size", default=4, type=int, help="Batch size for training.")
-    parser.add_argument("--num_workers", default=4, type=int, help="Number of data loading workers.")
-    parser.add_argument("--num_gpus", default=2, type=int, help="Number of GPUs (for multi-GPU training)")
-    parser.add_argument("--device", default="cuda", type=str, help="Computation device for model training")
-    parser.add_argument("--base_config_path", default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml", help="Base configuration path.")
-    parser.add_argument("--pretrained_model_url", default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml", help="URL for the pretrained model.")
-    parser.add_argument("--freeze_backbone", default=False, type=bool, help="Whether to freeze the backbone.")
-    parser.add_argument("--freeze_at_block", default=3, type=int, help="Block at which to stop freezing the backbone.")
-    parser.add_argument("--ims_per_batch", default=4, type=int, help="Images per batch.")
-    parser.add_argument("--checkpoint_period", default=1000, type=int, help="Period to save checkpoints.")
-    parser.add_argument("--base_lr", default=0.0025, type=float, help="Base learning rate.")
-    parser.add_argument("--epochs", default=100, type=int, help="Number of training epochs.")
-    parser.add_argument("--batch_size_per_image", default=128, type=int, help="Batch size per image for ROI heads.")
-    parser.add_argument("--warm_steps", default=1000, type=int, help="Number of warm-up steps.")
-    parser.add_argument("--gamma", default=0.1, type=float, help="Gamma value for learning rate decay.")
+    parser.add_argument(
+        "--root_dir",
+        default="data/face_dataset",
+        help="Root directory for the datasets.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default="./output",
+        type=str,
+        help="Directory where to save the weights",
+    )
+    parser.add_argument(
+        "--batch_size", default=4, type=int, help="Batch size for training."
+    )
+    parser.add_argument(
+        "--num_workers", default=4, type=int, help="Number of data loading workers."
+    )
+    parser.add_argument(
+        "--num_gpus",
+        default=2,
+        type=int,
+        help="Number of GPUs (for multi-GPU training)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        type=str,
+        help="Computation device for model training",
+    )
+    parser.add_argument(
+        "--base_config_path",
+        default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml",
+        help="Base configuration path.",
+    )
+    parser.add_argument(
+        "--pretrained_model_url",
+        default="COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml",
+        help="URL for the pretrained model.",
+    )
+    parser.add_argument(
+        "--freeze_backbone",
+        default=False,
+        type=bool,
+        help="Whether to freeze the backbone.",
+    )
+    parser.add_argument(
+        "--freeze_at_block",
+        default=3,
+        type=int,
+        help="Block at which to stop freezing the backbone.",
+    )
+    parser.add_argument(
+        "--ims_per_batch", default=4, type=int, help="Images per batch."
+    )
+    parser.add_argument(
+        "--checkpoint_period",
+        default=1000,
+        type=int,
+        help="Period to save checkpoints.",
+    )
+    parser.add_argument(
+        "--base_lr", default=0.0025, type=float, help="Base learning rate."
+    )
+    parser.add_argument(
+        "--epochs", default=100, type=int, help="Number of training epochs."
+    )
+    parser.add_argument(
+        "--batch_size_per_image",
+        default=128,
+        type=int,
+        help="Batch size per image for ROI heads.",
+    )
+    parser.add_argument(
+        "--warm_steps", default=1000, type=int, help="Number of warm-up steps."
+    )
+    parser.add_argument(
+        "--gamma", default=0.1, type=float, help="Gamma value for learning rate decay."
+    )
 
     args = parser.parse_args()
 
@@ -47,7 +110,9 @@ def parse_arguments():
     config["DATALOADER"]["num_workers"] = args.num_workers
     config["DATALOADER"]["num_gpus"] = args.num_gpus
     config["MODEL"]["base_config_path"] = args.base_config_path
-    config["MODEL"]["rotated_bbox_config_path"] = os.path.join(os.path.dirname(config_file), "rotated_bbox_config.yaml")
+    config["MODEL"]["rotated_bbox_config_path"] = os.path.join(
+        os.path.dirname(config_file), "rotated_bbox_config.yaml"
+    )
     config["MODEL"]["device"] = args.device
     config["MODEL"]["pretrained_model_url"] = args.pretrained_model_url
     config["MODEL"]["freeze_backbone"] = args.freeze_backbone
@@ -62,6 +127,7 @@ def parse_arguments():
     config["TRAINING"]["gamma"] = args.gamma
 
     return config
+
 
 if __name__ == "__main__":
     try:

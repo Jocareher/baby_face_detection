@@ -2,6 +2,8 @@ from detectron2.config import get_cfg
 from detectron2 import model_zoo
 from detectron2.config import CfgNode
 
+import torch
+
 
 def setup_cfg(
     base_config_path: str,
@@ -75,7 +77,9 @@ def setup_cfg(
     cfg.DATALOADER.NUM_WORKERS = num_workers
 
     # Choose the computation device for model training (CPU or GPU)
-    cfg.MODEL.DEVICE = device
+    # Set the device only when training with single pu
+    if torch.cuda.device_count() <= 1:
+        cfg.MODEL.DEVICE = device
 
     # Optionally freeze the early layers of the model's backbone
     if freeze_backbone:

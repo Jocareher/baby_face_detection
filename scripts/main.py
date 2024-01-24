@@ -7,10 +7,10 @@ from detectron2.evaluation import inference_on_dataset
 import data_setup, engine, utils, parser, train
 
 
-def main():
+def main_worker(): # local_rank, config
     # Setting random seed for reproducibility
     utils.set_seed()
-
+    
     # Parsing command line arguments for model configuration
     config = parser.parse_arguments()
 
@@ -72,20 +72,20 @@ def main():
         gamma=gamma,
     )
 
+    # if local_rank == 0:
+    #     # Only main process write the outputs and logs
     os.makedirs(model_and_train_config.OUTPUT_DIR, exist_ok=True)
-
+    
     # Check model defined config
-    print(
-        f"\nThe model is being trained with the following configuration: "
-        f"\nBatch size: {model_and_train_config.SOLVER.IMS_PER_BATCH}"
-        f"\nCheckpoint period: {model_and_train_config.SOLVER.CHECKPOINT_PERIOD}"
-        f"\nBase learning rate: {model_and_train_config.SOLVER.BASE_LR}"
-        f"\nMax iters: {model_and_train_config.SOLVER.MAX_ITER}"
-        f"\nBatch size per ROI heads: {model_and_train_config.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE}"
-        f"\nSolver steps: {model_and_train_config.SOLVER.STEPS}"
-        f"\nWarm-up iters: {model_and_train_config.SOLVER.WARMUP_ITERS}"
-        f"\nGamma: {model_and_train_config.SOLVER.GAMMA}"
-    )
+    print(f"\nThe model is being trained with the following configuration: "
+          f"\nBatch size: {model_and_train_config.SOLVER.IMS_PER_BATCH}"
+          f"\nCheckpoint period: {model_and_train_config.SOLVER.CHECKPOINT_PERIOD}"
+          f"\nBase learning rate: {model_and_train_config.SOLVER.BASE_LR}"
+          f"\nMax iters: {model_and_train_config.SOLVER.MAX_ITER}"
+          f"\nBatch size per ROI heads: {model_and_train_config.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE}"
+          f"\nSolver steps: {model_and_train_config.SOLVER.STEPS}"
+          f"\nWarm-up iters: {model_and_train_config.SOLVER.WARMUP_ITERS}"
+          f"\nGamma: {model_and_train_config.SOLVER.GAMMA}")
 
     # Initialize the trainer
     trainer = train.FaceTrainer(model_and_train_config)
@@ -98,14 +98,39 @@ def main():
     print(f"Training time: {training_time} seconds")
 
     # Evaluate the performance after the training
+    # if local_rank == 0:  # Evaluate only on the main process
     evaluator = train.FaceTrainer.build_evaluator(
         model_and_train_config, model_and_train_config.DATASETS.TEST
     )
     val_loader = build_detection_test_loader(
         model_and_train_config, model_and_train_config.DATASETS.TEST
     )
-    print(inference_on_dataset(trainer.model, val_loader, evaluator))
+    metrics = inference_on_dataset(trainer.model, val_loader, evaluator)
+    print(metrics)
 
+
+# def main():
+#     # Parsing command line arguments for model configuration
+#     config = parser.parse_arguments()
+
+#     # Number of GPUs to use (set this to the number of available GPUs)
+#     num_gpus = int(config["DATALOADER"]["num_gpus"])
+    
+#     print("Config before launch:", config)
+    
+#     try:
+#         if torch.cuda.is_available():
+#             num_gpus = torch.cuda.device_count()
+#     except ImportError:
+#         print("Assuming a single gpu")
+        
+    
+
+#     launch(
+#         main_worker,
+#         num_gpus,
+#         args=(config,),
+#     )
 
 if __name__ == "__main__":
-    main()
+    main_worker()

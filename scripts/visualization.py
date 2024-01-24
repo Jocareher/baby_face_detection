@@ -1,7 +1,12 @@
 from typing import List, Optional, Dict
+import math
 
 from detectron2.structures import BoxMode
 from detectron2.data.transforms import TransformList
+from detectron2.utils.visualizer import Visualizer
+from detectron2.data import DatasetCatalog, MetadataCatalog
+from detectron2.engine import DefaultPredictor
+from detectron2.config import get_cfg
 
 import cv2
 import numpy as np
@@ -107,4 +112,73 @@ def visualize_transformations(
     plt.subplot(1, 2, 2)
     plt.imshow(cv2.cvtColor(transformed_image_with_boxes, cv2.COLOR_BGR2RGB))
     plt.title("Transformed Image")
+    plt.show()
+
+def visualize_predictions(cfg_path: str, weights_path: str, dataset_name: str, num_classes: int, score_thresh: float, num_images: int, device: str = 'cpu') -> None:
+    """
+    Visualizes predictions on images from a specified dataset using a Detectron2 model.
+
+    Args:
+        cfg_path (str): Path to the configuration file for the model.
+        weights_path (str): Path to the trained model weights.
+        dataset_name (str): Name of the dataset to visualize (e.g., "val", "test").
+        num_classes (int): Number of classes for the model.
+        score_thresh (float): Score threshold for making predictions.
+        num_images (int): Number of images to visualize.
+        device (str): Computation device to use ('cpu' or 'cuda').
+
+    Displays a grid of images with model predictions including bounding boxes, labels, and confidence scores.
+    """
+    # Initialize Detectron2 configuration
+    cfg = get_cfg()
+    
+    # Load model configuration
+    cfg.merge_from_file(cfg_path)
+    
+    # Load trained model weights
+    cfg.MODEL.WEIGHTS = weights_path
+    
+    # Set the computation device
+    cfg.MODEL.DEVICE = device
+    
+    # Set the number of classes for the ROI heads
+    cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
+    
+    # Set the scoring threshold for object detection
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
+    
+    # Define the test dataset
+    cfg.DATASETS.TEST = (dataset_name, )
+    
+    # Initialize the predictor with the model configuration
+    predictor = DefaultPredictor(cfg)
+
+    # Retrieve dataset dictionaries from the registered dataset
+    dataset_dicts = DatasetCatalog.get(dataset_name)
+
+    # Calculate grid size based on the number of images
+    grid_size = math.ceil(math.sqrt(num_images))
+
+    # Set up a matplotlib figure with the calculated grid size
+    fig, axs = plt.subplots(grid_size, grid_size, figsize=(15, 15))
+
+    # Visualize the specified number of images
+    for idx, d in enumerate(dataset_dicts[:num_images]):
+        # Read the image
+        img = cv2.imread(d["file_name"])
+        
+        # Make prediction using the model
+        outputs = predictor(img)
+        
+        # Visualize the predictions on the image
+        v = Visualizer(img[:, :, ::-1], metadata=MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=0.5)
+        out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
+        
+        # Display the image with predictions in the grid
+        ax = axs[idx // grid_size, idx % grid_size]
+        ax.imshow(out.get_image()[:, :, ::-1])
+        ax.axis('off')
+
+    # Adjust layout and show the plot
+    plt.tight_layout()
     plt.show()

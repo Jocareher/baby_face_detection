@@ -18,7 +18,7 @@ MODEL:
   pretrained_model_url: "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
   num_classes: 5
   device: "cuda"
-  freeze_backbone: False
+  unfreeze_backbone: False
   freeze_at_block: 3
   output_dir: "./output"
 

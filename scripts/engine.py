@@ -15,7 +15,7 @@ def setup_cfg(
     num_classes: int,
     num_workers: int,
     device: str,
-    freeze_backbone: bool,
+    unfreeze_backbone: bool,
     freeze_at_block: int,
     ims_per_batch: int,
     checkpoint_period: int,
@@ -39,7 +39,7 @@ def setup_cfg(
         - num_classes (int): Number of classes for ROI heads.
         - num_workers (int): Number of data loading workers.
         - device (str): Model device type ('cuda' for GPU or 'cpu').
-        - freeze_backbone (bool): Flag to freeze the backbone layers.
+        - unfreeze_backbone (bool): Flag to unfreeze the backbone layers.
         - freeze_at_block (int): The stage in the backbone at which to stop freezing (only if freeze_backbone is True).
         - ims_per_batch (int): Number of images per batch during training.
         - checkpoint_period (int): Period to save the model checkpoint.
@@ -82,7 +82,7 @@ def setup_cfg(
         cfg.MODEL.DEVICE = device
 
     # Optionally freeze the early layers of the model's backbone
-    if freeze_backbone:
+    if unfreeze_backbone:
         cfg.MODEL.BACKBONE.FREEZE_AT = freeze_at_block
 
     # Training parameters

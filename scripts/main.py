@@ -36,9 +36,9 @@ def main_worker():  # local_rank, config
     pretrained_model_url = config["MODEL"]["pretrained_model_url"]
     num_classes = config["MODEL"]["num_classes"]
     device = config["MODEL"]["device"]
-    freeze_backbone = config["MODEL"]["freeze_backbone"]
+    unfreeze_backbone = config["MODEL"]["unfreeze_backbone"]
     freeze_at_block = config["MODEL"]["freeze_at_block"]
-    ouput_dir = config["MODEL"]["output_dir"]
+    output_dir = config["MODEL"]["output_dir"]
 
     # Training config
     ims_per_batch = config["TRAINING"]["ims_per_batch"]
@@ -56,11 +56,11 @@ def main_worker():  # local_rank, config
         pretrained_model_url=pretrained_model_url,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
-        output_dir=ouput_dir,
+        output_dir=output_dir,
         num_classes=num_classes,
         num_workers=num_workers,
         device=device,
-        freeze_backbone=freeze_backbone,
+        freeze_backbone=unfreeze_backbone,
         freeze_at_block=freeze_at_block,
         ims_per_batch=ims_per_batch,
         checkpoint_period=checkpoint_period,
@@ -76,18 +76,26 @@ def main_worker():  # local_rank, config
     #     # Only main process write the outputs and logs
     os.makedirs(model_and_train_config.OUTPUT_DIR, exist_ok=True)
 
-    # Check model defined config
+    # Check model defined config and output training mode
+    freeze_backbone_message = "The model is using pre-trained weights" if not unfreeze_backbone else f"The model is in fine-tuning mode, keeping frozen the weights till the {freeze_at_block} conv block"
+    print(freeze_backbone_message)
+    
+    # Print output directory
+    print(f"Output Directory: {output_dir}")
+
+    # Print other training configurations
     print(
-        f"\nThe model is being trained with the following configuration: "
+        f"\nTraining with the following configuration: "
         f"\nBatch size: {model_and_train_config.SOLVER.IMS_PER_BATCH}"
         f"\nCheckpoint period: {model_and_train_config.SOLVER.CHECKPOINT_PERIOD}"
         f"\nBase learning rate: {model_and_train_config.SOLVER.BASE_LR}"
-        f"\nMax iters: {model_and_train_config.SOLVER.MAX_ITER}"
+        f"\nMax iterations: {model_and_train_config.SOLVER.MAX_ITER}"
         f"\nBatch size per ROI heads: {model_and_train_config.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE}"
         f"\nSolver steps: {model_and_train_config.SOLVER.STEPS}"
-        f"\nWarm-up iters: {model_and_train_config.SOLVER.WARMUP_ITERS}"
+        f"\nWarm-up iterations: {model_and_train_config.SOLVER.WARMUP_ITERS}"
         f"\nGamma: {model_and_train_config.SOLVER.GAMMA}"
     )
+
 
     # Initialize the trainer
     trainer = train.FaceTrainer(model_and_train_config)

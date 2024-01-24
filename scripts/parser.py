@@ -64,7 +64,7 @@ def parse_arguments():
         help="URL for the pretrained model.",
     )
     parser.add_argument(
-        "--freeze_backbone",
+        "--unfreeze_backbone",
         default=False,
         type=bool,
         help="Whether to freeze the backbone.",
@@ -115,7 +115,7 @@ def parse_arguments():
     )
     config["MODEL"]["device"] = args.device
     config["MODEL"]["pretrained_model_url"] = args.pretrained_model_url
-    config["MODEL"]["freeze_backbone"] = args.freeze_backbone
+    config["MODEL"]["unfreeze_backbone"] = args.freeze_backbone
     config["MODEL"]["freeze_at_block"] = args.freeze_at_block
     config["MODEL"]["output_dir"] = args.output_dir
     config["TRAINING"]["ims_per_batch"] = args.ims_per_batch

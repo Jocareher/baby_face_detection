@@ -182,6 +182,22 @@ def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
 
     return annotation
 
+def adjust_bbox_for_resizing(annotation, scale_factor):
+    """
+    Adjusts bounding box coordinates according to the scaling factor.
+
+    Args:
+        annotation (dict): The annotation containing bbox details.
+        scale_factor (float): The scaling factor applied to the image dimensions.
+
+    Returns:
+        dict: The updated annotation with adjusted bounding box.
+    """
+    bbox = annotation["bbox"]
+    # Adjust the bounding box coordinates
+    adjusted_bbox = [coord * scale_factor for coord in bbox]
+    annotation["bbox"] = adjusted_bbox
+    return annotation
 
 def get_shape_augmentations() -> List[T.Transform]:
     """

@@ -126,6 +126,7 @@ def create_coco_format(data_pairs: list) -> list:
 
     return data_list
 
+
 def resize_image(image, target_size):
     """
     Resize an image maintaining its aspect ratio.
@@ -168,8 +169,10 @@ def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
     """
     if annotation["bbox_mode"] == BoxMode.XYWHA_ABS:
         # Directly convert to a PyTorch tensor instead of first creating a list of numpy arrays
-        rotated_bbox = torch.as_tensor(annotation["bbox"], dtype=torch.float32).unsqueeze(0)
-        
+        rotated_bbox = torch.as_tensor(
+            annotation["bbox"], dtype=torch.float32
+        ).unsqueeze(0)
+
         for transform in transforms:
             if hasattr(transform, "apply_rotated_box"):
                 # Ensure that rotated_bbox is a PyTorch tensor before applying the transformation
@@ -181,6 +184,7 @@ def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
         pass
 
     return annotation
+
 
 def adjust_bbox_for_resizing(annotation, scale_factor):
     """
@@ -198,6 +202,7 @@ def adjust_bbox_for_resizing(annotation, scale_factor):
     adjusted_bbox = [coord * scale_factor for coord in bbox]
     annotation["bbox"] = adjusted_bbox
     return annotation
+
 
 def get_shape_augmentations() -> List[T.Transform]:
     """
@@ -270,7 +275,7 @@ def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
     """
     # Read the image in BGR format
     image = utils.read_image(dataset_dict["file_name"], format="BGR")
-    
+
     # Resize image
     pil_image = Image.fromarray(image)
     pil_image, scale_factor = resize_image(pil_image, target_size)
@@ -291,7 +296,11 @@ def dataset_mapper(dataset_dict: dict, target_size=512) -> dict:
 
     # Apply transformations to annotations, filtering out crowd objects
     # Apply transformations to annotations, adjusting bbox for resizing
-    annotations = [adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor) for obj in dataset_dict.pop("annotations") if obj.get("iscrowd", 0) == 0]
+    annotations = [
+        adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor)
+        for obj in dataset_dict.pop("annotations")
+        if obj.get("iscrowd", 0) == 0
+    ]
 
     # Convert the updated annotations to rotated instances
     instances = utils.annotations_to_instances_rotated(annotations, image.shape[:2])

@@ -101,5 +101,5 @@ def setup_cfg(
     cfg.SOLVER.GAMMA = gamma  # Learning rate decay factor
 
     # Additional configurations can be set here as needed
-    
+
     return cfg

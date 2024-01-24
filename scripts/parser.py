@@ -12,7 +12,7 @@ def parse_arguments():
     The script reads the base configuration from a YAML file and then updates it based on the command line arguments provided by the user.
     """
     # Load and update configuration
-    config_file = "./configs/config_train.yaml"
+    config_file = "../configs/config_train.yaml"
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"Configuration file not found: {config_file}")
 

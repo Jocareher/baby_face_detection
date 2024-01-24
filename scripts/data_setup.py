@@ -477,7 +477,7 @@ def label_studio_to_detectron_dataset(directory: str, class_labels: List[str]) -
         # Add image data to the images list
         images.append(
             {
-                "id": data["id"],  # Image ID
+                "image_id": data["id"],  # Image ID
                 "file_name": image_file_name,  # Path to image file
                 "height": annotation["original_height"],  # Image height
                 "width": annotation["original_width"],  # Image width

@@ -7,9 +7,10 @@ DATASET:
     "Right_sideview"]
 
 DATALOADER:
-  train_dataset: "train"
-  val_dataset: "val"
   num_workers: 4
+  train_dataset: train
+  val_dataset: val
+  num_gpus: 2
 
 MODEL:
   base_config_path: "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"

@@ -294,15 +294,20 @@ def dataset_mapper(dataset_dict: dict, target_size: int = 512) -> dict:
     get_color_augmentations()(color_aug_input)
 
     # Apply shape augmentations and get the resulting transforms
-    image, image_transforms = T.apply_transform_gens(get_shape_augmentations(), color_aug_input.image)
+    image, image_transforms = T.apply_transform_gens(
+        get_shape_augmentations(), color_aug_input.image
+    )
 
     # Convert the image to a PyTorch tensor and free memory
     dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
     del image  # Free memory
 
     # Apply transformations to annotations, adjusting bbox for resizing
-    annotations = [adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor)
-                   for obj in dataset_dict.pop("annotations") if obj.get("iscrowd", 0) == 0]
+    annotations = [
+        adjust_bbox_for_resizing(rotate_bbox(obj, image_transforms), scale_factor)
+        for obj in dataset_dict.pop("annotations")
+        if obj.get("iscrowd", 0) == 0
+    ]
 
     # Convert the updated annotations to rotated instances
     instances = utils.annotations_to_instances_rotated(annotations, pil_image.size)

@@ -114,7 +114,16 @@ def visualize_transformations(
     plt.title("Transformed Image")
     plt.show()
 
-def visualize_predictions(cfg_path: str, weights_path: str, dataset_name: str, num_classes: int, score_thresh: float, num_images: int, device: str = 'cpu') -> None:
+
+def visualize_predictions(
+    cfg_path: str,
+    weights_path: str,
+    dataset_name: str,
+    num_classes: int,
+    score_thresh: float,
+    num_images: int,
+    device: str = "cpu",
+) -> None:
     """
     Visualizes predictions on images from a specified dataset using a Detectron2 model.
 
@@ -131,25 +140,25 @@ def visualize_predictions(cfg_path: str, weights_path: str, dataset_name: str, n
     """
     # Initialize Detectron2 configuration
     cfg = get_cfg()
-    
+
     # Load model configuration
     cfg.merge_from_file(cfg_path)
-    
+
     # Load trained model weights
     cfg.MODEL.WEIGHTS = weights_path
-    
+
     # Set the computation device
     cfg.MODEL.DEVICE = device
-    
+
     # Set the number of classes for the ROI heads
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
-    
+
     # Set the scoring threshold for object detection
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
-    
+
     # Define the test dataset
-    cfg.DATASETS.TEST = (dataset_name, )
-    
+    cfg.DATASETS.TEST = (dataset_name,)
+
     # Initialize the predictor with the model configuration
     predictor = DefaultPredictor(cfg)
 
@@ -166,18 +175,22 @@ def visualize_predictions(cfg_path: str, weights_path: str, dataset_name: str, n
     for idx, d in enumerate(dataset_dicts[:num_images]):
         # Read the image
         img = cv2.imread(d["file_name"])
-        
+
         # Make prediction using the model
         outputs = predictor(img)
-        
+
         # Visualize the predictions on the image
-        v = Visualizer(img[:, :, ::-1], metadata=MetadataCatalog.get(cfg.DATASETS.TRAIN[0]), scale=0.5)
+        v = Visualizer(
+            img[:, :, ::-1],
+            metadata=MetadataCatalog.get(cfg.DATASETS.TRAIN[0]),
+            scale=0.5,
+        )
         out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-        
+
         # Display the image with predictions in the grid
         ax = axs[idx // grid_size, idx % grid_size]
         ax.imshow(out.get_image()[:, :, ::-1])
-        ax.axis('off')
+        ax.axis("off")
 
     # Adjust layout and show the plot
     plt.tight_layout()

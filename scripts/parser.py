@@ -108,10 +108,6 @@ def parse_arguments():
     config["TRAINING"]["warm_steps"] = args.warm_steps
     config["TRAINING"]["gamma"] = args.gamma
 
-    # Save updated configuration
-    with open(config_file, "w") as file:
-        yaml.safe_dump(config, file)
-
     return config
 
 

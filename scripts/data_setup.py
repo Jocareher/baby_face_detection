@@ -126,6 +126,25 @@ def create_coco_format(data_pairs: list) -> list:
 
     return data_list
 
+def resize_image(image, target_size):
+    """
+    Resize an image maintaining its aspect ratio.
+
+    Args:
+        image (PIL.Image): The original image.
+        target_size (int): The desired maximum size (either width or height).
+
+    Returns:
+        PIL.Image: The resized image.
+        float: The scaling factor applied to the image dimensions.
+    """
+    original_size = max(image.size)
+    if original_size <= target_size:
+        return image, 1.0  # No scaling applied
+    ratio = target_size / float(original_size)
+    new_size = tuple([int(x * ratio) for x in image.size])
+    return image.resize(new_size, Image.ANTIALIAS), ratio
+
 
 def rotate_bbox(annotation: dict, transforms: List[T.Transform]) -> dict:
     """

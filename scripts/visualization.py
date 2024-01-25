@@ -180,7 +180,7 @@ def visualize_predictions(
 
     # Initialize all subplots as invisible for non-square grid handling
     for ax in axs.flat:
-        ax.axis('off')
+        ax.axis("off")
 
     # Visualize the specified number of images
     for idx, d in enumerate(selected_dicts):
@@ -196,7 +196,15 @@ def visualize_predictions(
         # Visualize the predictions on the image
         v = Visualizer(
             img_rgb,
-            metadata=MetadataCatalog.get(dataset_name).set(thing_classes=["3/4_left_sideview", "3/4_rigth_sideview", "Frontal", "Left_sideview", "Right_sideview"]),
+            metadata=MetadataCatalog.get(dataset_name).set(
+                thing_classes=[
+                    "3/4_left_sideview",
+                    "3/4_rigth_sideview",
+                    "Frontal",
+                    "Left_sideview",
+                    "Right_sideview",
+                ]
+            ),
             scale=0.5,
         )
         out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
@@ -206,12 +214,13 @@ def visualize_predictions(
 
         # Display the image with predictions in the grid
         ax.imshow(out.get_image())
-        ax.axis('on')  # Or 'off' if you do not want to show the axes
+        ax.axis("on")  # Or 'off' if you do not want to show the axes
 
     # Adjust layout and show the plot
     plt.tight_layout()
     plt.show()
-    
+
+
 def plot_losses(iterations: list, losses: dict) -> None:
     """
     Plots the extracted loss values over iterations.
@@ -227,11 +236,11 @@ def plot_losses(iterations: list, losses: dict) -> None:
         # Plot the loss values for each iteration
         plt.plot(iterations, loss_values, label=loss_key)
     # Label the x-axis as 'Iterations'
-    plt.xlabel('Iterations')
+    plt.xlabel("Iterations")
     # Label the y-axis as 'Loss'
-    plt.ylabel('Loss')
+    plt.ylabel("Loss")
     # Title of the plot
-    plt.title('Training Loss Over Iterations')
+    plt.title("Training Loss Over Iterations")
     # Display the legend to identify each loss type
     plt.legend()
     # Show the plot

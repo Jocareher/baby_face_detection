@@ -632,7 +632,8 @@ def remove_images_with_label_5(images_folder: str, labels_folder: str) -> None:
                 # If the label file doesn't exist, delete the image
                 os.remove(image_path)
                 print(f"Image removed due to missing labels: {image_file}")
-                
+
+
 def extract_losses(file_path: str) -> tuple:
     """
     Extracts the loss values from a training log file.
@@ -646,11 +647,11 @@ def extract_losses(file_path: str) -> tuple:
     # Define regex patterns to find iterations and loss values
     iter_pattern = re.compile(r"iter: (\d+)")
     loss_patterns = {
-        'total_loss': re.compile(r"total_loss: ([\d.]+)"),
-        'loss_cls': re.compile(r"loss_cls: ([\d.]+)"),
-        'loss_box_reg': re.compile(r"loss_box_reg: ([\d.]+)"),
-        'loss_rpn_cls': re.compile(r"loss_rpn_cls: ([\d.]+)"),
-        'loss_rpn_loc': re.compile(r"loss_rpn_loc: ([\d.]+)"),
+        "total_loss": re.compile(r"total_loss: ([\d.]+)"),
+        "loss_cls": re.compile(r"loss_cls: ([\d.]+)"),
+        "loss_box_reg": re.compile(r"loss_box_reg: ([\d.]+)"),
+        "loss_rpn_cls": re.compile(r"loss_rpn_cls: ([\d.]+)"),
+        "loss_rpn_loc": re.compile(r"loss_rpn_loc: ([\d.]+)"),
     }
 
     # Dictionary to store the extracted values
@@ -658,7 +659,7 @@ def extract_losses(file_path: str) -> tuple:
     iterations = []
 
     # Open and read the text file
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         for line in file:
             # Search and extract iteration
             iter_match = iter_pattern.search(line)
@@ -671,5 +672,5 @@ def extract_losses(file_path: str) -> tuple:
                     if loss_match:
                         # Append the loss value to the corresponding key in the dictionary
                         losses[loss_key].append(float(loss_match.group(1)))
-    
+
     return iterations, losses

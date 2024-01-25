@@ -8,6 +8,7 @@ from detectron2.utils.visualizer import Visualizer
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
+from detectron2 import model_zoo
 
 import cv2
 import numpy as np
@@ -143,7 +144,8 @@ def visualize_predictions(
     cfg = get_cfg()
 
     # Load model configuration
-    cfg.merge_from_file(cfg_path)
+    cfg.merge_from_file(model_zoo.get_config_file(cfg_path))
+    cfg.merge_from_file("../configs/rotated_bbox_config.yaml")
 
     # Load trained model weights
     cfg.MODEL.WEIGHTS = weights_path
@@ -182,13 +184,16 @@ def visualize_predictions(
 
         # Make prediction using the model
         outputs = predictor(img)
+        
+        # Convert BGR image to RGB for visualization
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Visualize the predictions on the image
         v = Visualizer(
-            img[:, :, ::-1],
-            metadata=MetadataCatalog.get(cfg.DATASETS.TRAIN[0]),
+            img_rgb[:, :, ::-1],
+            metadata=MetadataCatalog.get(dataset_name).set(thing_classes= ["3/4_left_sideview","3/4_rigth_sideview","Frontal","Left_sideview","Right_sideview"],
             scale=0.5,
-        )
+        ))
         out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
 
         # Display the image with predictions in the grid

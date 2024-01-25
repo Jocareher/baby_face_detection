@@ -171,11 +171,16 @@ def visualize_predictions(
     # Randomly select images from the dataset
     selected_dicts = random.sample(dataset_dicts, num_images)
 
-    # Calculate grid size based on the number of images
-    grid_size = math.ceil(math.sqrt(num_images))
+    # Calculate the number of rows and columns for the grid
+    num_cols = math.ceil(math.sqrt(num_images))
+    num_rows = math.ceil(num_images / num_cols)
 
     # Set up a matplotlib figure with the calculated grid size
-    fig, axs = plt.subplots(grid_size, grid_size, figsize=(15, 15))
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=(15, 15))
+
+    # Initialize all subplots as invisible for non-square grid handling
+    for ax in axs.flat:
+        ax.axis('off')
 
     # Visualize the specified number of images
     for idx, d in enumerate(selected_dicts):
@@ -184,22 +189,24 @@ def visualize_predictions(
 
         # Make prediction using the model
         outputs = predictor(img)
-        
+
         # Convert BGR image to RGB for visualization
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Visualize the predictions on the image
         v = Visualizer(
-            img_rgb[:, :, ::-1],
-            metadata=MetadataCatalog.get(dataset_name).set(thing_classes= ["3/4_left_sideview","3/4_rigth_sideview","Frontal","Left_sideview","Right_sideview"],
+            img_rgb,
+            metadata=MetadataCatalog.get(dataset_name).set(thing_classes=["3/4_left_sideview", "3/4_rigth_sideview", "Frontal", "Left_sideview", "Right_sideview"]),
             scale=0.5,
-        ))
+        )
         out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
 
+        # Find the corresponding subplot
+        ax = axs[idx // num_cols, idx % num_cols]
+
         # Display the image with predictions in the grid
-        ax = axs[idx // grid_size, idx % grid_size]
-        ax.imshow(out.get_image()[:, :, ::-1])
-        ax.axis("off")
+        ax.imshow(out.get_image())
+        ax.axis('on')  # Or 'off' if you do not want to show the axes
 
     # Adjust layout and show the plot
     plt.tight_layout()

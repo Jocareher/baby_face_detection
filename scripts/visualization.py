@@ -211,3 +211,28 @@ def visualize_predictions(
     # Adjust layout and show the plot
     plt.tight_layout()
     plt.show()
+    
+def plot_losses(iterations: list, losses: dict) -> None:
+    """
+    Plots the extracted loss values over iterations.
+
+    Args:
+        iterations (list): List of iteration numbers.
+        losses (dict): Dictionary containing different types of losses and their values.
+    """
+    # Create a figure with a specified size
+    plt.figure(figsize=(10, 5))
+    # Iterate through each loss type and plot it
+    for loss_key, loss_values in losses.items():
+        # Plot the loss values for each iteration
+        plt.plot(iterations, loss_values, label=loss_key)
+    # Label the x-axis as 'Iterations'
+    plt.xlabel('Iterations')
+    # Label the y-axis as 'Loss'
+    plt.ylabel('Loss')
+    # Title of the plot
+    plt.title('Training Loss Over Iterations')
+    # Display the legend to identify each loss type
+    plt.legend()
+    # Show the plot
+    plt.show()

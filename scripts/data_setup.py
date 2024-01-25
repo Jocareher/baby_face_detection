@@ -7,6 +7,7 @@ import cv2
 import torch
 import numpy as np
 from PIL import Image
+import re
 
 import os
 import json
@@ -631,3 +632,44 @@ def remove_images_with_label_5(images_folder: str, labels_folder: str) -> None:
                 # If the label file doesn't exist, delete the image
                 os.remove(image_path)
                 print(f"Image removed due to missing labels: {image_file}")
+                
+def extract_losses(file_path: str) -> tuple:
+    """
+    Extracts the loss values from a training log file.
+
+    Args:
+        file_path (str): Path to the log file containing training output.
+
+    Returns:
+        tuple: Two elements, a list of iteration numbers and a dictionary of loss types and their corresponding values.
+    """
+    # Define regex patterns to find iterations and loss values
+    iter_pattern = re.compile(r"iter: (\d+)")
+    loss_patterns = {
+        'total_loss': re.compile(r"total_loss: ([\d.]+)"),
+        'loss_cls': re.compile(r"loss_cls: ([\d.]+)"),
+        'loss_box_reg': re.compile(r"loss_box_reg: ([\d.]+)"),
+        'loss_rpn_cls': re.compile(r"loss_rpn_cls: ([\d.]+)"),
+        'loss_rpn_loc': re.compile(r"loss_rpn_loc: ([\d.]+)"),
+    }
+
+    # Dictionary to store the extracted values
+    losses = {key: [] for key in loss_patterns.keys()}
+    iterations = []
+
+    # Open and read the text file
+    with open(file_path, 'r') as file:
+        for line in file:
+            # Search and extract iteration
+            iter_match = iter_pattern.search(line)
+            if iter_match:
+                iterations.append(int(iter_match.group(1)))
+                # Search and extract each type of loss
+                for loss_key, loss_regex in loss_patterns.items():
+                    # Match the loss pattern in the line
+                    loss_match = loss_regex.search(line)
+                    if loss_match:
+                        # Append the loss value to the corresponding key in the dictionary
+                        losses[loss_key].append(float(loss_match.group(1)))
+    
+    return iterations, losses

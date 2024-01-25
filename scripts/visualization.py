@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict
 import math
+import random
 
 from detectron2.structures import BoxMode
 from detectron2.data.transforms import TransformList
@@ -125,7 +126,7 @@ def visualize_predictions(
     device: str = "cpu",
 ) -> None:
     """
-    Visualizes predictions on images from a specified dataset using a Detectron2 model.
+    Visualizes random predictions on images from a specified dataset using a Detectron2 model.
 
     Args:
         cfg_path (str): Path to the configuration file for the model.
@@ -133,7 +134,7 @@ def visualize_predictions(
         dataset_name (str): Name of the dataset to visualize (e.g., "val", "test").
         num_classes (int): Number of classes for the model.
         score_thresh (float): Score threshold for making predictions.
-        num_images (int): Number of images to visualize.
+        num_images (int): Number of images to visualize randomly.
         device (str): Computation device to use ('cpu' or 'cuda').
 
     Displays a grid of images with model predictions including bounding boxes, labels, and confidence scores.
@@ -165,6 +166,9 @@ def visualize_predictions(
     # Retrieve dataset dictionaries from the registered dataset
     dataset_dicts = DatasetCatalog.get(dataset_name)
 
+    # Randomly select images from the dataset
+    selected_dicts = random.sample(dataset_dicts, num_images)
+
     # Calculate grid size based on the number of images
     grid_size = math.ceil(math.sqrt(num_images))
 
@@ -172,7 +176,7 @@ def visualize_predictions(
     fig, axs = plt.subplots(grid_size, grid_size, figsize=(15, 15))
 
     # Visualize the specified number of images
-    for idx, d in enumerate(dataset_dicts[:num_images]):
+    for idx, d in enumerate(selected_dicts):
         # Read the image
         img = cv2.imread(d["file_name"])
 

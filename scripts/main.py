@@ -60,7 +60,7 @@ def main_worker():  # local_rank, config
         num_classes=num_classes,
         num_workers=num_workers,
         device=device,
-        freeze_backbone=unfreeze_backbone,
+        unfreeze_backbone=unfreeze_backbone,
         freeze_at_block=freeze_at_block,
         ims_per_batch=ims_per_batch,
         checkpoint_period=checkpoint_period,
@@ -77,13 +77,9 @@ def main_worker():  # local_rank, config
     os.makedirs(model_and_train_config.OUTPUT_DIR, exist_ok=True)
 
     # Check model defined config and output training mode
-    freeze_backbone_message = (
-        "The model is using pre-trained weights"
-        if not unfreeze_backbone
-        else f"The model is in fine-tuning mode, keeping frozen the weights till the {freeze_at_block} conv block"
-    )
+    freeze_backbone_message = "The model is using pre-trained weights" if not unfreeze_backbone else f"The model is in fine-tuning mode, keeping frozen the weights till the {freeze_at_block} conv block"
     print(freeze_backbone_message)
-
+    
     # Print output directory
     print(f"Output Directory: {output_dir}")
 
@@ -99,6 +95,7 @@ def main_worker():  # local_rank, config
         f"\nWarm-up iterations: {model_and_train_config.SOLVER.WARMUP_ITERS}"
         f"\nGamma: {model_and_train_config.SOLVER.GAMMA}"
     )
+
 
     # Initialize the trainer
     trainer = train.FaceTrainer(model_and_train_config)

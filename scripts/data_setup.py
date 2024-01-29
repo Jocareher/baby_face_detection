@@ -259,17 +259,18 @@ def get_color_augmentations() -> T.AugmentationList:
     )
 
 
-def dataset_mapper(dataset_dict: dict, target_size: int = 512) -> dict:
+def dataset_mapper(dataset_dict: dict, target_size: int = 512, is_training: bool = True) -> dict:
     """
     Maps and applies transformations to the dataset dictionary.
 
     This function reads an image from the dataset, applies color and shape augmentations,
     and processes the annotations accordingly. It is used to prepare the dataset for
-    training with augmented data.
+    training with augmented data, and to only perform resizing for test data.
 
     Args:
         dataset_dict (dict): A dictionary containing dataset information, including file names and annotations.
         target_size (int, optional): Target size for image resizing. Default is 512.
+        is_training (bool): Flag to indicate whether the mapper is used for training or inference.
 
     Returns:
         dict: The updated dataset dictionary with transformed images and annotations
@@ -290,18 +291,22 @@ def dataset_mapper(dataset_dict: dict, target_size: int = 512) -> dict:
     pil_image, scale_factor = resize_image(pil_image, target_size)
     image = np.array(pil_image)
 
-    # Apply color augmentations
-    color_aug_input = T.AugInput(image)
-    get_color_augmentations()(color_aug_input)
+    if is_training:
+        # Apply color augmentations if in training mode
+        color_aug_input = T.AugInput(image)
+        get_color_augmentations()(color_aug_input)
+        image = color_aug_input.image
 
-    # Apply shape augmentations and get the resulting transforms
-    image, image_transforms = T.apply_transform_gens(
-        get_shape_augmentations(), color_aug_input.image
-    )
-
-    # Convert the image to a PyTorch tensor and free memory
+        # Apply shape augmentations and get the resulting transforms
+        image, image_transforms = T.apply_transform_gens(
+            get_shape_augmentations(), image
+        )
+    else:
+        # No additional augmentations for inference
+        image_transforms = []
+        
+    # Convert the image to a PyTorch tensor
     dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
-    del image  # Free memory
 
     # Apply transformations to annotations, adjusting bbox for resizing
     annotations = [
@@ -310,10 +315,8 @@ def dataset_mapper(dataset_dict: dict, target_size: int = 512) -> dict:
         if obj.get("iscrowd", 0) == 0
     ]
 
-    # Convert the updated annotations to rotated instances
+    # Convert to rotated instances and filter out empty instances
     instances = utils.annotations_to_instances_rotated(annotations, pil_image.size)
-
-    # Filter out empty instances
     dataset_dict["instances"] = utils.filter_empty_instances(instances)
 
     return dataset_dict

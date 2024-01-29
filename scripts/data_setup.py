@@ -259,7 +259,9 @@ def get_color_augmentations() -> T.AugmentationList:
     )
 
 
-def dataset_mapper(dataset_dict: dict, target_size: int = 512, is_training: bool = True) -> dict:
+def dataset_mapper(
+    dataset_dict: dict, target_size: int = 512, is_training: bool = True
+) -> dict:
     """
     Maps and applies transformations to the dataset dictionary.
 
@@ -304,7 +306,7 @@ def dataset_mapper(dataset_dict: dict, target_size: int = 512, is_training: bool
     else:
         # No additional augmentations for inference
         image_transforms = []
-        
+
     # Convert the image to a PyTorch tensor
     dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
 

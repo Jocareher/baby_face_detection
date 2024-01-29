@@ -34,7 +34,7 @@ class FaceTrainer(DefaultTrainer):
         """
         # Instantiate the RotatedCOCOEvaluator
         evaluator = RotatedCOCOEvaluator(dataset_name, cfg, True, output_folder)
-        
+
         # Return a DatasetEvaluators object containing the list of evaluators
         return DatasetEvaluators([evaluator])
 

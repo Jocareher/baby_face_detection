@@ -1,0 +1,8 @@
+path: ../data
+
+train: 
+val:
+test:
+
+nc: 5
+names: ["3/4_left_sideview", "3/4_rigth_sideview", "Frontal", "Left_sideview", "Right_sideview"]

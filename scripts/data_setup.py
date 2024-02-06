@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from PIL import Image
 import re
+import math
 
 import os
 import json
@@ -679,3 +680,136 @@ def extract_losses(file_path: str) -> tuple:
                         losses[loss_key].append(float(loss_match.group(1)))
 
     return iterations, losses
+
+def calculate_rotated_bbox_for_yolo_v8(data: dict, normalize: bool = False) -> list[tuple]:
+    """
+    Calculate the absolute coordinates of the corners of a rotated bounding box or 
+    normalize them if required.
+    
+    This function takes the bounding box information and applies rotation to get the 
+    coordinates of the four corners after rotation. If normalization is required, it 
+    scales these coordinates to be between 0 and 1.
+
+    Args:
+    - data (dict): A dictionary containing the bounding box information.
+    - normalize (bool): A flag to indicate if the coordinates should be normalized.
+
+    Returns:
+    - list of tuples: A list containing tuples, each with the (x, y) coordinates 
+                        of a corner of the bounding box, either absolute or normalized.
+    """
+    # Convert percentages to absolute values if not normalizing
+    if not normalize:
+        width = data['width'] / 100 * data['original_width']
+        height = data['height'] / 100 * data['original_height']
+        top_left_x = data['x'] / 100 * data['original_width']
+        top_left_y = data['y'] / 100 * data['original_height']
+    else:
+        # If normalizing, use percentages as they are
+        width = data['width']
+        height = data['height']
+        top_left_x = data['x']
+        top_left_y = data['y']
+    
+    # Convert rotation angle to radians and adjust for clockwise rotation
+    angle_rad = math.radians(data['rotation'])
+
+    # Coordinates of the bounding box corners prior to rotation
+    corners = [(0, 0), (width, 0), (width, height), (0, height)]
+
+    # Rotate each corner around the top-left corner
+    rotated_corners = []
+    for x, y in corners:
+        # Apply the rotation matrix to each corner point
+        rotated_x = x * math.cos(angle_rad) - y * math.sin(angle_rad)
+        rotated_y = x * math.sin(angle_rad) + y * math.cos(angle_rad)
+        
+        # Translate the rotated points back by adding the coordinates of the top-left corner
+        # If normalizing, convert the coordinates to a scale from 0 to 1
+        if normalize:
+            rotated_corners.append(((rotated_x + top_left_x) / data['original_width'], 
+                                    (rotated_y + top_left_y) / data['original_height']))
+        else:
+            rotated_corners.append((rotated_x + top_left_x, rotated_y + top_left_y))
+
+    return rotated_corners
+
+def convert_annotations_to_yolo_obb(json_folder_path: str, output_folder_path: str, 
+                                    class_list: list, normalize: bool = False):
+    """
+    Convert rotated bounding box annotations from JSON files to YOLO OBB format and save to TXT files.
+    Optionally normalize the bounding box coordinates.
+
+    Args:
+    - json_folder_path (str): The path to the folder containing JSON annotation files.
+    - output_folder_path (str): The path to the folder where TXT files will be saved.
+    - class_list (list): A list of class names ordered according to their class index.
+    - normalize (bool): A flag to indicate if the coordinates should be normalized.
+
+    Outputs:
+    - TXT files containing the annotations in YOLO OBB format, saved to the destination folder.
+    """
+    # Create the destination folder if it does not exist
+    if not os.path.exists(output_folder_path):
+        os.makedirs(output_folder_path)
+    
+    # Loop through all the files in the json directory
+    for file_name in os.listdir(json_folder_path):
+        if file_name.endswith('.json'):
+            # Read the JSON file
+            with open(os.path.join(json_folder_path, file_name), 'r') as json_file:
+                data = json.load(json_file)
+            
+            # Prepare the content for the TXT file
+            txt_content = []
+            for annotation in data['label']:
+                # Calculate the rotated bounding box coordinates
+                corners = calculate_rotated_bbox_for_yolo_v8(annotation, normalize=normalize)
+                # Get the class index
+                class_index = class_list.index(annotation['rectanglelabels'][0])
+                # Convert coordinates to the YOLO OBB format, absolute or normalized
+                yolo_obb = [class_index] + [val for corner in corners for val in corner]
+                txt_content.append(' '.join(map(str, yolo_obb)))
+            
+            # Write the content to the corresponding TXT file
+            txt_file_name = os.path.splitext(data['image'].split('/')[-1])[0] + '.txt'
+            with open(os.path.join(output_folder_path, txt_file_name), 'w') as txt_file:
+                txt_file.write('\n'.join(txt_content))
+                
+def create_yolov8_pairs(root_directory: str) -> list[tuple]:
+    """
+    Traverse the 'images' and 'labels' subdirectories within the specified root directory.
+    Pair each image with its corresponding annotation file, if available.
+
+    Args:
+    - root_directory (str): The path to the root directory containing 'images' and 'labels' folders.
+
+    Returns:
+    - List of tuples: Each tuple contains the path to an image file and a list of annotation strings.
+    """
+    # Path to the subdirectory containing image files
+    images_dir = os.path.join(root_directory, 'images')
+    # Path to the subdirectory containing annotation files
+    labels_dir = os.path.join(root_directory, 'labels')
+
+    pairs = []
+    # Loop through all files in the images directory
+    for image_name in os.listdir(images_dir):
+        # Check if the file is a JPEG image
+        if image_name.endswith('.jpg'):
+            # Extract the base name without the file extension
+            base_name = os.path.splitext(image_name)[0]
+            # Construct the corresponding label file name
+            label_name = base_name + '.txt'
+            # Full paths to the image and label files
+            image_path = os.path.join(images_dir, image_name)
+            label_path = os.path.join(labels_dir, label_name)
+            
+            # Check if the annotation file exists
+            if os.path.exists(label_path):
+                # Read all lines from the annotation file
+                with open(label_path, 'r') as file:
+                    annotations = file.readlines()
+                # Append the image path and its annotations as a tuple to the pairs list
+                pairs.append((image_path, annotations))
+    return pairs

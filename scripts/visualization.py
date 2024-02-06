@@ -13,6 +13,8 @@ from detectron2 import model_zoo
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from PIL import Image
 
 from data_setup import convert_bbox_format
 
@@ -244,4 +246,81 @@ def plot_losses(iterations: list, losses: dict) -> None:
     # Display the legend to identify each loss type
     plt.legend()
     # Show the plot
+    plt.show()
+
+def draw_yolov8_annotations_on_images(pairs: list[tuple],
+                               class_list: list[str],
+                               num_images_to_display: int,
+                               show_labels: bool = True,
+                               show_axis: str = "on") -> None:
+    """
+    Draw annotations on images as polygons and display them in a grid.
+    Optionally include class labels aligned with the top edge of the bounding box.
+
+    Args:
+    - pairs (list of tuples): A list containing tuples of image paths and annotation data.
+    - class_list (list of str): A list of class names ordered by their corresponding class index.
+    - num_images_to_display (int): The number of images to display on the grid.
+    - show_labels (bool, optional): If True, display class labels. Default is True.
+    - show_axis (str, optional): Control the visibility of the axis. Default is "on".
+
+    Outputs:
+    - Displays a grid of images with the respective annotations.
+    """
+    # Select a random subset of image-annotation pairs
+    selected_pairs = random.sample(pairs, min(num_images_to_display, len(pairs)))
+    
+    # Determine the number of rows and columns for the grid based on the number of images
+    grid_cols = int(np.ceil(np.sqrt(num_images_to_display)))
+    grid_rows = int(np.ceil(num_images_to_display / grid_cols))
+    # Create a grid of subplots
+    fig, axs = plt.subplots(nrows=grid_rows, ncols=grid_cols, figsize=(15, 15))
+    axs = axs.flatten()  # Flatten to 1D array for easy indexing
+
+    # Loop through the axes and hide any that won't be used
+    for ax in axs[num_images_to_display:]:
+        ax.axis('off')
+
+    for idx, ax in enumerate(axs[:num_images_to_display]):
+        # Extract the image path and annotations for the current index from the selected pairs
+        image_path, annotation_data = selected_pairs[idx]
+        # Open the image file and display it on the current axis
+        img = Image.open(image_path)
+        ax.imshow(img)
+        
+        # Iterate over each annotation for the current image
+        for annotation in annotation_data:
+            # Extract the class index and convert it to the class name
+            class_index = int(annotation.split(' ')[0])
+            class_name = class_list[class_index]
+            # Parse the annotation coordinates and reshape them into a 2x4 matrix
+            points = list(map(float, annotation.strip().split(' ')[1:]))
+            points = np.array(points).reshape((4, 2))
+            
+            # Create a polygon patch from the annotation points and add it to the axis
+            poly = patches.Polygon(points, closed=True, fill=False, edgecolor='blue')
+            ax.add_patch(poly)
+            
+            # If labels should be shown, calculate the text properties and display it
+            if show_labels:
+                top_edge_vec = points[1] - points[0]  # Vector representing the top edge of the box
+                angle = np.arctan2(top_edge_vec[1], top_edge_vec[0])
+                
+                # Set the position for the label text at the midpoint of the top edge
+                label_pos = (points[0] + points[1]) / 2
+                text_x, text_y = label_pos
+                margin = 3  # Margin for the text position above the top edge
+                
+                # Adjust text position based on the orientation of the top edge
+                if top_edge_vec[0] < 0:  # If the edge is oriented to the left
+                    angle -= np.pi  # Adjust the angle to keep text orientation consistent
+
+                # The text is placed above the top edge, considering the margin
+                ax.text(text_x, text_y - margin, class_name, rotation=np.degrees(angle),
+                        color='red', fontsize=9, ha='center', va='bottom', rotation_mode='anchor')
+                
+        # Display axis on the images
+        ax.axis(show_axis)
+    
+    plt.tight_layout()
     plt.show()

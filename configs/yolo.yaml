@@ -1,8 +1,8 @@
 path: ../data
 
-train: 
-val:
-test:
+train: /Users/jocareher/Downloads/face_dataset/train/images
+val: /Users/jocareher/Downloads/face_dataset/val/images
+test: /Users/jocareher/Downloads/face_dataset/test/images
 
 nc: 5
 names: ["3/4_left_sideview", "3/4_rigth_sideview", "Frontal", "Left_sideview", "Right_sideview"]

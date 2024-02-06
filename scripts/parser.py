@@ -103,7 +103,10 @@ def parse_arguments():
         "--gamma", default=0.1, type=float, help="Gamma value for learning rate decay."
     )
     parser.add_argument(
-        "--eval_period", default=1000, type=int, help="Number of iteration where to evaluate the model"
+        "--eval_period",
+        default=1000,
+        type=int,
+        help="Number of iteration where to evaluate the model",
     )
 
     args = parser.parse_args()

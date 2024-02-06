@@ -102,6 +102,9 @@ def parse_arguments():
     parser.add_argument(
         "--gamma", default=0.1, type=float, help="Gamma value for learning rate decay."
     )
+    parser.add_argument(
+        "--eval_period", default=1000, type=int, help="Number of iteration where to evaluate the model"
+    )
 
     args = parser.parse_args()
 
@@ -125,6 +128,7 @@ def parse_arguments():
     config["TRAINING"]["batch_size_per_image"] = args.batch_size_per_image
     config["TRAINING"]["warm_steps"] = args.warm_steps
     config["TRAINING"]["gamma"] = args.gamma
+    config["TRAINING"]["eval_period"] = args.eval_period
 
     return config
 

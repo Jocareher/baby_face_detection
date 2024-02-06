@@ -25,6 +25,7 @@ def setup_cfg(
     batch_size_per_image: int,
     warm_steps: int,
     gamma: float,
+    eval_period: int
 ) -> CfgNode:
     """
     Sets up and returns a Detectron2 configuration for training a model with custom settings.
@@ -49,6 +50,7 @@ def setup_cfg(
         - batch_size_per_image (int): Batch size per image during ROI head computation.
         - warm_steps (int): Number of iterations for the warmup phase.
         - gamma (float): Factor for learning rate decay.
+        - eval_period (int): Period for evaluating the model on the validation set.
 
     Returns:
         CfgNode: Configured Detectron2 configuration object for training.
@@ -103,6 +105,9 @@ def setup_cfg(
         warm_steps  # Iterations for warmup phase at start of training
     )
     cfg.SOLVER.GAMMA = gamma  # Learning rate decay factor
+    
+    # Set the evaluation period
+    cfg.TEST.EVAL_PERIOD = eval_period
 
     # Additional configurations can be set here as needed
 

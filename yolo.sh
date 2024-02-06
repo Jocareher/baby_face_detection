@@ -16,7 +16,7 @@ module load Anaconda3/2020.02
 
 # Check if the Conda environment 'yolo' already exists
 if ! conda info --envs | grep -q yolo; then
-    echo "Creating conda environment 'detectron'"
+    echo "Creating conda environment 'yolo'"
     conda create -n yolo python=3.9 -y
 else
     echo "Conda environment 'yolo' already exists"

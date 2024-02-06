@@ -48,6 +48,7 @@ def main_worker():  # local_rank, config
     batch_size_per_image = config["TRAINING"]["batch_size_per_image"]
     warm_steps = config["TRAINING"]["warm_steps"]
     gamma = config["TRAINING"]["gamma"]
+    eval_perid = config["TRAINING"]["eval_perid"]
 
     # Set the model and training configuration
     model_and_train_config = engine.setup_cfg(
@@ -70,6 +71,7 @@ def main_worker():  # local_rank, config
         batch_size_per_image=batch_size_per_image,
         warm_steps=warm_steps,
         gamma=gamma,
+        eval_period=eval_perid
     )
 
     # if local_rank == 0:
@@ -112,14 +114,14 @@ def main_worker():  # local_rank, config
 
     # Evaluate the performance after the training
     # if local_rank == 0:  # Evaluate only on the main process
-    evaluator = train.FaceTrainer.build_evaluator(
-        model_and_train_config, model_and_train_config.DATASETS.TEST
-    )
-    val_loader = build_detection_test_loader(
-        model_and_train_config, model_and_train_config.DATASETS.TEST
-    )
-    metrics = inference_on_dataset(trainer.model, val_loader, evaluator)
-    print(metrics)
+    # evaluator = train.FaceTrainer.build_evaluator(
+    #     model_and_train_config, model_and_train_config.DATASETS.TEST
+    # )
+    # val_loader = build_detection_test_loader(
+    #     model_and_train_config, model_and_train_config.DATASETS.TEST
+    # )
+    # metrics = inference_on_dataset(trainer.model, val_loader, evaluator)
+    # print(metrics)
 
 
 # def main():

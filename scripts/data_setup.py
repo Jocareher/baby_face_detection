@@ -828,3 +828,49 @@ def create_yolov8_pairs(root_directory: str) -> list[tuple]:
                 # Append the image path and its annotations as a tuple to the pairs list
                 pairs.append((image_path, annotations))
     return pairs
+
+def normalize_annotations(labels_dir: str, target_size=(640, 640)):
+    """
+    Normalize annotations of oriented bounding boxes assuming images will be resized 
+    to a target input size when input to the YOLOv8 model. This version only requires 
+    the path to the labels directory.
+
+    Args:
+    - labels_dir (str): The path to the directory containing label files.
+    - target_size (tuple): The target size (width, height) for normalization.
+    """
+    # Create a directory for normalized labels if it doesn't exist
+    normalized_labels_dir = os.path.join(labels_dir, 'normalized_labels')
+    if not os.path.exists(normalized_labels_dir):
+        os.makedirs(normalized_labels_dir)
+
+    # Loop through each label file in the directory
+    for label_file in os.listdir(labels_dir):
+        if label_file.endswith('.txt'):
+            # Construct the path to the original and the new label file
+            label_path = os.path.join(labels_dir, label_file)
+            normalized_label_path = os.path.join(normalized_labels_dir, label_file)
+            
+            # Open and read the original label file
+            with open(label_path, 'r') as file:
+                annotations = file.readlines()
+
+            # List to store normalized annotations
+            normalized_annotations = []
+            for annotation in annotations:
+                parts = annotation.strip().split()
+                class_index = int(parts[0])  # Extract the class index
+                coords = list(map(float, parts[1:]))  # Extract and convert coordinates to float
+                
+                # Normalize each coordinate
+                normalized_coords = [
+                    coord / target_size[i % 2] for i, coord in enumerate(coords)
+                ]
+                
+                # Construct the normalized annotation line
+                normalized_line = f"{class_index} " + ' '.join(f"{coord}" for coord in normalized_coords)
+                normalized_annotations.append(normalized_line)
+            
+            # Write the normalized annotations to a new file in the normalized_labels directory
+            with open(normalized_label_path, 'w') as file:
+                file.write('\n'.join(normalized_annotations))

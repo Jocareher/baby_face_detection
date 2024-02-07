@@ -71,7 +71,7 @@ def main_worker():  # local_rank, config
         batch_size_per_image=batch_size_per_image,
         warm_steps=warm_steps,
         gamma=gamma,
-        eval_period=eval_perid
+        eval_period=eval_perid,
     )
 
     # if local_rank == 0:

@@ -683,18 +683,23 @@ def extract_losses(file_path: str) -> tuple:
     return iterations, losses
 
 
-def calculate_rotated_bbox_for_yolo_v8(data: dict, original_size: bool = False, image_resize: tuple = (640, 640), output_format: str = "absolute") -> list[tuple]:
+def calculate_rotated_bbox_for_yolo_v8(
+    data: dict,
+    original_size: bool = False,
+    image_resize: tuple = (640, 640),
+    output_format: str = "absolute",
+) -> list[tuple]:
     """
     Calculate the coordinates of the corners of a rotated bounding box based on Label Studio's annotation method,
     where rotation is around the top-left corner. Supports output in absolute coordinates, normalized relative to
     the original image size, or normalized relative to a resized image dimension.
-    
+
     Args:
     - data (dict): Dictionary containing normalized bounding box information and rotation.
     - original_size (bool): Whether to use the original image dimensions.
     - image_resize (tuple): Resize dimensions (width, height), used if original_size is False.
     - output_format (str): Specifies the output format ("absolute", "normalized_original", "normalized_resized").
-    
+
     Returns:
     - list of tuple: Coordinates of bounding box corners in the requested format.
     """
@@ -703,13 +708,13 @@ def calculate_rotated_bbox_for_yolo_v8(data: dict, original_size: bool = False, 
     height_factor = data["original_height"] if original_size else image_resize[1]
 
     # Convert normalized dimensions to absolute or normalized based on the chosen factors.
-    width = data['width'] / 100 * width_factor
-    height = data['height'] / 100 * height_factor
-    top_left_x = data['x'] / 100 * width_factor
-    top_left_y = data['y'] / 100 * height_factor
-    
+    width = data["width"] / 100 * width_factor
+    height = data["height"] / 100 * height_factor
+    top_left_x = data["x"] / 100 * width_factor
+    top_left_y = data["y"] / 100 * height_factor
+
     # Convert rotation angle to radians.
-    angle_rad = math.radians(data['rotation'])
+    angle_rad = math.radians(data["rotation"])
 
     # Define corners based on top-left reference for rotation.
     corners = [(0, 0), (width, 0), (width, height), (0, height)]
@@ -717,7 +722,7 @@ def calculate_rotated_bbox_for_yolo_v8(data: dict, original_size: bool = False, 
     # Rotate each corner around the top-left corner
     rotated_corners = []
     for x, y in corners:
-        # Apply the rotation matrix to each corner point. 
+        # Apply the rotation matrix to each corner point.
         # For a point (x, y) and a rotation angle theta, the new position (rotated_x, rotated_y) is calculated as follows:
         # rotated_x = x * cos(theta) - y * sin(theta)
         # rotated_y = x * sin(theta) + y * cos(theta)
@@ -726,7 +731,7 @@ def calculate_rotated_bbox_for_yolo_v8(data: dict, original_size: bool = False, 
         # So we need to translate the rotated points back by adding the absolute coordinates of the top-left corner.
         rotated_x = (x * math.cos(angle_rad) - y * math.sin(angle_rad)) + top_left_x
         rotated_y = (x * math.sin(angle_rad) + y * math.cos(angle_rad)) + top_left_y
-        
+
         # Adjust coordinates based on the output format.
         if output_format in ["normalized_original", "normalized_resized"]:
             rotated_x /= width_factor
@@ -737,13 +742,17 @@ def calculate_rotated_bbox_for_yolo_v8(data: dict, original_size: bool = False, 
     return rotated_corners
 
 
-def convert_annotations_to_yolo_obb(json_folder_path: str, output_folder_path: str, 
-                                    class_list: list, original_size: bool = False, 
-                                    image_resize: tuple = (640, 640),
-                                    output_format: str = "absolute"):
+def convert_annotations_to_yolo_obb(
+    json_folder_path: str,
+    output_folder_path: str,
+    class_list: list,
+    original_size: bool = False,
+    image_resize: tuple = (640, 640),
+    output_format: str = "absolute",
+):
     """
     Convert rotated bounding box annotations from JSON files to YOLO OBB format and save to TXT files.
-    
+
     This function processes each JSON file in the specified directory, converts the annotation data
     to the YOLO OBB format, and writes the converted data to a corresponding TXT file in the output folder.
 
@@ -752,7 +761,7 @@ def convert_annotations_to_yolo_obb(json_folder_path: str, output_folder_path: s
     - output_folder_path (str): The path to the folder where TXT files will be saved.
     - class_list (list): A list of class names ordered according to their class index.
     - original_size (bool): Flag indicating whether to use the original image dimensions for calculations.
-    - image_resize (tuple): The dimensions (width, height) to which the image has been resized. 
+    - image_resize (tuple): The dimensions (width, height) to which the image has been resized.
                             This is used if original_size is False.
     - output_format (str): Specifies the output format ("absolute", "normalized_original", "normalized_resized").
 
@@ -762,29 +771,31 @@ def convert_annotations_to_yolo_obb(json_folder_path: str, output_folder_path: s
     # Create the destination folder if it does not exist
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
-    
+
     # Loop through all the files in the json directory
     for file_name in os.listdir(json_folder_path):
-        if file_name.endswith('.json'):
+        if file_name.endswith(".json"):
             # Read the JSON file
-            with open(os.path.join(json_folder_path, file_name), 'r') as json_file:
+            with open(os.path.join(json_folder_path, file_name), "r") as json_file:
                 data = json.load(json_file)
-            
+
             # Prepare the content for the TXT file
             txt_content = []
-            for annotation in data['label']:
+            for annotation in data["label"]:
                 # Calculate the rotated bounding box coordinates
-                corners = calculate_rotated_bbox_for_yolo_v8(annotation, original_size, image_resize, output_format)
+                corners = calculate_rotated_bbox_for_yolo_v8(
+                    annotation, original_size, image_resize, output_format
+                )
                 # Get the class index
-                class_index = class_list.index(annotation['rectanglelabels'][0])
+                class_index = class_list.index(annotation["rectanglelabels"][0])
                 # Convert coordinates to the YOLO OBB format, absolute or normalized
                 yolo_obb = [class_index] + [val for corner in corners for val in corner]
-                txt_content.append(' '.join(map(str, yolo_obb)))
-            
+                txt_content.append(" ".join(map(str, yolo_obb)))
+
             # Write the content to the corresponding TXT file
-            txt_file_name = os.path.splitext(data['image'].split('/')[-1])[0] + '.txt'
-            with open(os.path.join(output_folder_path, txt_file_name), 'w') as txt_file:
-                txt_file.write('\n'.join(txt_content))
+            txt_file_name = os.path.splitext(data["image"].split("/")[-1])[0] + ".txt"
+            with open(os.path.join(output_folder_path, txt_file_name), "w") as txt_file:
+                txt_file.write("\n".join(txt_content))
 
 
 def create_yolov8_pairs(root_directory: str) -> list[tuple]:

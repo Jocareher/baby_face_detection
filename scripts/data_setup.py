@@ -886,11 +886,14 @@ def normalize_annotations(labels_dir: str, target_size=(640, 640)):
             # Write the normalized annotations to a new file in the normalized_labels directory
             with open(normalized_label_path, "w") as file:
                 file.write("\n".join(normalized_annotations))
-                
-def resize_and_save_images(input_path: str, output_path: str, target_size: tuple = (640, 640)):
+
+
+def resize_and_save_images(
+    input_path: str, output_path: str, target_size: tuple = (640, 640)
+):
     """
     Resize all image files in the input_path to the target_size and save them to output_path.
-    
+
     Args:
         - input_path: Path to the folder containing images to resize.
         - output_path: Path to the folder where resized images will be saved.
@@ -899,16 +902,20 @@ def resize_and_save_images(input_path: str, output_path: str, target_size: tuple
     # Check if output directory exists, if not, create it
     if not os.path.exists(output_path):
         os.makedirs(output_path)
-    
+
     # List all image files in the input directory
     image_files = glob.glob(os.path.join(input_path, "*"))
-    image_files = [file for file in image_files if file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif'))]
-    
+    image_files = [
+        file
+        for file in image_files
+        if file.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif"))
+    ]
+
     for image_file in image_files:
         with Image.open(image_file) as img:
             # Resize image
             resized_img = img.resize(target_size, Image.Resampling.LANCZOS)
-            
+
             # Save resized image to the output directory
             # Extract filename and extension to construct the output filename
             filename = os.path.basename(image_file)

@@ -7,15 +7,19 @@ import cv2
 import torch
 import numpy as np
 from PIL import Image
+from sklearn.model_selection import train_test_split
+
 import re
 import math
-
 import os
 import json
 import glob
 import hashlib
 from typing import List, Tuple, Dict
 from pathlib import Path
+import shutil
+
+from collections import defaultdict
 
 
 def create_data_pairs(
@@ -1045,3 +1049,97 @@ def count_images_per_label_from_metadata(metadata: str) -> dict:
         sorted_label_counts[label]["images"].sort()
 
     return sorted_label_counts
+
+def create_directory_structure(base_dir: str, destination: str) -> None:
+    """
+    Creates a directory structure for training, validation, and test sets within a specified destination.
+    Each set will have 'images' and 'labels' subdirectories.
+
+    Args:
+    - base_dir (str): The base directory from which to create the structure. (not used in function but may be needed for extended functionality)
+    - destination (str): The destination directory where the train, val, and test directories are created.
+    """
+    # Iterate through the set names and create directories
+    for set_name in ['train', 'val', 'test']:
+        # Create 'images' subdirectory for each set
+        os.makedirs(os.path.join(destination, set_name, 'images'), exist_ok=True)
+        # Create 'labels' subdirectory for each set
+        os.makedirs(os.path.join(destination, set_name, 'labels'), exist_ok=True)
+
+def read_and_split_dataset(root_path: str, train_size=0.8, val_size=0.1, test_size=0.1) -> tuple:
+    """
+    Reads the dataset from the root directory and splits it into training, validation, and test sets according to the specified proportions.
+
+    Args:
+    - root_path (str): The root directory containing 'images' and 'labels' folders.
+    - train_size (float): Proportion of the dataset to include in the train split.
+    - val_size (float): Proportion of the dataset to include in the validation split.
+    - test_size (float): Proportion of the dataset to include in the test split.
+
+    Returns:
+    - tuple: Three tuples containing the paths to the images and labels for the train, validation, and test sets.
+    """
+    # Paths to 'images' and 'labels' directories
+    path_images = os.path.join(root_path, 'images')
+    path_labels = os.path.join(root_path, 'labels')
+    
+    data = []
+    # Iterate through label files and match them with images
+    for label_file in os.listdir(path_labels):
+        # Extract base name without extension
+        base_name = os.path.splitext(label_file)[0]
+        # Construct image path with .jpg extension
+        image_path = os.path.join(path_images, base_name + '.jpg')
+        # Try with .JPG if .jpg does not exist
+        if not os.path.isfile(image_path):
+            image_path = os.path.join(path_images, base_name + '.JPG')
+        # If image file exists, append it with its label to data list
+        if os.path.isfile(image_path):
+            data.append((image_path, os.path.join(path_labels, label_file)))
+    
+    # Ensure the sum of sizes equals 1
+    if train_size + val_size + test_size != 1:
+        raise ValueError("The sum of train_size, val_size, and test_size must be 1")
+
+    # Split data into training and the rest; then split the rest into validation and test
+    train, temp = train_test_split(data, test_size=(val_size + test_size), random_state=42)
+    val, test = train_test_split(temp, test_size=test_size / (val_size + test_size), random_state=42)
+    
+    return train, val, test
+
+def move_files(data: list, destination: str) -> None:
+    """
+    Copies image and label files to their respective destination directories.
+
+    Args:
+    - data (list): A list of tuples containing paths to images and their corresponding label files.
+    - destination (str): The destination directory where the files are copied.
+    """
+    # Iterate through the data and copy each image and label to the destination
+    for img_path, label_path in data:
+        # Determine destination paths for image and label
+        img_dest_path = os.path.join(destination, 'images', os.path.basename(img_path))
+        label_dest_path = os.path.join(destination, 'labels', os.path.basename(label_path))
+        
+        # Copy image and label to the destination
+        shutil.copy(img_path, img_dest_path)
+        shutil.copy(label_path, label_dest_path)
+
+def distribute_dataset(root_path: str, destination: str) -> None:
+    """
+    Distributes the dataset into training, validation, and test sets and copies the files to the respective directories.
+
+    Args:
+    - root_path (str): The root directory containing the original dataset.
+    - destination (str): The base directory where the distributed dataset will be copied.
+    """
+    # Create directory structure in the destination
+    create_directory_structure(root_path, destination)
+    
+    # Read and split the dataset
+    train, val, test = read_and_split_dataset(root_path)
+    
+    # Move files to their respective directories
+    move_files(train, os.path.join(destination, 'train'))
+    move_files(val, os.path.join(destination, 'val'))
+    move_files(test, os.path.join(destination, 'test'))

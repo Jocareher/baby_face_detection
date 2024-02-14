@@ -993,25 +993,26 @@ def check_json_structure(json_folder_path: str) -> list:
 
     return missing_label_files
 
+
 def count_images_per_label_from_metadata(metadata: str) -> dict:
     """
-    Counts the number of images per label from a JSON file containing annotations. It returns a dictionary where 
-    each key is a label accompanied by a tuple containing the count of images and the names of the images. The 
+    Counts the number of images per label from a JSON file containing annotations. It returns a dictionary where
+    each key is a label accompanied by a tuple containing the count of images and the names of the images. The
     dictionary is sorted by label name, and the image names are also sorted alphabetically.
 
     Args:
     - metadata (str): Path to the JSON file containing the annotations.
 
     Returns:
-    - dict: A dictionary with labels as keys. Each key maps to a dictionary that contains the count of images 
+    - dict: A dictionary with labels as keys. Each key maps to a dictionary that contains the count of images
         under 'count' key and a list of image names under 'images' key, both sorted by label name.
     """
-    
+
     # Initialize a defaultdict to keep count and list of image names per label
     label_counts = defaultdict(lambda: {"count": 0, "images": []})
 
     # Open and read the JSON file
-    with open(metadata, 'r') as file:
+    with open(metadata, "r") as file:
         json_data = json.load(file)
 
     # Iterate over each item in the JSON data if it's a list
@@ -1021,7 +1022,7 @@ def count_images_per_label_from_metadata(metadata: str) -> dict:
             image_name = annotation.get("image", "").split("/")[-1]
 
             # Check if 'label' key exists and is not empty
-            if 'label' in annotation and annotation['label']:
+            if "label" in annotation and annotation["label"]:
                 # Assuming label structure matches provided example
                 for label_info in annotation["label"]:
                     labels = label_info.get("rectanglelabels", [])
@@ -1035,7 +1036,9 @@ def count_images_per_label_from_metadata(metadata: str) -> dict:
     label_counts = dict(label_counts)
 
     # Sort the dictionary by label name
-    sorted_label_counts = {k: v for k, v in sorted(label_counts.items(), key=lambda item: item[0])}
+    sorted_label_counts = {
+        k: v for k, v in sorted(label_counts.items(), key=lambda item: item[0])
+    }
 
     # Sort image names for each label
     for label in sorted_label_counts:

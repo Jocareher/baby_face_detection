@@ -962,3 +962,32 @@ def rename_files_in_folder(dir_path: str, new_name_base: str):
         counter += 1
 
     print("All files have been successfully renamed.")
+    
+def check_json_structure(json_folder_path: str) -> list:
+    """
+    Check each JSON file in the specified folder for the presence of the 'label' key.
+    
+    Args:
+    - json_folder_path (str): The path to the folder containing JSON files.
+    
+    Returns:
+    - list: A list of file names that are missing the 'label' key.
+    """
+    missing_label_files = []
+    
+    # Loop through all the files in the specified folder
+    for file_name in os.listdir(json_folder_path):
+        if file_name.endswith('.json'):
+            # Construct file path
+            file_path = os.path.join(json_folder_path, file_name)
+            # Read the JSON file
+            try:
+                with open(file_path, 'r') as json_file:
+                    data = json.load(json_file)
+                # Check if 'label' key is present
+                if 'label' not in data:
+                    missing_label_files.append(file_name)
+            except Exception as e:
+                print(f"Error reading {file_name}: {e}")
+                
+    return missing_label_files

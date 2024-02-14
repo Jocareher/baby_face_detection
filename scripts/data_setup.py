@@ -923,19 +923,20 @@ def resize_and_save_images(
             resized_img.save(output_file)
 
             print(f"Resized and saved {filename} to {output_path}")
-            
+
+
 def rename_files_in_folder(dir_path: str, new_name_base: str):
     """
     Renames all files in the specified directory to a new name followed by a sequential number.
-    
+
     Args:
         - dir_path (str): Path to the directory containing the files to be renamed.
         - new_name_base (str): Base for the new file names.
-    
+
     Returns:
         - None
     """
-    
+
     # Initialize the counter
     counter = 0
 
@@ -949,14 +950,14 @@ def rename_files_in_folder(dir_path: str, new_name_base: str):
     for file in files:
         # Construct the new file name with the counter, maintaining the file's original extension
         new_name = f"{new_name_base}{counter:02d}{os.path.splitext(file)[1]}"
-        
+
         # Build the full path to the original and new file
         original_path = os.path.join(dir_path, file)
         new_path = os.path.join(dir_path, new_name)
-        
+
         # Rename the file
         os.rename(original_path, new_path)
-        
+
         # Increment the counter for the next file
         counter += 1
 

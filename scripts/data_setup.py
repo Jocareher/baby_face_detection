@@ -1156,6 +1156,7 @@ def distribute_dataset(root_path: str, destination: str) -> None:
     move_files(val, os.path.join(destination, "val"))
     move_files(test, os.path.join(destination, "test"))
 
+
 def count_labels_per_class_and_set(root_path: str) -> None:
     """
     Counts the number of labels per class across different dataset sets (train, val, test) and prints the counts.
@@ -1174,31 +1175,31 @@ def count_labels_per_class_and_set(root_path: str) -> None:
         1: "3/4_right_sideview",
         2: "Frontal",
         3: "Left_sideview",
-        4: "Right_sideview"
+        4: "Right_sideview",
     }
-    
+
     # Define subdirectories to explore
-    subdirectories = ['train', 'val', 'test']
-    
+    subdirectories = ["train", "val", "test"]
+
     # Iterate through each subdirectory
     for subdirectory in subdirectories:
-        path_labels = os.path.join(root_path, subdirectory, 'labels')
+        path_labels = os.path.join(root_path, subdirectory, "labels")
         # Dictionary to count occurrences of each class in the current subdirectory
         class_counts = defaultdict(int)
-        
+
         # List all .txt files in the labels subdirectory
-        label_files = [f for f in os.listdir(path_labels) if f.endswith('.txt')]
-        
+        label_files = [f for f in os.listdir(path_labels) if f.endswith(".txt")]
+
         # Read each file and count the labels
         for file in label_files:
-            with open(os.path.join(path_labels, file), 'r') as f:
+            with open(os.path.join(path_labels, file), "r") as f:
                 for line in f:
                     # Ensure the line is not empty
                     data = line.strip().split()
                     if data:
                         class_index = int(data[0])
                         class_counts[class_index] += 1
-        
+
         # Print the count of labels per class for the current subdirectory in the specified order
         print(f"Label count for the {subdirectory} set:")
         for class_index in sorted(class_names.keys()):

@@ -1155,3 +1155,54 @@ def distribute_dataset(root_path: str, destination: str) -> None:
     move_files(train, os.path.join(destination, "train"))
     move_files(val, os.path.join(destination, "val"))
     move_files(test, os.path.join(destination, "test"))
+
+def count_labels_per_class_and_set(root_path: str) -> None:
+    """
+    Counts the number of labels per class across different dataset sets (train, val, test) and prints the counts.
+    The function assumes that each set contains a 'labels' directory with text files, each line of which represents
+    an annotation for an image in the format: class_index x1 y1 x2 y2 x3 y3 x4 y4.
+
+    Args:
+    - root_path (str): The root directory containing 'train', 'val', and 'test' subdirectories.
+
+    Each subdirectory should have a 'labels' folder with .txt files for annotations. The function maps class indices
+    to class names and prints the count of labels for each class within each dataset set.
+    """
+    # Mapping of class indices to their names for printing
+    class_names = {
+        0: "3/4_left_sideview",
+        1: "3/4_right_sideview",
+        2: "Frontal",
+        3: "Left_sideview",
+        4: "Right_sideview"
+    }
+    
+    # Define subdirectories to explore
+    subdirectories = ['train', 'val', 'test']
+    
+    # Iterate through each subdirectory
+    for subdirectory in subdirectories:
+        path_labels = os.path.join(root_path, subdirectory, 'labels')
+        # Dictionary to count occurrences of each class in the current subdirectory
+        class_counts = defaultdict(int)
+        
+        # List all .txt files in the labels subdirectory
+        label_files = [f for f in os.listdir(path_labels) if f.endswith('.txt')]
+        
+        # Read each file and count the labels
+        for file in label_files:
+            with open(os.path.join(path_labels, file), 'r') as f:
+                for line in f:
+                    # Ensure the line is not empty
+                    data = line.strip().split()
+                    if data:
+                        class_index = int(data[0])
+                        class_counts[class_index] += 1
+        
+        # Print the count of labels per class for the current subdirectory in the specified order
+        print(f"Label count for the {subdirectory} set:")
+        for class_index in sorted(class_names.keys()):
+            class_name = class_names[class_index]
+            count = class_counts[class_index]
+            print(f"  {class_name}: {count}")
+        print("")  # Blank line to separate the sets

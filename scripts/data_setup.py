@@ -1207,16 +1207,17 @@ def count_labels_per_class_and_set(root_path: str) -> None:
             count = class_counts[class_index]
             print(f"  {class_name}: {count}")
         print("")  # Blank line to separate the sets
-        
+
+
 def flip_coordinates(labels: List[str]) -> List[str]:
     """
     Updates the class and coordinates of a YOLO label after a horizontal flip of the image.
 
-    Parameters:
-    - labels: List of strings, where the first element is the class index, and the following eight are coordinates.
+    Args:
+        - labels: List of strings, where the first element is the class index, and the following eight are coordinates.
 
     Returns:
-    - List of strings updated with the flipped class and modified coordinates.
+        - List of strings updated with the flipped class and modified coordinates.
     """
     # Update class
     class_id = int(labels[0])
@@ -1225,50 +1226,67 @@ def flip_coordinates(labels: List[str]) -> List[str]:
         labels[0] = str(1 - class_id)
     elif class_id in [3, 4]:
         labels[0] = str(7 - class_id)
-    
+
     # Update coordinates
     coords = np.array(labels[1:], dtype=float).reshape(4, 2)
     coords[:, 0] = 1 - coords[:, 0]  # Reflect the x coordinates
-    coords = coords[[1, 0, 3, 2], :]  # Reorder points to maintain bounding box consistency
-    
+    coords = coords[
+        [1, 0, 3, 2], :
+    ]  # Reorder points to maintain bounding box consistency
+
     return [labels[0]] + coords.flatten().tolist()
+
 
 def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
     """
     Processes a directory of images and labels, applying a horizontal flip to images with a single annotation
     of certain classes and updating their labels accordingly.
 
-    Parameters:
-    - root_dir: Root directory containing 'images' and 'labels' folders.
-    - output_dir: Output directory where the modified images and labels will be saved.
+    Args:
+        - root_dir: Root directory containing 'images' and 'labels' folders.
+        - output_dir: Output directory where the modified images and labels will be saved.
     """
-    images_dir = os.path.join(root_dir, 'images')
-    labels_dir = os.path.join(root_dir, 'labels')
-    
+    images_dir = os.path.join(root_dir, "images")
+    labels_dir = os.path.join(root_dir, "labels")
+
     # Create output directories if they do not exist
-    os.makedirs(os.path.join(output_dir, 'images'), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, 'labels'), exist_ok=True)
-    
+    os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "labels"), exist_ok=True)
+
     for filename in os.listdir(images_dir):
-        if filename.endswith('.jpg'):  # Ensure only .jpg images are processed
+        if filename.endswith(".jpg"):  # Ensure only .jpg images are processed
             image_path = os.path.join(images_dir, filename)
-            label_path = os.path.join(labels_dir, filename.replace('.jpg', '.txt'))
-            
-            with open(label_path, 'r') as file:
+            label_path = os.path.join(labels_dir, filename.replace(".jpg", ".txt"))
+
+            with open(label_path, "r") as file:
                 labels = file.readlines()
-            
+
             if len(labels) == 1:  # Process only if there is a single annotation
                 label = labels[0].strip().split()
-                if int(label[0]) in [0, 1, 3, 4]:  # Check if the annotation is of an interested class
+                if int(label[0]) in [
+                    0,
+                    1,
+                    3,
+                    4,
+                ]:  # Check if the annotation is of an interested class
                     image = Image.open(image_path)
-                    flipped_image = image.transpose(Image.FLIP_LEFT_RIGHT)  # Apply horizontal flip
-                    
+                    flipped_image = image.transpose(
+                        Image.FLIP_LEFT_RIGHT
+                    )  # Apply horizontal flip
+
                     new_label = flip_coordinates(label)  # Update label
-                    
+
                     # Construct filename with 'flip_' prefix
                     new_filename = f"flip_{filename}"
-                    flipped_image.save(os.path.join(output_dir, 'images', new_filename))  # Save modified image
-                    
-                    new_label_str = ' '.join(map(str, new_label))
-                    with open(os.path.join(output_dir, 'labels', new_filename.replace('.jpg', '.txt')), 'w') as f:
+                    flipped_image.save(
+                        os.path.join(output_dir, "images", new_filename)
+                    )  # Save modified image
+
+                    new_label_str = " ".join(map(str, new_label))
+                    with open(
+                        os.path.join(
+                            output_dir, "labels", new_filename.replace(".jpg", ".txt")
+                        ),
+                        "w",
+                    ) as f:
                         f.write(new_label_str)  # Save modified label

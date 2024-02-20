@@ -341,8 +341,11 @@ def draw_yolov8_annotations_on_images(
 
     plt.tight_layout()
     plt.show()
-    
-def plot_images_with_labels_and_obboxes(root_dir: str, output_dir: str, line_thickness: int = 5, font_size: int = 14):
+
+
+def plot_images_with_labels_and_obboxes(
+    root_dir: str, output_dir: str, line_thickness: int = 5, font_size: int = 14
+):
     """
     Processes all images in a directory, draws oriented bounding boxes and the class index with specified line thickness and font size,
     and saves the resulting images using matplotlib.
@@ -353,8 +356,8 @@ def plot_images_with_labels_and_obboxes(root_dir: str, output_dir: str, line_thi
     - line_thickness (int): Line thickness of the bounding boxes.
     - font_size (int): Font size for the class text.
     """
-    images_dir = os.path.join(root_dir, 'images')
-    labels_dir = os.path.join(root_dir, 'labels')
+    images_dir = os.path.join(root_dir, "images")
+    labels_dir = os.path.join(root_dir, "labels")
 
     # Create the output directory if it doesn't exist
     if not os.path.exists(output_dir):
@@ -373,10 +376,10 @@ def plot_images_with_labels_and_obboxes(root_dir: str, output_dir: str, line_thi
 
         # Check if there is a corresponding label file
         base_name = os.path.splitext(image_name)[0]
-        bbox_path = os.path.join(labels_dir, base_name + '.txt')
+        bbox_path = os.path.join(labels_dir, base_name + ".txt")
 
         if os.path.exists(bbox_path):
-            with open(bbox_path, 'r') as file:
+            with open(bbox_path, "r") as file:
                 for line in file:
                     # Parse bounding box data from the label file
                     bbox_data = line.strip().split()
@@ -384,29 +387,46 @@ def plot_images_with_labels_and_obboxes(root_dir: str, output_dir: str, line_thi
                     class_index = bbox_data[0]
                     # Convert normalized coordinates to absolute
                     coordinates = [float(coord) for coord in bbox_data[1:]]
-                    absolute_coordinates = [(coordinates[i] * width, coordinates[i + 1] * height) for i in range(0, len(coordinates), 2)]
+                    absolute_coordinates = [
+                        (coordinates[i] * width, coordinates[i + 1] * height)
+                        for i in range(0, len(coordinates), 2)
+                    ]
 
                     # Create a polygon for the bbox and add it to the axis
-                    polygon = patches.Polygon(absolute_coordinates, closed=True, linewidth=line_thickness, edgecolor='red', facecolor='none')
+                    polygon = patches.Polygon(
+                        absolute_coordinates,
+                        closed=True,
+                        linewidth=line_thickness,
+                        edgecolor="red",
+                        facecolor="none",
+                    )
                     ax.add_patch(polygon)
 
                     # Draw the class index on the image
                     label_x, label_y = absolute_coordinates[0]
                     # Add class index text near the bounding box
-                    ax.text(label_x, label_y, class_index, verticalalignment='top', color='green', fontsize=font_size, weight='bold')
+                    ax.text(
+                        label_x,
+                        label_y,
+                        class_index,
+                        verticalalignment="top",
+                        color="green",
+                        fontsize=font_size,
+                        weight="bold",
+                    )
 
         # Save the resulting image
         output_image_path = os.path.join(output_dir, image_name)
         # Remove axes and margins before saving
-        plt.axis('off')
+        plt.axis("off")
         plt.gca().set_axis_off()
         plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
         plt.margins(0, 0)
         plt.gca().xaxis.set_major_locator(plt.NullLocator())
         plt.gca().yaxis.set_major_locator(plt.NullLocator())
         # Save the image with tight bounding box and no padding
-        plt.savefig(output_image_path, bbox_inches='tight', pad_inches=0)
+        plt.savefig(output_image_path, bbox_inches="tight", pad_inches=0)
         # Close the plot to free memory
         plt.close()
 
-    print(f'All images have been processed and saved in {output_dir}')
+    print(f"All images have been processed and saved in {output_dir}")

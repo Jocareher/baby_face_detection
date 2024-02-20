@@ -1242,51 +1242,41 @@ def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
     Processes a directory of images and labels, applying a horizontal flip to images with a single annotation
     of certain classes and updating their labels accordingly.
 
-    Args:
-        - root_dir: Root directory containing 'images' and 'labels' folders.
-        - output_dir: Output directory where the modified images and labels will be saved.
+    Parameters:
+    - root_dir: Root directory containing 'images' and 'labels' folders.
+    - output_dir: Output directory where the modified images and labels will be saved.
     """
-    images_dir = os.path.join(root_dir, "images")
-    labels_dir = os.path.join(root_dir, "labels")
-
+    images_dir = os.path.join(root_dir, 'images')
+    labels_dir = os.path.join(root_dir, 'labels')
+    
     # Create output directories if they do not exist
-    os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "labels"), exist_ok=True)
-
+    os.makedirs(os.path.join(output_dir, 'images'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'labels'), exist_ok=True)
+    
     for filename in os.listdir(images_dir):
-        if filename.endswith(".jpg"):  # Ensure only .jpg images are processed
+        if filename.endswith('.jpg'):  # Ensure only .jpg images are processed
             image_path = os.path.join(images_dir, filename)
-            label_path = os.path.join(labels_dir, filename.replace(".jpg", ".txt"))
-
-            with open(label_path, "r") as file:
+            label_path = os.path.join(labels_dir, filename.replace('.jpg', '.txt'))
+            
+            if not os.path.exists(label_path):  # Skip images without a corresponding label file
+                continue  # Move to the next image in the directory
+            
+            # Read and process label
+            with open(label_path, 'r') as file:
                 labels = file.readlines()
-
+            
             if len(labels) == 1:  # Process only if there is a single annotation
                 label = labels[0].strip().split()
-                if int(label[0]) in [
-                    0,
-                    1,
-                    3,
-                    4,
-                ]:  # Check if the annotation is of an interested class
+                if int(label[0]) in [0, 1, 3, 4]:  # Check if the annotation is of an interested class
                     image = Image.open(image_path)
-                    flipped_image = image.transpose(
-                        Image.FLIP_LEFT_RIGHT
-                    )  # Apply horizontal flip
-
+                    flipped_image = image.transpose(Image.FLIP_LEFT_RIGHT)  # Apply horizontal flip
+                    
                     new_label = flip_coordinates(label)  # Update label
-
+                    
                     # Construct filename with 'flip_' prefix
                     new_filename = f"flip_{filename}"
-                    flipped_image.save(
-                        os.path.join(output_dir, "images", new_filename)
-                    )  # Save modified image
-
-                    new_label_str = " ".join(map(str, new_label))
-                    with open(
-                        os.path.join(
-                            output_dir, "labels", new_filename.replace(".jpg", ".txt")
-                        ),
-                        "w",
-                    ) as f:
+                    flipped_image.save(os.path.join(output_dir, 'images', new_filename))  # Save modified image
+                    
+                    new_label_str = ' '.join(map(str, new_label))
+                    with open(os.path.join(output_dir, 'labels', new_filename.replace('.jpg', '.txt')), 'w') as f:
                         f.write(new_label_str)  # Save modified label

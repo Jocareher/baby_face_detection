@@ -1280,3 +1280,4 @@ def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
                     new_label_str = ' '.join(map(str, new_label))
                     with open(os.path.join(output_dir, 'labels', new_filename.replace('.jpg', '.txt')), 'w') as f:
                         f.write(new_label_str)  # Save modified label
+    print(f'All images and labels have been flipped and saved in {output_dir}')

@@ -1297,3 +1297,62 @@ def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
                     ) as f:
                         f.write(new_label_str)  # Save modified label
     print(f"All images and labels have been flipped and saved in {output_dir}")
+    
+def convert_obb_to_aabb(root_dir: str, dest_dir: str, save_label: bool = False) -> None:
+    """
+    Converts Oriented Bounding Box (OBB) annotations to Axis-Aligned Bounding Box (AABB) annotations and adjusts the coordinates to the actual dimensions of the images.
+    
+    Args:
+        - root_dir (str): The root directory containing 'images' and 'labels' folders.
+        - dest_dir (str): The destination directory to save the converted annotations.
+        - save_label (bool, optional): Whether to save the class label with the annotations. Defaults to False.
+    """
+    labels_dir = os.path.join(root_dir, 'labels')
+    images_dir = os.path.join(root_dir, 'images')
+    
+    # Create the destination directory if it doesn't exist
+    if not os.path.exists(dest_dir):
+        os.makedirs(dest_dir)
+    
+    # Iterate through all label files in the labels directory
+    for label_file in os.listdir(labels_dir):
+        # Check if the file is a text file (.txt)
+        if label_file.endswith('.txt'):
+            # Construct the corresponding image path
+            image_path = os.path.join(images_dir, label_file.replace('.txt', '.jpg'))
+            # Path to the original label file
+            label_path = os.path.join(labels_dir, label_file)
+            # Destination path for the converted label file
+            dest_path = os.path.join(dest_dir, label_file)
+            
+            # Read the dimensions of the image
+            image = cv2.imread(image_path)
+            height, width, _ = image.shape
+            
+            with open(label_path, 'r') as file:
+                # Read all lines (annotations) in the label file
+                lines = file.readlines()
+            
+            with open(dest_path, 'w') as file:
+                for line in lines:
+                    # Split each line and convert coordinates to floats, skipping the class index if necessary
+                    parts = line.strip().split()
+                    obb_coords = list(map(float, parts[1:]))  # Convert to float and omit the class index
+                    
+                    # Convert OBB coordinates to AABB
+                    x_coords = obb_coords[0::2]  # Extract x coordinates
+                    y_coords = obb_coords[1::2]  # Extract y coordinates
+                    # Find the minimum and maximum x and y coordinates
+                    x_min, y_min, x_max, y_max = min(x_coords), min(y_coords), max(x_coords), max(y_coords)
+                    
+                    # Denormalize the coordinates
+                    x_min, x_max = int(x_min * width), int(x_max * width)
+                    y_min, y_max = int(y_min * height), int(y_max * height)
+                    
+                    # Write the converted annotation to the destination file
+                    if save_label:
+                        # Include the class label in the annotation
+                        file.write(f"{parts[0]} {x_min} {y_min} {x_max} {y_max}\n")
+                    else:
+                        # Exclude the class label from the annotation
+                        file.write(f"{x_min} {y_min} {x_max} {y_max}\n")

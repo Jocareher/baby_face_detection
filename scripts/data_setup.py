@@ -10,6 +10,7 @@ import re
 import math
 import os
 import json
+import random
 import glob
 import hashlib
 from typing import List, Tuple, Dict
@@ -1162,100 +1163,117 @@ def adjust_bbox_after_image_rotation(new_tl_x: int, new_tl_y: int, new_w: int, n
 
     return adjusted_x, adjusted_y, new_w, new_h
 
-def visualize_rotated_images_and_aabboxes(root_dir: str, max_images_per_grid: int) -> None:
+def visualize_rotated_images_and_aabboxes(root_dir: str, output_dir: str, max_images_per_grid: int, display_grid: bool = True, normalized_coords: bool = True) -> None:
     """
-    Processes images by rotating them, calculating new bounding box coordinates,
-    and displaying them in grids with bounding boxes drawn. Each grid contains up to a maximum number of images.
+    Processes images by rotating them, calculating new bounding box coordinates, saving them in specified directories,
+    and optionally displaying a selection of them in a grid.
 
     Args:
-        - root_dir (str): The root directory containing 'json', 'images', and 'labels' subdirectories.
-        - max_images_per_grid (int): The maximum number of images to display per grid.
+        root_dir: The root directory containing 'json', 'images', and 'labels' subdirectories.
+        output_dir: The output directory where 'images' and 'labels' folders will be created.
+        max_images_per_grid: The maximum number of images to display or process per grid.
+        display_grid: Flag to decide if a grid of images is to be displayed.
+        normalized_coords: Flag to decide if bounding box coordinates should be saved as normalized values or pixels.
     """
-    # JSON directory path
+    # Ensure output directories exist
+    images_output_dir = os.path.join(output_dir, 'images')
+    labels_output_dir = os.path.join(output_dir, 'labels')
+    create_directories(images_output_dir)
+    create_directories(labels_output_dir)
+    
+    # JSON, Images and Labels directory paths
     json_dir = os.path.join(root_dir, 'json')
-    # Images directory path
     images_dir = os.path.join(root_dir, 'images')
-    # Labels directory path
     labels_dir = os.path.join(root_dir, 'labels')
 
-    # Filter image files
+    # Get all image files and select random images for display
     image_files = [f for f in os.listdir(images_dir) if f.endswith('.jpg')]
-    # Total number of images
-    total_images = len(image_files)
-    # Calculate number of grids
-    grids = np.ceil(total_images / max_images_per_grid).astype(int)
-
-    for grid in range(grids):
-        # Calculate starting index of current grid
-        start_idx = grid * max_images_per_grid
-        # Calculate ending index of current grid
-        end_idx = start_idx + max_images_per_grid
-        # Select images for current grid
-        current_images = image_files[start_idx:end_idx]
-        # Calculate number of rows in grid
-        rows = np.ceil(np.sqrt(len(current_images))).astype(int)
-        # Calculate number of columns in grid
-        cols = np.ceil(len(current_images) / rows).astype(int)
-
-        # Create subplots for grid
+    random.shuffle(image_files)
+    images_to_display = image_files[:max_images_per_grid] if display_grid else []
+    
+    # Create grid for visualization if needed
+    if display_grid:
+        # Initialize the grid only if display is needed
+        rows = cols = int(np.ceil(np.sqrt(len(images_to_display))))
         fig, axs = plt.subplots(rows, cols, figsize=(20, rows * 5))
-        # Flatten axes array if there's more than one subplot
-        if rows * cols > 1:
-            axs = axs.ravel()
-        else:
-            axs = [axs]
+        axs = axs.ravel() if rows * cols > 1 else [axs]
 
-        for idx, image_file in enumerate(current_images):
-            # Get path of current image
-            image_path = os.path.join(images_dir, image_file)
-            # Extract base name of image file
-            base_name = os.path.splitext(image_file)[0]
-            # JSON file path
-            json_path = os.path.join(json_dir, base_name + '.json')
-            # TXT file path
-            txt_path = os.path.join(labels_dir, base_name + '.txt')
+    for idx, image_file in enumerate(image_files):
+        # Paths for current image and annotation files
+        image_path = os.path.join(images_dir, image_file)
+        base_name = os.path.splitext(image_file)[0]
+        json_path = os.path.join(json_dir, base_name + '.json')
+        txt_path = os.path.join(labels_dir, base_name + '.txt')
 
-            # Read and process JSON
-            with open(json_path, 'r') as f:
-                annotation_data = json.load(f)
-            # Extract bounding box data
+        # Process JSON and TXT files
+        with open(json_path, 'r') as json_file:
+            annotation_data = json.load(json_file)
             bbox_data = annotation_data['label'][0]
-            # Original width of image
-            original_width = bbox_data['original_width']
-            # Original height of image
-            original_height = bbox_data['original_height']
-            # Rotation angle from JSON
-            rotation_angle = bbox_data['rotation']
 
-            # Read image file
+            # Process image
             image = cv2.imread(image_path)
-            
-            # Rotate image
-            rotated_image = ndimage.rotate(image, rotation_angle)
-            
-            # Calculate the new dimensions of the image after it has been rotated
-            new_img_width, new_img_height = get_new_image_dimensions(original_width, original_height, rotation_angle)
+            rotated_image = ndimage.rotate(image, bbox_data['rotation'], reshape=True)
 
-            # Read and process TXT for bbox coordinates
+            # Process bounding box
             with open(txt_path, 'r') as f:
                 coords = [float(i) for i in f.read().split()[1:]]
-
-            # Calculate new bbox coordinates
-            new_tl_x, new_tl_y, new_w, new_h = get_rotated_bbox_coords(coords, rotation_angle, original_width, original_height)
-
-            # Draw the bbox on the rotated image
-            adjusted_bbox_coords = adjust_bbox_after_image_rotation(new_tl_x, new_tl_y, new_w, new_h, original_width / 2, original_height / 2, new_img_width / 2, new_img_height / 2)
+            new_tl_x, new_tl_y, new_w, new_h = get_rotated_bbox_coords(coords,
+                                                                       bbox_data['rotation'],
+                                                                       bbox_data['original_width'],
+                                                                       bbox_data['original_height'])
             
-            # Draw the adjusted bounding box on the rotated image
-            adjusted_img = cv2.rectangle(rotated_image,
-                             (adjusted_bbox_coords[0], adjusted_bbox_coords[1]),
-                             (adjusted_bbox_coords[0] + adjusted_bbox_coords[2], adjusted_bbox_coords[1] + adjusted_bbox_coords[3]),
-                             (0, 255, 0), 2)
+            new_img_width, new_img_height = get_new_image_dimensions(bbox_data['original_width'],
+                                                                     bbox_data['original_height'],
+                                                                     bbox_data['rotation'])
+            
+            adjusted_bbox_coords = adjust_bbox_after_image_rotation(new_tl_x,
+                                                                    new_tl_y,
+                                                                    new_w,
+                                                                    new_h,
+                                                                    bbox_data['original_width'] / 2,
+                                                                    bbox_data['original_height'] / 2,
+                                                                    new_img_width / 2,
+                                                                    new_img_height / 2)
 
-            # Plotting
-            ax = axs[idx]
-            ax.imshow(cv2.cvtColor(adjusted_img, cv2.COLOR_BGR2RGB))
-            ax.axis('on')
+            # Save rotated image
+            cv2.imwrite(os.path.join(images_output_dir, image_file), rotated_image)
 
+            # Save bounding box coordinates
+            bbox_file_path = os.path.join(labels_output_dir, f"{base_name}.txt")
+            with open(bbox_file_path, 'w') as f:
+                if normalized_coords:
+                    adjusted_bbox_coords_percentage = [
+                        adjusted_bbox_coords[0] / new_img_width,
+                        adjusted_bbox_coords[1] / new_img_height,
+                        adjusted_bbox_coords[2] / new_img_width,
+                        adjusted_bbox_coords[3] / new_img_height
+                    ]
+                    f.write(' '.join(map(str, adjusted_bbox_coords_percentage)) + '\n')
+                else:
+                    f.write(f"{adjusted_bbox_coords[0]} {adjusted_bbox_coords[1]} {adjusted_bbox_coords[2]} {adjusted_bbox_coords[3]}\n")
+
+            # If display_grid is True, display only the selected images
+            if display_grid and image_file in images_to_display:
+                display_idx = images_to_display.index(image_file)
+                # Draw bounding box on image for display
+                display_img = cv2.rectangle(rotated_image,
+                                            (adjusted_bbox_coords[0], adjusted_bbox_coords[1]),
+                                            (adjusted_bbox_coords[0] + adjusted_bbox_coords[2], adjusted_bbox_coords[1] + adjusted_bbox_coords[3]),
+                                            (0, 255, 0), 2)
+                # Convert image for display
+                display_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+                # Display image in the grid
+                ax = axs[display_idx]
+                ax.imshow(display_img)
+                ax.axis('on')
+                # Set the title with the image name
+                ax.set_title(base_name, fontsize=10)
+
+    # Only show the grid if we're displaying
+    if display_grid:
+        # Hide any unused subplots if there are fewer images than grid cells
+        for ax in axs[len(images_to_display):]:
+            ax.axis('off')
+        # Tight layout often produces better-looking grids
         plt.tight_layout()
         plt.show()

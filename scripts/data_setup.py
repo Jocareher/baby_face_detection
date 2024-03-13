@@ -1227,7 +1227,7 @@ def visualize_rotated_images_and_aabboxes(
     labels_dir = os.path.join(root_dir, "labels")
 
     # Get all image files and select random images for display
-    image_files = [f for f in os.listdir(images_dir) if f.endswith(".jpg")]
+    image_files = [f for f in os.listdir(images_dir) if f.endswith('.jpg') and not f.startswith('._')]
     random.shuffle(image_files)
     images_to_display = image_files[:max_images_per_grid] if display_grid else []
 

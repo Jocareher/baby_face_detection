@@ -1025,7 +1025,10 @@ def split_annotations_and_create_new_files_per_face(
                             # Copying image file with identifier
                             shutil.copy(img_path, new_img_path)
 
-def rotate_point(cx: float, cy: float, angle: float, px: float, py: float) -> Tuple[float, float]:
+
+def rotate_point(
+    cx: float, cy: float, angle: float, px: float, py: float
+) -> Tuple[float, float]:
     """
     Rotate a point around a given center.
 
@@ -1060,10 +1063,13 @@ def rotate_point(cx: float, cy: float, angle: float, px: float, py: float) -> Tu
     py = ynew + cy
     return px, py
 
-def get_rotated_bbox_coords(coords: list, rotation_angle: float, original_width: int, original_height: int) -> Tuple[int, int, int, int]:
+
+def get_rotated_bbox_coords(
+    coords: list, rotation_angle: float, original_width: int, original_height: int
+) -> Tuple[int, int, int, int]:
     """
     Calculate the coordinates of a rotated bounding box after the image has been rotated by a specific angle.
-    
+
     Args:
         - coords (list): List of original bounding box coordinates (x1, y1, x2, y2, x3, y3, x4, y4) as percentages of the image dimensions.
         - rotation_angle (float): The angle in degrees by which the image is rotated clockwise.
@@ -1087,29 +1093,46 @@ def get_rotated_bbox_coords(coords: list, rotation_angle: float, original_width:
     original_center_x, original_center_y = original_width / 2, original_height / 2
 
     # Rotate the bounding box corners around the original image's center
-    rot_x1, rot_y1 = rotate_point(original_center_x, original_center_y, rotation_angle, x1, y1)
-    rot_x2, rot_y2 = rotate_point(original_center_x, original_center_y, rotation_angle, x2, y2)
-    rot_x3, rot_y3 = rotate_point(original_center_x, original_center_y, rotation_angle, x3, y3)
-    rot_x4, rot_y4 = rotate_point(original_center_x, original_center_y, rotation_angle, x4, y4)
+    rot_x1, rot_y1 = rotate_point(
+        original_center_x, original_center_y, rotation_angle, x1, y1
+    )
+    rot_x2, rot_y2 = rotate_point(
+        original_center_x, original_center_y, rotation_angle, x2, y2
+    )
+    rot_x3, rot_y3 = rotate_point(
+        original_center_x, original_center_y, rotation_angle, x3, y3
+    )
+    rot_x4, rot_y4 = rotate_point(
+        original_center_x, original_center_y, rotation_angle, x4, y4
+    )
 
     # Calculate the bounding box's new location in the rotated image
-    rotated_center_x, rotated_center_y = rotate_point(original_center_x, original_center_y, rotation_angle, original_center_x, original_center_y)
+    rotated_center_x, rotated_center_y = rotate_point(
+        original_center_x,
+        original_center_y,
+        rotation_angle,
+        original_center_x,
+        original_center_y,
+    )
     bbox_center_x, bbox_center_y = (rot_x1 + rot_x3) / 2, (rot_y1 + rot_y3) / 2
-    new_cx, new_cy = rotated_center_x + (bbox_center_x - original_center_x), rotated_center_y + (bbox_center_y - original_center_y)
+    new_cx, new_cy = rotated_center_x + (
+        bbox_center_x - original_center_x
+    ), rotated_center_y + (bbox_center_y - original_center_y)
 
     # Calculate the top-left corner of the new bounding box
     new_x1, new_y1 = new_cx - (rot_x2 - rot_x1) / 2, new_cy - (rot_y3 - rot_y1) / 2
     # Calculate the width and height of the new bounding box
-    new_width = np.sqrt((rot_x2 - rot_x1)**2 + (rot_y2 - rot_y1)**2)
-    new_height = np.sqrt((rot_x3 - rot_x2)**2 + (rot_y3 - rot_y2)**2)
+    new_width = np.sqrt((rot_x2 - rot_x1) ** 2 + (rot_y2 - rot_y1) ** 2)
+    new_height = np.sqrt((rot_x3 - rot_x2) ** 2 + (rot_y3 - rot_y2) ** 2)
 
     # Return the new bounding box coordinates
     return int(new_x1), int(new_y1), int(new_width), int(new_height)
 
+
 def get_new_image_dimensions(w: int, h: int, angle: float):
     """
     Calculates the new dimensions of the image after rotation.
-    
+
     Args:
         - w (int): The original width of the image in pixels.
         - h (int): The original height of the image in pixels.
@@ -1126,17 +1149,27 @@ def get_new_image_dimensions(w: int, h: int, angle: float):
     angle_rad = np.radians(angle)
     cos_angle = abs(np.cos(angle_rad))
     sin_angle = abs(np.sin(angle_rad))
-    
+
     # Calculate the new width and height of the image
     new_w = int((h * sin_angle) + (w * cos_angle))
     new_h = int((h * cos_angle) + (w * sin_angle))
-    
+
     return new_w, new_h
 
-def adjust_bbox_after_image_rotation(new_tl_x: int, new_tl_y: int, new_w: int, new_h: int, orig_cx: int, orig_cy: int, new_cx: int, new_cy: int):
+
+def adjust_bbox_after_image_rotation(
+    new_tl_x: int,
+    new_tl_y: int,
+    new_w: int,
+    new_h: int,
+    orig_cx: int,
+    orig_cy: int,
+    new_cx: int,
+    new_cy: int,
+):
     """
     Adjust the coordinates of the bounding box after the image has been rotated.
-    
+
     Args:
         - new_tl_x (int): Top-left x-coordinate of the bounding box in the rotated image.
         - new_tl_y (int): Top-left y-coordinate of the bounding box in the rotated image.
@@ -1146,7 +1179,7 @@ def adjust_bbox_after_image_rotation(new_tl_x: int, new_tl_y: int, new_w: int, n
         - orig_cy (int): Original center y-coordinate of the image before rotation.
         - new_cx (int): New center x-coordinate of the rotated image.
         - new_cy (int): New center y-coordinate of the rotated image.
-        
+
     Returns:
         tuple: Adjusted coordinates of the bounding box (top-left x, top-left y, width, height).
 
@@ -1163,7 +1196,14 @@ def adjust_bbox_after_image_rotation(new_tl_x: int, new_tl_y: int, new_w: int, n
 
     return adjusted_x, adjusted_y, new_w, new_h
 
-def visualize_rotated_images_and_aabboxes(root_dir: str, output_dir: str, max_images_per_grid: int, display_grid: bool = True, normalized_coords: bool = True) -> None:
+
+def visualize_rotated_images_and_aabboxes(
+    root_dir: str,
+    output_dir: str,
+    max_images_per_grid: int,
+    display_grid: bool = True,
+    normalized_coords: bool = True,
+) -> None:
     """
     Processes images by rotating them, calculating new bounding box coordinates, saving them in specified directories,
     and optionally displaying a selection of them in a grid.
@@ -1176,21 +1216,21 @@ def visualize_rotated_images_and_aabboxes(root_dir: str, output_dir: str, max_im
         normalized_coords: Flag to decide if bounding box coordinates should be saved as normalized values or pixels.
     """
     # Ensure output directories exist
-    images_output_dir = os.path.join(output_dir, 'images')
-    labels_output_dir = os.path.join(output_dir, 'labels')
+    images_output_dir = os.path.join(output_dir, "images")
+    labels_output_dir = os.path.join(output_dir, "labels")
     create_directories(images_output_dir)
     create_directories(labels_output_dir)
-    
+
     # JSON, Images and Labels directory paths
-    json_dir = os.path.join(root_dir, 'json')
-    images_dir = os.path.join(root_dir, 'images')
-    labels_dir = os.path.join(root_dir, 'labels')
+    json_dir = os.path.join(root_dir, "json")
+    images_dir = os.path.join(root_dir, "images")
+    labels_dir = os.path.join(root_dir, "labels")
 
     # Get all image files and select random images for display
-    image_files = [f for f in os.listdir(images_dir) if f.endswith('.jpg')]
+    image_files = [f for f in os.listdir(images_dir) if f.endswith(".jpg")]
     random.shuffle(image_files)
     images_to_display = image_files[:max_images_per_grid] if display_grid else []
-    
+
     # Create grid for visualization if needed
     if display_grid:
         # Initialize the grid only if display is needed
@@ -1202,78 +1242,92 @@ def visualize_rotated_images_and_aabboxes(root_dir: str, output_dir: str, max_im
         # Paths for current image and annotation files
         image_path = os.path.join(images_dir, image_file)
         base_name = os.path.splitext(image_file)[0]
-        json_path = os.path.join(json_dir, base_name + '.json')
-        txt_path = os.path.join(labels_dir, base_name + '.txt')
+        json_path = os.path.join(json_dir, base_name + ".json")
+        txt_path = os.path.join(labels_dir, base_name + ".txt")
 
         # Process JSON and TXT files
-        with open(json_path, 'r') as json_file:
+        with open(json_path, "r") as json_file:
             annotation_data = json.load(json_file)
-            bbox_data = annotation_data['label'][0]
+            bbox_data = annotation_data["label"][0]
 
             # Process image
             image = cv2.imread(image_path)
-            rotated_image = ndimage.rotate(image, bbox_data['rotation'], reshape=True)
+            rotated_image = ndimage.rotate(image, bbox_data["rotation"], reshape=True)
 
             # Process bounding box
-            with open(txt_path, 'r') as f:
+            with open(txt_path, "r") as f:
                 coords = [float(i) for i in f.read().split()[1:]]
-            new_tl_x, new_tl_y, new_w, new_h = get_rotated_bbox_coords(coords,
-                                                                       bbox_data['rotation'],
-                                                                       bbox_data['original_width'],
-                                                                       bbox_data['original_height'])
-            
-            new_img_width, new_img_height = get_new_image_dimensions(bbox_data['original_width'],
-                                                                     bbox_data['original_height'],
-                                                                     bbox_data['rotation'])
-            
-            adjusted_bbox_coords = adjust_bbox_after_image_rotation(new_tl_x,
-                                                                    new_tl_y,
-                                                                    new_w,
-                                                                    new_h,
-                                                                    bbox_data['original_width'] / 2,
-                                                                    bbox_data['original_height'] / 2,
-                                                                    new_img_width / 2,
-                                                                    new_img_height / 2)
+            new_tl_x, new_tl_y, new_w, new_h = get_rotated_bbox_coords(
+                coords,
+                bbox_data["rotation"],
+                bbox_data["original_width"],
+                bbox_data["original_height"],
+            )
+
+            new_img_width, new_img_height = get_new_image_dimensions(
+                bbox_data["original_width"],
+                bbox_data["original_height"],
+                bbox_data["rotation"],
+            )
+
+            adjusted_bbox_coords = adjust_bbox_after_image_rotation(
+                new_tl_x,
+                new_tl_y,
+                new_w,
+                new_h,
+                bbox_data["original_width"] / 2,
+                bbox_data["original_height"] / 2,
+                new_img_width / 2,
+                new_img_height / 2,
+            )
 
             # Save rotated image
             cv2.imwrite(os.path.join(images_output_dir, image_file), rotated_image)
 
             # Save bounding box coordinates
             bbox_file_path = os.path.join(labels_output_dir, f"{base_name}.txt")
-            with open(bbox_file_path, 'w') as f:
+            with open(bbox_file_path, "w") as f:
                 if normalized_coords:
                     adjusted_bbox_coords_percentage = [
                         adjusted_bbox_coords[0] / new_img_width,
                         adjusted_bbox_coords[1] / new_img_height,
                         adjusted_bbox_coords[2] / new_img_width,
-                        adjusted_bbox_coords[3] / new_img_height
+                        adjusted_bbox_coords[3] / new_img_height,
                     ]
-                    f.write(' '.join(map(str, adjusted_bbox_coords_percentage)) + '\n')
+                    f.write(" ".join(map(str, adjusted_bbox_coords_percentage)) + "\n")
                 else:
-                    f.write(f"{adjusted_bbox_coords[0]} {adjusted_bbox_coords[1]} {adjusted_bbox_coords[2]} {adjusted_bbox_coords[3]}\n")
+                    f.write(
+                        f"{adjusted_bbox_coords[0]} {adjusted_bbox_coords[1]} {adjusted_bbox_coords[2]} {adjusted_bbox_coords[3]}\n"
+                    )
 
             # If display_grid is True, display only the selected images
             if display_grid and image_file in images_to_display:
                 display_idx = images_to_display.index(image_file)
                 # Draw bounding box on image for display
-                display_img = cv2.rectangle(rotated_image,
-                                            (adjusted_bbox_coords[0], adjusted_bbox_coords[1]),
-                                            (adjusted_bbox_coords[0] + adjusted_bbox_coords[2], adjusted_bbox_coords[1] + adjusted_bbox_coords[3]),
-                                            (0, 255, 0), 2)
+                display_img = cv2.rectangle(
+                    rotated_image,
+                    (adjusted_bbox_coords[0], adjusted_bbox_coords[1]),
+                    (
+                        adjusted_bbox_coords[0] + adjusted_bbox_coords[2],
+                        adjusted_bbox_coords[1] + adjusted_bbox_coords[3],
+                    ),
+                    (0, 255, 0),
+                    2,
+                )
                 # Convert image for display
                 display_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
                 # Display image in the grid
                 ax = axs[display_idx]
                 ax.imshow(display_img)
-                ax.axis('on')
+                ax.axis("on")
                 # Set the title with the image name
                 ax.set_title(base_name, fontsize=10)
 
     # Only show the grid if we're displaying
     if display_grid:
         # Hide any unused subplots if there are fewer images than grid cells
-        for ax in axs[len(images_to_display):]:
-            ax.axis('off')
+        for ax in axs[len(images_to_display) :]:
+            ax.axis("off")
         # Tight layout often produces better-looking grids
         plt.tight_layout()
         plt.show()

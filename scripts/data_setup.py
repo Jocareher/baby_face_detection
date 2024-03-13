@@ -1,8 +1,10 @@
 import cv2
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
 from PIL import Image
 from sklearn.model_selection import train_test_split
+from scipy import ndimage
 
 import re
 import math
@@ -1021,3 +1023,239 @@ def split_annotations_and_create_new_files_per_face(
                             )
                             # Copying image file with identifier
                             shutil.copy(img_path, new_img_path)
+
+def rotate_point(cx: float, cy: float, angle: float, px: float, py: float) -> Tuple[float, float]:
+    """
+    Rotate a point around a given center.
+
+    Args:
+        - cx: x-coordinate of the center point to rotate around.
+        - cy: y-coordinate of the center point to rotate around.
+        - angle: Angle in degrees to rotate the point in a clockwise direction.
+        - px: x-coordinate of the point to rotate.
+        - py: y-coordinate of the point to rotate.
+
+    Returns:
+        - The new x and y coordinates of the rotated point.
+
+    The function converts the angle from degrees to radians and applies a standard rotation matrix
+    to the point coordinates. The rotation is performed in a clockwise direction by negating the angle.
+    """
+    # Convert angle to radians
+    angle_rad = np.radians(-angle)  # Negative for clockwise rotation
+    s = np.sin(angle_rad)
+    c = np.cos(angle_rad)
+
+    # Translate point back to origin:
+    px -= cx
+    py -= cy
+
+    # Rotate point
+    xnew = px * c - py * s
+    ynew = px * s + py * c
+
+    # Translate point back
+    px = xnew + cx
+    py = ynew + cy
+    return px, py
+
+def get_rotated_bbox_coords(coords: list, rotation_angle: float, original_width: int, original_height: int) -> Tuple[int, int, int, int]:
+    """
+    Calculate the coordinates of a rotated bounding box after the image has been rotated by a specific angle.
+    
+    Args:
+        - coords (list): List of original bounding box coordinates (x1, y1, x2, y2, x3, y3, x4, y4) as percentages of the image dimensions.
+        - rotation_angle (float): The angle in degrees by which the image is rotated clockwise.
+        - original_width (int): The width of the original image in pixels.
+        - original_height (int): The height of the original image in pixels.
+
+    Returns:
+        - Tuple[int, int, int, int]: The top-left x and y coordinates, width, and height of the new axis-aligned bounding box in pixels.
+
+    This function first converts the percentage coordinates into pixel values.
+    It then computes the center of the original image and uses it as the pivot point to calculate the rotated coordinates of the bounding box.
+    Finally, it determines the minimum axis-aligned bounding box that encapsulates the rotated coordinates.
+    """
+    # Convert percentage coordinates to pixels
+    x1, y1 = coords[0] * original_width, coords[1] * original_height
+    x2, y2 = coords[2] * original_width, coords[3] * original_height
+    x3, y3 = coords[4] * original_width, coords[5] * original_height
+    x4, y4 = coords[6] * original_width, coords[7] * original_height
+
+    # Calculate the center of the original image
+    original_center_x, original_center_y = original_width / 2, original_height / 2
+
+    # Rotate the bounding box corners around the original image's center
+    rot_x1, rot_y1 = rotate_point(original_center_x, original_center_y, rotation_angle, x1, y1)
+    rot_x2, rot_y2 = rotate_point(original_center_x, original_center_y, rotation_angle, x2, y2)
+    rot_x3, rot_y3 = rotate_point(original_center_x, original_center_y, rotation_angle, x3, y3)
+    rot_x4, rot_y4 = rotate_point(original_center_x, original_center_y, rotation_angle, x4, y4)
+
+    # Calculate the bounding box's new location in the rotated image
+    rotated_center_x, rotated_center_y = rotate_point(original_center_x, original_center_y, rotation_angle, original_center_x, original_center_y)
+    bbox_center_x, bbox_center_y = (rot_x1 + rot_x3) / 2, (rot_y1 + rot_y3) / 2
+    new_cx, new_cy = rotated_center_x + (bbox_center_x - original_center_x), rotated_center_y + (bbox_center_y - original_center_y)
+
+    # Calculate the top-left corner of the new bounding box
+    new_x1, new_y1 = new_cx - (rot_x2 - rot_x1) / 2, new_cy - (rot_y3 - rot_y1) / 2
+    # Calculate the width and height of the new bounding box
+    new_width = np.sqrt((rot_x2 - rot_x1)**2 + (rot_y2 - rot_y1)**2)
+    new_height = np.sqrt((rot_x3 - rot_x2)**2 + (rot_y3 - rot_y2)**2)
+
+    # Return the new bounding box coordinates
+    return int(new_x1), int(new_y1), int(new_width), int(new_height)
+
+def get_new_image_dimensions(w: int, h: int, angle: float):
+    """
+    Calculates the new dimensions of the image after rotation.
+    
+    Args:
+        - w (int): The original width of the image in pixels.
+        - h (int): The original height of the image in pixels.
+        - angle (float): The angle in degrees by which the image is rotated clockwise.
+
+    Returns:
+        - Tuple[int, int]: The new width and height of the image after rotation.
+
+    This function calculates the new dimensions of an image after rotation by a given angle.
+    It uses the formula:
+    new_width = h * sin(angle) + w * cos(angle)
+    new_height = h * cos(angle) + w * sin(angle)
+    """
+    angle_rad = np.radians(angle)
+    cos_angle = abs(np.cos(angle_rad))
+    sin_angle = abs(np.sin(angle_rad))
+    
+    # Calculate the new width and height of the image
+    new_w = int((h * sin_angle) + (w * cos_angle))
+    new_h = int((h * cos_angle) + (w * sin_angle))
+    
+    return new_w, new_h
+
+def adjust_bbox_after_image_rotation(new_tl_x: int, new_tl_y: int, new_w: int, new_h: int, orig_cx: int, orig_cy: int, new_cx: int, new_cy: int):
+    """
+    Adjust the coordinates of the bounding box after the image has been rotated.
+    
+    Args:
+        - new_tl_x (int): Top-left x-coordinate of the bounding box in the rotated image.
+        - new_tl_y (int): Top-left y-coordinate of the bounding box in the rotated image.
+        - new_w (int): Width of the bounding box.
+        - new_h (int): Height of the bounding box.
+        - orig_cx (int): Original center x-coordinate of the image before rotation.
+        - orig_cy (int): Original center y-coordinate of the image before rotation.
+        - new_cx (int): New center x-coordinate of the rotated image.
+        - new_cy (int): New center y-coordinate of the rotated image.
+        
+    Returns:
+        tuple: Adjusted coordinates of the bounding box (top-left x, top-left y, width, height).
+
+    This function adjusts the coordinates of a bounding box after the image has been rotated.
+    It calculates the shift of the center of the bounding box after rotation and adjusts the top-left coordinates accordingly.
+    """
+    # Calculate the shift of the center after rotation
+    shift_x = new_cx - orig_cx
+    shift_y = new_cy - orig_cy
+
+    # Adjust the bounding box coordinates by the shift
+    adjusted_x = int(new_tl_x + shift_x)
+    adjusted_y = int(new_tl_y + shift_y)
+
+    return adjusted_x, adjusted_y, new_w, new_h
+
+def visualize_rotated_images_and_aabboxes(root_dir: str, max_images_per_grid: int) -> None:
+    """
+    Processes images by rotating them, calculating new bounding box coordinates,
+    and displaying them in grids with bounding boxes drawn. Each grid contains up to a maximum number of images.
+
+    Args:
+        - root_dir (str): The root directory containing 'json', 'images', and 'labels' subdirectories.
+        - max_images_per_grid (int): The maximum number of images to display per grid.
+    """
+    # JSON directory path
+    json_dir = os.path.join(root_dir, 'json')
+    # Images directory path
+    images_dir = os.path.join(root_dir, 'images')
+    # Labels directory path
+    labels_dir = os.path.join(root_dir, 'labels')
+
+    # Filter image files
+    image_files = [f for f in os.listdir(images_dir) if f.endswith('.jpg')]
+    # Total number of images
+    total_images = len(image_files)
+    # Calculate number of grids
+    grids = np.ceil(total_images / max_images_per_grid).astype(int)
+
+    for grid in range(grids):
+        # Calculate starting index of current grid
+        start_idx = grid * max_images_per_grid
+        # Calculate ending index of current grid
+        end_idx = start_idx + max_images_per_grid
+        # Select images for current grid
+        current_images = image_files[start_idx:end_idx]
+        # Calculate number of rows in grid
+        rows = np.ceil(np.sqrt(len(current_images))).astype(int)
+        # Calculate number of columns in grid
+        cols = np.ceil(len(current_images) / rows).astype(int)
+
+        # Create subplots for grid
+        fig, axs = plt.subplots(rows, cols, figsize=(20, rows * 5))
+        # Flatten axes array if there's more than one subplot
+        if rows * cols > 1:
+            axs = axs.ravel()
+        else:
+            axs = [axs]
+
+        for idx, image_file in enumerate(current_images):
+            # Get path of current image
+            image_path = os.path.join(images_dir, image_file)
+            # Extract base name of image file
+            base_name = os.path.splitext(image_file)[0]
+            # JSON file path
+            json_path = os.path.join(json_dir, base_name + '.json')
+            # TXT file path
+            txt_path = os.path.join(labels_dir, base_name + '.txt')
+
+            # Read and process JSON
+            with open(json_path, 'r') as f:
+                annotation_data = json.load(f)
+            # Extract bounding box data
+            bbox_data = annotation_data['label'][0]
+            # Original width of image
+            original_width = bbox_data['original_width']
+            # Original height of image
+            original_height = bbox_data['original_height']
+            # Rotation angle from JSON
+            rotation_angle = bbox_data['rotation']
+
+            # Read image file
+            image = cv2.imread(image_path)
+            
+            # Rotate image
+            rotated_image = ndimage.rotate(image, rotation_angle)
+            
+            # Calculate the new dimensions of the image after it has been rotated
+            new_img_width, new_img_height = get_new_image_dimensions(original_width, original_height, rotation_angle)
+
+            # Read and process TXT for bbox coordinates
+            with open(txt_path, 'r') as f:
+                coords = [float(i) for i in f.read().split()[1:]]
+
+            # Calculate new bbox coordinates
+            new_tl_x, new_tl_y, new_w, new_h = get_rotated_bbox_coords(coords, rotation_angle, original_width, original_height)
+
+            # Draw the bbox on the rotated image
+            adjusted_bbox_coords = adjust_bbox_after_image_rotation(new_tl_x, new_tl_y, new_w, new_h, original_width / 2, original_height / 2, new_img_width / 2, new_img_height / 2)
+            
+            # Draw the adjusted bounding box on the rotated image
+            adjusted_img = cv2.rectangle(rotated_image,
+                             (adjusted_bbox_coords[0], adjusted_bbox_coords[1]),
+                             (adjusted_bbox_coords[0] + adjusted_bbox_coords[2], adjusted_bbox_coords[1] + adjusted_bbox_coords[3]),
+                             (0, 255, 0), 2)
+
+            # Plotting
+            ax = axs[idx]
+            ax.imshow(cv2.cvtColor(adjusted_img, cv2.COLOR_BGR2RGB))
+            ax.axis('on')
+
+        plt.tight_layout()
+        plt.show()

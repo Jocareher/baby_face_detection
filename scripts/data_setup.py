@@ -16,6 +16,7 @@ import shutil
 
 from collections import defaultdict
 
+
 def process_and_save_json(file_path: str, output_directory: str):
     """
     Reads a JSON file containing annotations, filters out entries with a specific label,
@@ -860,3 +861,43 @@ def convert_obb_to_aabb(root_dir: str, dest_dir: str, save_label: bool = False) 
                     else:
                         # Exclude the class label from the annotation
                         file.write(f"{x_min} {y_min} {x_max} {y_max}\n")
+
+
+def copy_corresponding_jsons(json_dir: str, images_dir: str, output_dir: str) -> None:
+    """
+    Copies .json files corresponding to the images in dir_images to the output_dir.
+
+    Args:
+        - json_dir (str): The directory where the .json files are located.
+        - images_dir (str): The directory where the images are located.
+        - output_dir (str): The directory where the corresponding .json files will be saved.
+    """
+
+    # Ensure the output directory exists
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Get the base names of the image files (without the extension)
+    image_names = [
+        os.path.splitext(file)[0]
+        for file in os.listdir(images_dir)
+        if file.endswith(".jpg")
+    ]
+
+    # Loop through the .json files in dir_json
+    for json_file in os.listdir(json_dir):
+        if json_file.endswith(".json"):
+            # Get the base name of the .json file (without the extension)
+            base_name_json: str = os.path.splitext(json_file)[0]
+
+            # If the base name of the .json file is in the list of image names
+            if base_name_json in image_names:
+                # Build the full paths
+                full_json_path: str = os.path.join(json_dir, json_file)
+                destination_json_path: str = os.path.join(output_dir, json_file)
+
+                # Copy the .json file to the output directory
+                shutil.copy(full_json_path, destination_json_path)
+                print(f"Copied: {json_file} to {output_dir}")
+
+    print("Process completed.")

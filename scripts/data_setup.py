@@ -1331,3 +1331,62 @@ def visualize_rotated_images_and_aabboxes(
         # Tight layout often produces better-looking grids
         plt.tight_layout()
         plt.show()
+
+def flip_rotation_in_json_file(json_folder_path: str, output_dir: str) -> None:
+    """
+    Flip the rotation value in each label of JSON files in the specified folder and save them in a new directory.
+
+    Args:
+        - json_folder_path (str): Path to the folder containing JSON files.
+        - output_dir (str): Path to the output directory where modified JSON files will be saved.
+    """
+    # Ensure output directory exists
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Iterate over .json files in the json_folder_path folder
+    for json_file in os.listdir(json_folder_path):
+        if json_file.endswith(".json"):
+            # Build the full path to the current .json file
+            json_path = os.path.join(json_folder_path, json_file)
+            
+            # Read the contents of the .json file
+            with open(json_path, 'r') as file:
+                data = json.load(file)
+                
+                # Modify the value of 'rotation' in each label to its opposite
+                for label in data["label"]:
+                    label["rotation"] = -label["rotation"]
+            
+            # Generate the new filename based on the associated image name
+            new_json_filename = json_file.replace("face_", "flip_face_")
+            
+            # Build the full path to the new .json file in the output directory
+            new_json_path = os.path.join(output_dir, new_json_filename)
+            
+            # Save the modified data to the new .json file
+            with open(new_json_path, 'w') as file:
+                json.dump(data, file, indent=4)
+
+def delete_json_without_jpg(json_folder: str, images_folder: str) -> None:
+    """
+    Delete JSON files in the specified folder if the corresponding JPG file does not exist in the images folder.
+
+    Args:
+        - json_folder (str): Path to the folder containing JSON files.
+        - images_folder (str): Path to the folder containing JPG images.
+    """
+    # Create a set of base filenames of JPG files (without the extension)
+    jpg_files = {os.path.splitext(filename)[0] for filename in os.listdir(images_folder) if filename.endswith('.jpg')}
+    
+    # Iterate over .json files in the specified folder
+    for json_filename in os.listdir(json_folder):
+        if json_filename.endswith('.json'):
+            # Extract the base filename of the .json file to compare with JPG files
+            base_json_filename = os.path.splitext(json_filename)[0]
+            
+            # Check if the corresponding JPG file exists
+            if base_json_filename not in jpg_files:
+                # The corresponding JPG file doesn't exist, delete the .json file
+                os.remove(os.path.join(json_folder, json_filename))
+                print(f"Deleted: {json_filename}")

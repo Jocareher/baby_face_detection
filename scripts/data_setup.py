@@ -901,3 +901,123 @@ def copy_corresponding_jsons(json_dir: str, images_dir: str, output_dir: str) ->
                 print(f"Copied: {json_file} to {output_dir}")
 
     print("Process completed.")
+
+
+def create_directories(path: str) -> None:
+    """
+    Ensure the existence of a directory.
+
+    This function checks if a directory exists at the specified path,
+    and if not, it creates the directory, including any necessary parent directories.
+
+    Args:
+        - path (str): The path to the directory that should exist.
+
+    Returns:
+        - None
+    """
+    os.makedirs(path, exist_ok=True)
+
+
+def split_annotations_and_create_new_files_per_face(
+    root_dir: str, output_dir: str
+) -> None:
+    """
+    Splits annotations in JSON and TXT files when there are multiple faces in a single image.
+    It creates individual JSON, TXT, and copies of image files for each face.
+
+    The function expects a directory structure with 'images', 'json', and 'labels' subdirectories
+    in the provided root directory. It processes each JSON file and checks for multiple annotations (faces).
+    For each face, it creates a new JSON and TXT file, and a copy of the corresponding image file, appending
+    an identifier to the filename to distinguish between different faces.
+
+    Args:
+        - root_dir (str): The root directory that contains the 'images', 'json', and 'labels' directories.
+        - output_dir (str): The output directory where the newly created files will be stored, maintaining the
+                            original directory structure with 'images', 'json', and 'labels' subdirectories.
+
+    Returns:
+        - None
+    """
+    # Creating output images directory path
+    output_images_dir = os.path.join(output_dir, "images")
+    # Creating output JSON directory path
+    output_json_dir = os.path.join(output_dir, "json")
+    # Creating output labels directory path
+    output_labels_dir = os.path.join(output_dir, "labels")
+
+    # Creating output images directory
+    create_directories(output_images_dir)
+    # Creating output JSON directory
+    create_directories(output_json_dir)
+    # Creating output labels directory
+    create_directories(output_labels_dir)
+
+    # Setting path to images directory in root directory
+    images_dir = os.path.join(root_dir, "images")
+    # Setting path to JSON directory in root directory
+    json_dir = os.path.join(root_dir, "json")
+    # Setting path to labels directory in root directory
+    labels_dir = os.path.join(root_dir, "labels")
+
+    # Looping through files in JSON directory
+    for file_name in os.listdir(json_dir):
+        # Checking if file is a JSON file
+        if file_name.endswith(".json"):
+            # Extracting base name of file
+            base_name = os.path.splitext(file_name)[0]
+            # Setting path to current JSON file
+            json_path = os.path.join(json_dir, file_name)
+
+            # Opening current JSON file
+            with open(json_path, "r") as f:
+                # Loading JSON data
+                data = json.load(f)
+
+                # New JSON data with a single annotation
+                # Creating new JSON data with single annotation
+                if len(data["label"]) > 1:
+                    # Looping through each annotation
+                    for i, label in enumerate(data["label"]):
+                        # Creating new JSON data with single annotation
+                        new_data = {**data, "label": [label]}
+                        # Setting path to new JSON file
+                        new_json_path = os.path.join(
+                            output_json_dir, f"{base_name}_copy_{i}.json"
+                        )
+
+                        # Opening new JSON file
+                        with open(new_json_path, "w") as nf:
+                            # Writing new JSON data to file
+                            json.dump(new_data, nf, indent=4)
+
+                        # Setting path to corresponding TXT file
+                        txt_path = os.path.join(labels_dir, f"{base_name}.txt")
+                        # Checking if TXT file exists
+                        if os.path.exists(txt_path):
+                            # Opening corresponding TXT file
+                            with open(txt_path, "r") as tf:
+                                # Reading lines from TXT file
+                                lines = tf.readlines()
+                                # Checking if current index is within the range of lines
+                                if i < len(lines):
+                                    # Setting path to new TXT file
+                                    new_txt_path = os.path.join(
+                                        output_labels_dir, f"{base_name}_copy_{i}.txt"
+                                    )
+
+                                    # Opening new TXT file
+                                    with open(new_txt_path, "w") as ntf:
+                                        # Writing corresponding line to new TXT file
+                                        ntf.write(lines[i])
+
+                        # Setting path to corresponding image file
+                        img_path = os.path.join(images_dir, f"{base_name}.jpg")
+                        # Checking if image file exists
+                        if os.path.exists(img_path):
+                            # Setting path to new image file
+                            new_img_path = os.path.join(
+                                output_images_dir, f"{base_name}_copy_{i}.jpg"
+                            )
+                            # Copying image file with identifier
+                            shutil.copy(img_path, new_img_path)

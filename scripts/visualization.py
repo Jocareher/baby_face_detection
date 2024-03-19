@@ -28,16 +28,18 @@ def draw_bounding_boxes_and_save_images(root_dir: str, output_dir: str):
         create_directories(output_dir)
 
     # List files in the root directory
-    for filename in os.listdir(os.path.join(root_dir, 'images')):
-        if filename.endswith('.jpg'):
-            image_path = os.path.join(root_dir, 'images', filename)
-            label_path = os.path.join(root_dir, 'labels', filename.replace('.jpg', '.txt'))
+    for filename in os.listdir(os.path.join(root_dir, "images")):
+        if filename.endswith(".jpg"):
+            image_path = os.path.join(root_dir, "images", filename)
+            label_path = os.path.join(
+                root_dir, "labels", filename.replace(".jpg", ".txt")
+            )
 
             # Read image
             image = cv2.imread(image_path)
 
             # Read bounding box annotations
-            with open(label_path, 'r') as file:
+            with open(label_path, "r") as file:
                 lines = file.readlines()
                 for line in lines:
                     # Extract bounding box coordinates

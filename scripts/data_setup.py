@@ -42,7 +42,7 @@ def process_and_save_json(file_path: str, output_directory: str):
 
     # Check if the output directory exists, create if not
     if not os.path.exists(output_directory):
-        os.makedirs(output_directory)
+        create_directories(output_directory)
 
     for image_data in annotations:
         # Skip images with the "doubt" label
@@ -73,7 +73,7 @@ def find_duplicated_images(source_dir: Path, destination_dir: Path) -> List:
     """
     # Create the destination folder if it does not exist
     if not os.path.exists(destination_dir):
-        os.makedirs(destination_dir)
+        create_directories(destination_dir)
 
     # Dictionary to store image hashes
     hashes = {}
@@ -274,7 +274,7 @@ def convert_annotations_to_yolo_obb(
     """
     # Create the destination folder if it does not exist
     if not os.path.exists(output_folder_path):
-        os.makedirs(output_folder_path)
+        create_directories(output_folder_path)
 
     # Loop through all the files in the json directory
     for file_name in os.listdir(json_folder_path):
@@ -354,7 +354,7 @@ def normalize_annotations(labels_dir: str, target_size=(640, 640)):
     # Create a directory for normalized labels if it doesn't exist
     normalized_labels_dir = os.path.join(labels_dir, "normalized_labels")
     if not os.path.exists(normalized_labels_dir):
-        os.makedirs(normalized_labels_dir)
+        create_directories(normalized_labels_dir)
 
     # Loop through each label file in the directory
     for label_file in os.listdir(labels_dir):
@@ -405,7 +405,7 @@ def resize_and_save_images(
     """
     # Check if output directory exists, if not, create it
     if not os.path.exists(output_path):
-        os.makedirs(output_path)
+        create_directories(output_path)
 
     # List all image files in the input directory
     image_files = glob.glob(os.path.join(input_path, "*"))
@@ -813,7 +813,7 @@ def convert_obb_to_aabb(root_dir: str, dest_dir: str, save_label: bool = False) 
 
     # Create the destination directory if it doesn't exist
     if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir)
+        create_directories(dest_dir)
 
     # Iterate through all label files in the labels directory
     for label_file in os.listdir(labels_dir):
@@ -878,7 +878,7 @@ def copy_corresponding_jsons(json_dir: str, images_dir: str, output_dir: str) ->
 
     # Ensure the output directory exists
     if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        create_directories(output_dir)
 
     # Get the base names of the image files (without the extension)
     image_names = [
@@ -1347,7 +1347,7 @@ def flip_rotation_in_json_file(json_folder_path: str, output_dir: str) -> None:
     """
     # Ensure output directory exists
     if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        create_directories(output_dir)
 
     # Iterate over .json files in the json_folder_path folder
     for json_file in os.listdir(json_folder_path):

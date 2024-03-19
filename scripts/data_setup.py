@@ -1,5 +1,4 @@
 import cv2
-import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -1209,11 +1208,11 @@ def visualize_rotated_images_and_aabboxes(
     and optionally displaying a selection of them in a grid.
 
     Args:
-        root_dir: The root directory containing 'json', 'images', and 'labels' subdirectories.
-        output_dir: The output directory where 'images' and 'labels' folders will be created.
-        max_images_per_grid: The maximum number of images to display or process per grid.
-        display_grid: Flag to decide if a grid of images is to be displayed.
-        normalized_coords: Flag to decide if bounding box coordinates should be saved as normalized values or pixels.
+        - root_dir: The root directory containing 'json', 'images', and 'labels' subdirectories.
+        - output_dir: The output directory where 'images' and 'labels' folders will be created.
+        - max_images_per_grid: The maximum number of images to display or process per grid.
+        - display_grid: Flag to decide if a grid of images is to be displayed.
+        - normalized_coords: Flag to decide if bounding box coordinates should be saved as normalized values or pixels.
     """
     # Ensure output directories exist
     images_output_dir = os.path.join(output_dir, "images")

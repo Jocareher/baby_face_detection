@@ -1399,3 +1399,77 @@ def delete_json_without_jpg(json_folder: str, images_folder: str) -> None:
                 # The corresponding JPG file doesn't exist, delete the .json file
                 os.remove(os.path.join(json_folder, json_filename))
                 print(f"Deleted: {json_filename}")
+
+
+def convert_xywh_bbox_to_yolo_obb(root_dir: str, output_dir: str) -> None:
+    """
+    Converts bounding box coordinates from the format (x_center, y_center, width, height) in pixels
+    to the YOLO Oriented Bounding Box (OBB) format with normalized coordinates, and saves them to
+    a specified output directory.
+
+    Args:
+        - root_dir (str): The root directory containing 'images', 'json', and 'labels' subdirectories.
+        - output_dir (str): The directory where the converted .txt files will be saved.
+
+    Returns:
+        None
+    """
+    # Define the class names to indices mapping
+    class_names = {
+        "3/4_left_sideview": 0,
+        "3/4_rigth_sideview": 1,
+        "Frontal": 2,
+        "Left_sideview": 3,
+        "Right_sideview": 4,
+    }
+
+    # Ensure the output directory exists
+    create_directories(output_dir)
+
+    # Get the list of label files
+    labels_dir = os.path.join(root_dir, "labels")
+    label_files = [f for f in os.listdir(labels_dir) if f.endswith(".txt")]
+
+    # Process each label file
+    for label_file in label_files:
+        image_name = label_file.replace(".txt", ".jpg")
+        json_name = label_file.replace(".txt", ".json")
+
+        # Read the image size
+        image_path = os.path.join(root_dir, "images", image_name)
+        with Image.open(image_path) as img:
+            img_width, img_height = img.size
+
+        # Read the class index from the json file
+        json_path = os.path.join(root_dir, "json", json_name)
+        with open(json_path) as json_file:
+            data = json.load(json_file)
+            class_label = data["label"][0]["rectanglelabels"][0]
+            class_index = class_names[class_label]
+
+        # Read and normalize the bbox coordinates
+        bbox_path = os.path.join(root_dir, "labels", label_file)
+        with open(bbox_path) as bbox_file:
+            bbox_data = bbox_file.read().strip().split()
+
+        # Convert bbox data to float and calculate normalized coordinates
+        x_center, y_center, width, height = [float(val) for val in bbox_data]
+        x_center_norm = x_center / img_width
+        y_center_norm = y_center / img_height
+        width_norm = width / img_width
+        height_norm = height / img_height
+
+        # Calculate YOLO OBB coordinates
+        x1 = x_center_norm - width_norm / 2
+        y1 = y_center_norm - height_norm / 2
+        x2 = x_center_norm + width_norm / 2
+        y2 = y1
+        x3 = x2
+        y3 = y_center_norm + height_norm / 2
+        x4 = x1
+        y4 = y3
+
+        # Create output file path and write the YOLO OBB coordinates
+        output_file_path = os.path.join(output_dir, label_file)
+        with open(output_file_path, "w") as file:
+            file.write(f"{class_index} {x1} {y1} {x2} {y2} {x3} {y3} {x4} {y4}\n")

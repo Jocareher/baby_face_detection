@@ -1420,3 +1420,45 @@ def delete_json_without_jpg(json_folder: str, images_folder: str) -> None:
                 # The corresponding JPG file doesn't exist, delete the .json file
                 os.remove(os.path.join(json_folder, json_filename))
                 print(f"Deleted: {json_filename}")
+
+
+def update_bbox_class_index(folder_path: str) -> None:
+    """
+    Update the class index in YOLO OBB format bounding box files in the specified folder.
+
+    Args:
+        folder_path: The path to the folder containing the bounding box files.
+    """
+    # Iterate through all files in the folder
+    for filename in os.listdir(folder_path):
+        # Check if the file is a text file
+        if filename.endswith(".txt"):
+            # Construct the full path to the file
+            filepath = os.path.join(folder_path, filename)
+            # List to store updated lines
+            lines = []
+            # Open the file for reading
+            with open(filepath, "r") as file:
+                # Iterate through each line in the file
+                for line in file:
+                    # Split the line into parts based on whitespace
+                    parts = line.strip().split()
+                    # Check if the line has the correct format (9 parts)
+                    if len(parts) == 9:
+                        # Extract the class index from the line
+                        class_index = int(parts[0])
+                        # Update the class index according to specified rules
+                        if class_index in [0, 1]:
+                            class_index = 1 - class_index
+                        elif class_index in [3, 4]:
+                            class_index = 7 - class_index
+                        # Convert the updated class index back to string
+                        parts[0] = str(class_index)
+                        # Join the parts back into a line and append to the list
+                        lines.append(" ".join(parts) + "\n")
+            # Check if there are any updated lines
+            if lines:
+                # Open the file for writing
+                with open(filepath, "w") as file:
+                    # Write the updated lines back to the file
+                    file.writelines(lines)

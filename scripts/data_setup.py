@@ -867,7 +867,7 @@ def convert_obb_to_aabb(root_dir: str, dest_dir: str, save_label: bool = False) 
 
 def copy_corresponding_jsons(json_dir: str, images_dir: str, output_dir: str) -> None:
     """
-    Copies .json files corresponding to the images in dir_images to the output_dir.
+    Copies .json files corresponding to the images in images_dir to the output_dir.
 
     Args:
         - json_dir (str): The directory where the .json files are located.
@@ -1462,3 +1462,39 @@ def update_bbox_class_index(folder_path: str) -> None:
                 with open(filepath, "w") as file:
                     # Write the updated lines back to the file
                     file.writelines(lines)
+
+
+def copy_corresponding_images(labels_dir: str, img_dir: str, output_dir: str) -> None:
+    """
+    Copies images corresponding to .txt files from one folder to another.
+
+    This function scans through a directory for .txt files and another directory for image files (.jpg, .JPG).
+    For each .txt file, it finds a corresponding image file with the same base name and copies it to a specified
+    destination folder.
+
+    Args:
+        - labels_dir (str): The path to the directory containing .txt files.
+        - img_dir (str): The path to the directory containing image files (.jpg, .JPG).
+        - output_dir (str): The destination directory path where corresponding images will be copied.
+
+    Returns:
+    None
+    """
+    # Ensure the destination directory exists, create if it doesn't
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Loop through each file in the .txt directory
+    for file in os.listdir(labels_dir):
+        if file.endswith(".txt"):
+            # Extract the base name without extension
+            base_name = os.path.splitext(file)[0]
+
+            # Look for corresponding .jpg or .JPG files in the image directory
+            for img_ext in [".jpg", ".JPG"]:
+                img_path = os.path.join(img_dir, base_name + img_ext)
+                if os.path.exists(img_path):
+                    # If found, copy the image to the destination directory
+                    shutil.copy(img_path, output_dir)
+                    print(f"Copied {img_path} to {output_dir}")
+                    break  # Stop looking for other extensions once the file is found and copied

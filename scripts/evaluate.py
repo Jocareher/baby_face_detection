@@ -29,9 +29,9 @@ def read_bboxes(file_path: str, format: str = "detection") -> list:
     bboxes = []
     # Check the format of bounding boxes
     if format == "ground_truth":
-        # Iterate over lines and convert from (x, y, w, h) to (x1, y1, x2, y2)
+        # Iterate over lines and convert from c, (x, y, w, h) to (x1, y1, x2, y2)
         for line in lines:
-            x, y, w, h = map(float, line.strip().split())
+            c, x, y, w, h = map(float, line.strip().split())
             bboxes.append([x, y, x + w, y + h])  # Convert to x1, y1, x2, y2 format
     else:
         # Iterate over lines and parse bounding box information

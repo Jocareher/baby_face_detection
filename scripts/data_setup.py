@@ -1321,7 +1321,7 @@ def visualize_rotated_images_and_aabboxes(
                     f.write(" ".join(map(str, adjusted_bbox_coords_percentage)) + "\n")
                 else:
                     f.write(
-                        f"{adjusted_bbox_coords[0]} {adjusted_bbox_coords[1]} {adjusted_bbox_coords[2]} {adjusted_bbox_coords[3]}\n"
+                        f"{class_index} {adjusted_bbox_coords[0]} {adjusted_bbox_coords[1]} {adjusted_bbox_coords[2]} {adjusted_bbox_coords[3]}\n"
                     )
 
             # If display_grid is True, display only the selected images

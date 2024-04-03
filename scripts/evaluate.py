@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 
 
-def read_bboxes(file_path: str, format: str = 'detection') -> list:
+def read_bboxes(file_path: str, format: str = "detection") -> list:
     """
     Reads bounding boxes from a text file and returns them as a list.
 
@@ -22,13 +22,13 @@ def read_bboxes(file_path: str, format: str = 'detection') -> list:
         If the format is 'detection', it expects the bounding boxes to be in either (x1, y1, x2, y2) format or (x1, y1, x2, y2, score) format, where score is the probability score associated with the detection.
     """
     # Open the text file containing bounding box coordinates
-    with open(file_path, 'r') as f:
+    with open(file_path, "r") as f:
         # Read all lines from the file
         lines = f.readlines()
     # Initialize an empty list to store bounding boxes
     bboxes = []
     # Check the format of bounding boxes
-    if format == 'ground_truth':
+    if format == "ground_truth":
         # Iterate over lines and convert from (x, y, w, h) to (x1, y1, x2, y2)
         for line in lines:
             x, y, w, h = map(float, line.strip().split())
@@ -52,6 +52,7 @@ def read_bboxes(file_path: str, format: str = 'detection') -> list:
                 bboxes.append(bbox)  # For ground truth compatibility
     # Return the list of bounding boxes
     return bboxes
+
 
 def iou_aabb(bbox1: list, bbox2: list) -> float:
     """
@@ -89,19 +90,21 @@ def iou_aabb(bbox1: list, bbox2: list) -> float:
     return iou
 
 
-def integrated_detection_metrics_and_roc(det_path: str, gt_path: str, title: str = "ROC curve") -> tuple:
+def integrated_detection_metrics_and_roc(
+    det_path: str, gt_path: str, title: str = "ROC curve"
+) -> tuple:
     """
     Computes integrated detection metrics (precision, recall, F1-score) and plots the Receiver Operating Characteristic (ROC) curve for a set of detection results against ground truth annotations.
-    
+
     This function calculates the following metrics:
-        - Precision: The ratio of true positive detections to the total number of positive predictions made. 
-          It is calculated as TP / (TP + FP), where TP is the number of true positives (detections that correctly match a ground truth bounding box with IoU >= 0.5) 
+        - Precision: The ratio of true positive detections to the total number of positive predictions made.
+          It is calculated as TP / (TP + FP), where TP is the number of true positives (detections that correctly match a ground truth bounding box with IoU >= 0.5)
           and FP is the number of false positives (detections that do not correctly match any ground truth bounding box or match already detected ground truth bounding box).
-        
-        - Recall: The ratio of true positive detections to the total number of actual positives (ground truth bounding boxes). 
+
+        - Recall: The ratio of true positive detections to the total number of actual positives (ground truth bounding boxes).
           It is calculated as TP / (TP + FN), where FN is the number of false negatives (ground truth bounding boxes that were not detected by any detection bounding box).
-        
-        - F1-Score: The harmonic mean of precision and recall, providing a single metric to assess the balance between them. 
+
+        - F1-Score: The harmonic mean of precision and recall, providing a single metric to assess the balance between them.
           It is calculated as 2 * (precision * recall) / (precision + recall), giving equal weight to both precision and recall.
 
     Additionally, it plots the Receiver Operating Characteristic (ROC) curve, showing the trade-off between true positive rate (sensitivity) and false positive rate (1-specificity).
@@ -113,77 +116,86 @@ def integrated_detection_metrics_and_roc(det_path: str, gt_path: str, title: str
 
     Returns:
         - tuple: Contains calculated precision, recall, and F1-score. Each metric is a float value between 0 and 1, where 1 indicates perfect precision, recall, or F1-score.
-    
+
     Note:
         - This function assumes that each detection and ground truth file corresponds to one image and that the files are named such that detection and ground truth files match.
-        - The function calculates the Intersection over Union (IoU) to determine matches between detection and ground truth bounding boxes. 
+        - The function calculates the Intersection over Union (IoU) to determine matches between detection and ground truth bounding boxes.
           A detection is considered a true positive if it has an IoU of 0.5 or higher with any ground truth bounding box.
         - Ground truth bounding boxes that do not have any matching detection bounding box with an IoU of 0.5 or higher are considered false negatives.
         - Detections that do not match any ground truth bounding box with an IoU of 0.5 or higher are considered false positives.
     """
     # List and sort detection and ground truth files
-    det_files = sorted([f for f in os.listdir(det_path) if f.endswith('.txt')])
-    gt_files = sorted([f for f in os.listdir(gt_path) if f.endswith('.txt')])
-    
+    det_files = sorted([f for f in os.listdir(det_path) if f.endswith(".txt")])
+    gt_files = sorted([f for f in os.listdir(gt_path) if f.endswith(".txt")])
+
     # Initialize counters for true positives (TP), false positives (FP), and false negatives (FN)
     tp, fp, fn = 0, 0, 0
     # Initialize lists to store detection scores and labels
     scores = []
     labels = []
-    
+
     # Iterate over ground truth files
     for gt_file in gt_files:
         # Check if corresponding detection file exists
         if gt_file in det_files:
             # Read ground truth bounding boxes
-            gt_bboxes = read_bboxes(os.path.join(gt_path, gt_file), format='ground_truth')
+            gt_bboxes = read_bboxes(
+                os.path.join(gt_path, gt_file), format="ground_truth"
+            )
             # Read detection bounding boxes with probabilities
-            det_bboxes_with_probs = read_bboxes(os.path.join(det_path, gt_file), format='detection')
-            
+            det_bboxes_with_probs = read_bboxes(
+                os.path.join(det_path, gt_file), format="detection"
+            )
+
             # Set to track matched ground truth bounding boxes
             matched_gt_idxs = set()
-            
+
             # Iterate over detection bounding boxes
             for item in det_bboxes_with_probs:
                 # Separate bounding box and probability score
                 det_bbox, score = item if isinstance(item, tuple) else (item, 1.0)
-                
+
                 # Find best matching ground truth bounding box for each detection
-                ious = [(iou_aabb(det_bbox, gt_bbox), idx) for idx, gt_bbox in enumerate(gt_bboxes)]
+                ious = [
+                    (iou_aabb(det_bbox, gt_bbox), idx)
+                    for idx, gt_bbox in enumerate(gt_bboxes)
+                ]
                 best_iou, best_idx = max(ious, key=lambda x: x[0], default=(0, -1))
-                
+
                 # Determine if detection is true positive
                 is_tp = best_iou >= 0.5 and best_idx not in matched_gt_idxs
                 # Append score and label
                 scores.append(score)
                 labels.append(is_tp)
-                
+
                 # Update counters based on true positive or false positive
                 if is_tp:
                     tp += 1
                     matched_gt_idxs.add(best_idx)  # Mark this GT box as matched
                 else:
                     fp += 1
-            
+
             # Update calculation of false negatives based on unmatched GT boxes
             fn += len(gt_bboxes) - len(matched_gt_idxs)
-    
+
     # Calculate precision, recall, and F1-score
     precision = tp / (tp + fp) if tp + fp > 0 else 0
     recall = tp / (tp + fn) if tp + fn > 0 else 0
-    f1_score = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0
-    
+    f1_score = (
+        2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0
+    )
+
     # Generate ROC data and plot curve
     fpr, tpr, thresholds = roc_curve(labels, scores)
     roc_auc = auc(fpr, tpr)
 
     plt.figure()
-    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'AUC = {roc_auc:.2f})')
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"AUC = {roc_auc:.2f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
     plt.title(title)
     plt.legend(loc="lower right")
     plt.show()

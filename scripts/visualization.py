@@ -7,10 +7,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from PIL import Image
 
-from data_setup import create_directories
 
-
-def draw_bounding_boxes_and_save_images(root_dir: str, output_dir: str):
+def draw_aabb_bboxes_and_save_images(root_dir: str, output_dir: str):
     """
     Read images and corresponding bounding box annotations from the root directory,
     draw bounding boxes on the images, and save the annotated images to the output directory.
@@ -25,7 +23,7 @@ def draw_bounding_boxes_and_save_images(root_dir: str, output_dir: str):
 
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir):
-        create_directories(output_dir)
+        os.makedirs(output_dir)
 
     # List files in the root directory
     for filename in os.listdir(os.path.join(root_dir, "images")):
@@ -42,11 +40,22 @@ def draw_bounding_boxes_and_save_images(root_dir: str, output_dir: str):
             with open(label_path, "r") as file:
                 lines = file.readlines()
                 for line in lines:
-                    # Extract bounding box coordinates
-                    x, y, w, h = map(int, line.strip().split())
+                    # Extract bounding box coordinates and class index
+                    class_index, x, y, w, h = map(int, line.strip().split())
 
                     # Draw bounding box on the image
                     cv2.rectangle(image, (x, y), (x + w, y + h), (255, 255, 0), 2)
+
+                    # Add text with class index
+                    cv2.putText(
+                        image,
+                        f"{class_index}",
+                        (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 0, 255),
+                        2,
+                    )
 
             # Save image with bounding boxes
             output_path = os.path.join(output_dir, filename)
@@ -175,157 +184,83 @@ def draw_yolov8_annotations_on_images(
 
 
 def plot_images_with_labels_and_obboxes(
-    root_dir: str,
-    output_dir: str = None,
-    save_images: bool = True,
-    display_images: bool = False,
-    num_images_to_display: int = 4,
-    line_thickness: int = 5,
-    font_size: int = 14,
+    root_dir: str, output_dir: str, line_thickness: int = 5, font_size: int = 20
 ):
     """
-    Processes all images in a directory, draws oriented bounding boxes (OBBoxes) and the class index with specified
-    line thickness and font size. It optionally saves the resulting images and/or displays a subset of them in a grid,
-    including the image names above each displayed image.
+    Processes all images in a directory, draws oriented bounding boxes and the class index with specified line thickness and font size,
+    and saves the resulting images using OpenCV.
 
     Args:
     - root_dir (str): Root directory containing 'images' and 'labels' folders.
-    - output_dir (str, optional): Directory where the resulting images will be saved. If None, images won't be saved.
-    - save_images (bool, optional): If True, processed images will be saved.
-    - display_images (bool, optional): If True, displays a subset of processed images in a grid.
-    - num_images_to_display (int, optional): Number of images to display in a grid if display_images is True.
+    - output_dir (str): Directory where the resulting images will be saved.
     - line_thickness (int): Line thickness of the bounding boxes.
     - font_size (int): Font size for the class text.
     """
-
-    # Directory for images
     images_dir = os.path.join(root_dir, "images")
-    # Directory for labels
     labels_dir = os.path.join(root_dir, "labels")
-    # List for storing displayed images paths
-    displayed_images = []
 
-    # Create output directory if it doesn't exist and saving is enabled
-    if save_images and output_dir and not os.path.exists(output_dir):
+    # Create the output directory if it doesn't exist
+    if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # Iterate through each image in the images directory
+    # Iterate over each file in the images directory
     for image_name in os.listdir(images_dir):
-        # Construct full path to image file
         image_path = os.path.join(images_dir, image_name)
-        # Open the image
-        image = Image.open(image_path)
-        # Get original image size (width, height)
-        original_size = image.size
-        # Get original DPI if available, else default to 100
-        original_dpi = image.info.get("dpi", (100, 100))
 
-        # Create a figure and axis to plot image
-        fig, ax = plt.subplots()
-        # Display the image
-        ax.imshow(image)
-        # Turn off the axis
-        ax.axis("off")
+        # Skip files that are not regular image files
+        try:
+            image = cv2.imread(image_path)
+            image_height, image_width, _ = image.shape
+        except:
+            print(f"Skipping file: {image_name}")
+            continue
 
-        # Construct path to the corresponding label file
-        label_path = os.path.join(labels_dir, os.path.splitext(image_name)[0] + ".txt")
-        # Check if label file exists and process it
-        if os.path.exists(label_path):
-            with open(label_path, "r") as file:
-                # Read label file line by line
-                for line in file.readlines():
-                    # Split line to get class index and bbox coordinates
-                    class_index, *bbox_coords = line.strip().split()
-                    # Convert coordinates from string to float and calculate absolute coordinates
-                    coordinates = list(map(float, bbox_coords))
+        # Check if there is a corresponding label file
+        base_name = os.path.splitext(image_name)[0]
+        bbox_path = os.path.join(labels_dir, base_name + ".txt")
+
+        if os.path.exists(bbox_path):
+            with open(bbox_path, "r") as file:
+                for line in file:
+                    # Parse bounding box data from the label file
+                    bbox_data = line.strip().split()
+                    # Extract the class index from the bounding box data
+                    class_index = bbox_data[0]
+                    # Convert normalized coordinates to absolute
+                    coordinates = [float(coord) for coord in bbox_data[1:]]
                     absolute_coordinates = [
                         (
-                            coordinates[i] * original_size[0],
-                            coordinates[i + 1] * original_size[1],
+                            int(coordinates[i] * image_width),
+                            int(coordinates[i + 1] * image_height),
                         )
                         for i in range(0, len(coordinates), 2)
                     ]
-                    # Create bounding box polygon and add to axis
-                    polygon = patches.Polygon(
-                        absolute_coordinates,
-                        closed=True,
-                        linewidth=line_thickness,
-                        edgecolor="red",
-                        facecolor="none",
+
+                    # Draw bounding box on the image
+                    points = [(x, y) for x, y in absolute_coordinates]
+                    cv2.polylines(
+                        image,
+                        [np.array(points)],
+                        isClosed=True,
+                        color=(255, 0, 0),
+                        thickness=line_thickness,
                     )
-                    ax.add_patch(polygon)
-                    # Add class index text to plot
-                    ax.text(
-                        absolute_coordinates[0][0],
-                        absolute_coordinates[0][1],
+
+                    # Draw the class index on the image
+                    label_x, label_y = absolute_coordinates[0]
+                    # Add class index text near the bounding box
+                    cv2.putText(
+                        image,
                         class_index,
-                        verticalalignment="top",
-                        color="green",
-                        fontsize=font_size,
-                        weight="bold",
+                        (label_x, label_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        font_size,
+                        (0, 0, 255),
+                        thickness=2,
                     )
 
-        # Check if images should be saved
-        if save_images and output_dir:
-            # Path to save processed image
-            output_image_path = os.path.join(output_dir, image_name)
-            # Save the figure with original DPI and ensure the image has the original resolution
-            fig.savefig(
-                output_image_path,
-                bbox_inches="tight",
-                pad_inches=0,
-                dpi=original_dpi[0],
-            )
-            # Close the plot to free memory
-            plt.close(fig)
-            # Append path to list for display if required
-            if display_images:
-                displayed_images.append((output_image_path, image_name))
+        # Save the resulting image
+        output_image_path = os.path.join(output_dir, image_name)
+        cv2.imwrite(output_image_path, image)
 
-    # Display images in a grid if required
-    if display_images and displayed_images:
-        # Randomly select images for display
-        images_to_display = random.sample(
-            displayed_images, min(num_images_to_display, len(displayed_images))
-        )
-        # Determine the number of rows and columns for the grid
-        rows, cols = determine_grid_size(len(images_to_display))
-        # Create subplot grid
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
-        # Loop through each subplot and display image
-        for ax, (img_path, name) in zip(axes.ravel(), images_to_display):
-            img = Image.open(img_path)
-            ax.imshow(img)
-            # Set the title of the subplot to the image name
-            ax.set_title(name)
-            ax.axis("off")
-        # Hide unused subplots
-        for ax in axes.ravel()[len(images_to_display) :]:
-            ax.axis("off")
-        # Adjust the layout
-        plt.tight_layout()
-        # Display the grid
-        plt.show()
-
-    # Print confirmation if images were saved
-    if save_images and output_dir:
-        print(f"All images have been processed and saved in {output_dir}")
-
-
-def determine_grid_size(num_images: int):
-    """
-    Determines the number of rows and columns for the grid based on the number of images to display.
-    This ensures that the grid is as square as possible without empty spaces.
-
-    Args:
-    - num_images (int): Number of images to display.
-
-    Returns:
-    - (rows, cols) (tuple): The number of rows and columns for the grid.
-    """
-    # Calculate number of columns needed for square grid
-    cols = int(np.ceil(np.sqrt(num_images)))
-    # Calculate number of rows needed
-    rows = int(np.ceil(num_images / cols))
-    # Return the grid dimensions
-    return rows, cols
+    print(f"All images have been processed and saved in {output_dir}")

@@ -1498,3 +1498,36 @@ def copy_corresponding_images(labels_dir: str, img_dir: str, output_dir: str) ->
                     shutil.copy(img_path, output_dir)
                     print(f"Copied {img_path} to {output_dir}")
                     break  # Stop looking for other extensions once the file is found and copied
+
+def find_mispredictions(pred_path: str, gt_path: str, dest_path: str) -> List[str]:
+    """
+    Copies the .jpg files of ground truths that do not have a corresponding file in the predictions folder to a specified destination folder.
+
+    Args:
+        - pred_path (str): Path to the directory containing prediction files.
+        - gt_path (str): Path to the directory containing ground truth files.
+        - dest_path (str): Path to the destination directory where the missing files will be copied.
+
+    Returns:
+        - List[str]: List of file names copied to the destination directory.
+    """
+    # Ensure destination directory exists
+    if not os.path.exists(dest_path):
+        os.makedirs(dest_path)
+
+    # List all .jpg files in both folders
+    pred_files = {os.path.splitext(f)[0] for f in os.listdir(pred_path) if f.endswith('.jpg')}
+    gt_files = {os.path.splitext(f)[0] for f in os.listdir(gt_path) if f.endswith('.jpg')}
+
+    # Find the difference: files in gt that are not in pred
+    missing_files = gt_files - pred_files
+    copied_files = []
+
+    # Copy missing files to destination directory
+    for file_name in missing_files:
+        src_file_path = os.path.join(gt_path, file_name + '.jpg')
+        dest_file_path = os.path.join(dest_path, file_name + '.jpg')
+        shutil.copy(src_file_path, dest_file_path)
+        copied_files.append(file_name)
+
+    return copied_files

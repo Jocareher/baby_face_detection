@@ -17,6 +17,7 @@ from pathlib import Path
 import shutil
 
 from collections import defaultdict
+from evaluate import read_bboxes, iou_aabb
 
 
 def process_and_save_json(file_path: str, output_directory: str):
@@ -1536,3 +1537,82 @@ def find_mispredictions(pred_path: str, gt_path: str, dest_path: str) -> List[st
         copied_files.append(file_name)
 
     return copied_files
+
+
+def create_masks_for_adults(
+    img_dir: str, det_dir: str, gt_dir: str, output_dir: str, iou_threshold: float = 0.5
+) -> None:
+    """
+    Creates masks for adult faces in images by comparing detections with ground truth annotations of baby faces.
+
+    Args:
+        - img_dir (str): Path to the directory containing the images.
+        - det_dir (str): Path to the directory containing the detection files.
+        - gt_dir (str): Path to the directory containing the ground truth files.
+        - output_dir (str): Path to the directory where the output images with masks will be saved.
+        - iou_threshold (float): IoU threshold to determine if a detected face is a baby or not. Default is 0.5.
+
+    Returns:
+        - None
+    """
+    # Create the output directory if it does not exist
+    create_directories(output_dir)
+
+    # Get sorted lists of the detection, ground truth, and image files
+    det_files = sorted([f for f in os.listdir(det_dir) if f.endswith(".txt")])
+    gt_files = sorted([f for f in os.listdir(gt_dir) if f.endswith(".txt")])
+    img_files = sorted([f for f in os.listdir(img_dir) if f.endswith(".jpg")])
+
+    # Loop over each ground truth file
+    for gt_file in gt_files:
+        # Find the corresponding detection and image files
+        corresponding_det_file = gt_file
+        corresponding_img_file = gt_file.replace(".txt", ".jpg")
+
+        # If there is no corresponding detection or image file, skip this ground truth file
+        if (
+            corresponding_det_file not in det_files
+            or corresponding_img_file not in img_files
+        ):
+            continue
+
+        # Read the ground truth and detection bounding boxes
+        gt_bboxes = read_bboxes(os.path.join(gt_dir, gt_file), format="ground_truth")
+        det_bboxes_with_probs = read_bboxes(
+            os.path.join(det_dir, corresponding_det_file), format="detection"
+        )
+
+        # Load the image
+        img_path = os.path.join(img_dir, corresponding_img_file)
+        image = cv2.imread(img_path)
+
+        # Create a copy of the image to draw the mask on
+        mask = image.copy()
+
+        # Set to keep track of matched ground truth indices
+        matched_gt_idxs = set()
+
+        # Loop over each detected bounding box
+        for item in det_bboxes_with_probs:
+            # Extract the bounding box and score
+            det_bbox, score = item if isinstance(item, tuple) else (item, 1.0)
+            # Calculate IoUs between the detected bounding box and all ground truth bounding boxes
+            ious = [
+                (iou_aabb(det_bbox, gt_bbox), idx)
+                for idx, gt_bbox in enumerate(gt_bboxes)
+            ]
+            # Find the best IoU and corresponding ground truth index
+            best_iou, best_idx = max(ious, key=lambda x: x[0], default=(0, -1))
+
+            # If the best IoU is below the threshold or the ground truth index is already matched
+            if best_iou < iou_threshold or best_idx in matched_gt_idxs:
+                # This detection is a non-baby face (false positive), cover it with a mask
+                x1, y1, x2, y2 = map(int, det_bbox)
+                cv2.rectangle(mask, (x1, y1), (x2, y2), (0, 0, 0), -1)
+            else:
+                # Mark this ground truth index as matched
+                matched_gt_idxs.add(best_idx)
+
+        # Save the masked image to the output directory
+        output_path = os.path.join(output_dir, corresponding_img_file)
+        cv2.imwrite(output_path, mask)

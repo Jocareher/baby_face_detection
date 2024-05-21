@@ -1616,3 +1616,86 @@ def create_masks_for_adults(
         # Save the masked image to the output directory
         output_path = os.path.join(output_dir, corresponding_img_file)
         cv2.imwrite(output_path, mask)
+
+
+def convert_coordinates(txt_content: str, img_width: int, img_height: int) -> tuple:
+    """
+    Converts normalized coordinates from a .txt file to absolute integer coordinates.
+
+    Args:
+        txt_content (str): Content of the text file containing normalized coordinates.
+        img_width (int): Width of the image.
+        img_height (int): Height of the image.
+
+    Returns:
+        tuple: A list of tuples containing class index and absolute coordinates. Each tuple may also contain a confidence score.
+    """
+    absolute_coordinates = []
+
+    for line in txt_content.strip().split("\n"):
+        parts = line.split()
+        class_index = int(parts[0])
+
+        # Convert normalized coordinates to absolute integers
+        x1, y1 = int(float(parts[1]) * img_width), int(float(parts[2]) * img_height)
+        x2, y2 = int(float(parts[3]) * img_width), int(float(parts[4]) * img_height)
+        x3, y3 = int(float(parts[5]) * img_width), int(float(parts[6]) * img_height)
+        x4, y4 = int(float(parts[7]) * img_width), int(float(parts[8]) * img_height)
+
+        if len(parts) == 9:
+            absolute_coordinates.append((class_index, x1, y1, x2, y2, x3, y3, x4, y4))
+        else:
+            score = float(parts[-1])
+            absolute_coordinates.append(
+                (class_index, score, x1, y1, x2, y2, x3, y3, x4, y4)
+            )
+
+    return absolute_coordinates
+
+
+def convert_coordinates_from_4_points_to_8_points(
+    root_path: str, save_path: str
+) -> None:
+    """
+    Converts normalized coordinates in .txt files to absolute integer coordinates and saves them.
+
+    Args:
+        root_path (str): Root directory containing 'labels' and 'images' subdirectories.
+        save_path (str): Directory where the converted coordinate files will be saved.
+    """
+    # Create the save directory if it doesn't exist
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    labels_path = os.path.join(root_path, "labels")
+    images_path = os.path.join(root_path, "images")
+
+    # List all files in the labels directory
+    for txt_file in os.listdir(labels_path):
+        base_name = os.path.splitext(txt_file)[0]
+        image_file = base_name + ".jpg"
+
+        # Load the image to get its dimensions
+        image = Image.open(os.path.join(images_path, image_file))
+        width, height = image.size
+
+        # Read normalized coordinates from the .txt file
+        with open(os.path.join(labels_path, txt_file), "r") as file:
+            txt_content = file.read()
+
+        # Convert coordinates to absolute integers
+        absolute_coordinates = convert_coordinates(txt_content, width, height)
+
+        # Write the converted coordinates to a new .txt file in the save directory
+        save_file_path = os.path.join(save_path, txt_file)
+        with open(save_file_path, "w") as file:
+            for coords in absolute_coordinates:
+                line = []
+                for index, coord in enumerate(coords):
+                    if index == 1 and isinstance(
+                        coord, float
+                    ):  # Format the confidence score
+                        line.append(f"{coord:.6f}")
+                    else:
+                        line.append(str(int(coord)))  # Convert other values to int
+                file.write(" ".join(line) + "\n")

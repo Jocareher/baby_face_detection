@@ -1653,9 +1653,7 @@ def convert_coordinates(txt_content: str, img_width: int, img_height: int) -> tu
     return absolute_coordinates
 
 
-def convert_coordinates_from_normalized_to_abs(
-    root_path: str, save_path: str
-) -> None:
+def convert_coordinates_from_normalized_to_abs(root_path: str, save_path: str) -> None:
     """
     Converts normalized coordinates in .txt files to absolute integer coordinates and saves them.
 
@@ -1699,3 +1697,75 @@ def convert_coordinates_from_normalized_to_abs(
                     else:
                         line.append(str(int(coord)))  # Convert other values to int
                 file.write(" ".join(line) + "\n")
+
+
+def convert_bboxes_from_4_points_to_8_points(
+    input_dir: str,
+    output_dir: str,
+    format: str = "detection",
+    has_confidence_score: bool = True,
+) -> None:
+    """
+    Converts bounding box format from the input directory and writes the converted format to the output directory.
+
+    Args:
+        input_dir (str): Directory containing the input .txt files with bounding box data.
+        output_dir (str): Directory where the converted bounding box data will be saved.
+        format (str): Format of the bounding boxes in the input files. Defaults to "detection".
+        has_confidence_score (bool): Indicates whether the input bounding box data includes confidence scores. Defaults to True.
+    """
+    # Create the output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Process each txt file in the input directory
+    for filename in os.listdir(input_dir):
+        if filename.endswith(".txt"):
+            with open(os.path.join(input_dir, filename), "r") as file:
+                lines = file.readlines()
+
+            new_lines = []
+            for line in lines:
+                parts = line.strip().split()
+
+                if format == "detection":
+                    if has_confidence_score:
+                        # Parse with confidence score
+                        confidence_score, x, y, x_plus_w, y_plus_h = map(float, parts)
+                    else:
+                        # Parse without confidence score
+                        x, y, x_plus_w, y_plus_h = map(float, parts)
+                        confidence_score = None
+                else:
+                    # Parse line and confidence score for other formats
+                    l, x, y, w, h = map(float, parts)
+
+                if format == "detection":
+                    # Calculate corners for detection format
+                    x1, y1 = x, y  # Top-left corner
+                    x2, y2 = x_plus_w, y  # Top-right corner
+                    x3, y3 = x_plus_w, y_plus_h  # Bottom-right corner
+                    x4, y4 = x, y_plus_h  # Bottom-left corner
+                else:
+                    # Calculate corners for other formats
+                    x1, y1 = x, y  # Top-left corner
+                    x2, y2 = x + w, y  # Top-right corner
+                    x3, y3 = x + w, y + h  # Bottom-right corner
+                    x4, y4 = x, y + h  # Bottom-left corner
+
+                # Create the new line based on the format and confidence score
+                if format == "detection" and confidence_score is not None:
+                    new_line = (
+                        f"{confidence_score} {x1} {y1} {x2} {y2} {x3} {y3} {x4} {y4}"
+                    )
+                elif format == "detection" and confidence_score is None:
+                    new_line = f"{x1} {y1} {x2} {y2} {x3} {y3} {x4} {y4}"
+                else:
+                    new_line = f"{int(l)} {x1} {y1} {x2} {y2} {x3} {y3} {x4} {y4}"
+
+                new_lines.append(new_line)
+
+            # Write the new lines to the output file
+            with open(os.path.join(output_dir, filename), "w") as file:
+                for new_line in new_lines:
+                    file.write(new_line + "\n")

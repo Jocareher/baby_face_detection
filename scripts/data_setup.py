@@ -1653,7 +1653,7 @@ def convert_coordinates(txt_content: str, img_width: int, img_height: int) -> tu
     return absolute_coordinates
 
 
-def convert_coordinates_from_4_points_to_8_points(
+def convert_coordinates_from_normalized_to_abs(
     root_path: str, save_path: str
 ) -> None:
     """

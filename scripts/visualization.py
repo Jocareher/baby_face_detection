@@ -264,3 +264,40 @@ def plot_images_with_labels_and_obboxes(
         cv2.imwrite(output_image_path, image)
 
     print(f"All images have been processed and saved in {output_dir}")
+
+
+def draw_bbox_polygons_from_file(image_path: str, bbox_file_path: str) -> None:
+    """
+    Draws bounding boxes on an image from a given bounding box file.
+
+    Args:
+        image_path (str): Path to the image file.
+        bbox_file_path (str): Path to the file containing bounding box coordinates.
+    """
+    # Read the original image
+    image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Check if the image was loaded successfully
+    if image is None:
+        print("Error loading the image")
+        return
+
+    # Read the bounding boxes from the file
+    with open(bbox_file_path, "r") as file:
+        lines = file.readlines()
+
+    # Draw each bounding box on the image
+    for line in lines:
+        parts = line.strip().split()
+        # Assume that the last 8 numbers are the coordinates
+        points = list(map(float, parts[-8:]))
+        points = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+
+        # Draw the polygon on the image
+        cv2.polylines(image, [points], isClosed=True, color=(0, 0, 255), thickness=2)
+
+    # Display the image with the drawn bounding boxes
+    plt.imshow(image)
+    plt.axis("off")  # Hide the axis
+    plt.show()

@@ -253,54 +253,71 @@ def convert_annotations_to_yolo_obb(
     original_size: bool = False,
     image_resize: tuple = (640, 640),
     output_format: str = "absolute",
+    include_angle: bool = True,
+    angle_unit: str = "degrees",
 ):
     """
     Convert rotated bounding box annotations from JSON files to YOLO OBB format and save to TXT files.
-
-    This function processes each JSON file in the specified directory, converts the annotation data
-    to the YOLO OBB format, and writes the converted data to a corresponding TXT file in the output folder.
-
+    
+    For each JSON annotation file, this function reads the annotations, converts the rotated bounding box 
+    to YOLO OBB format, and optionally appends the rotation angle. The output for each annotation will be:
+    
+        class_index x1 y1 x2 y2 x3 y3 x4 y4 [angle]
+    
+    where the angle is included only if include_angle is True. The angle will be in degrees or radians 
+    based on the angle_unit parameter.
+    
     Args:
-    - json_folder_path (str): The path to the folder containing JSON annotation files.
-    - output_folder_path (str): The path to the folder where TXT files will be saved.
-    - class_list (list): A list of class names ordered according to their class index.
-    - original_size (bool): Flag indicating whether to use the original image dimensions for calculations.
-    - image_resize (tuple): The dimensions (width, height) to which the image has been resized.
-                            This is used if original_size is False.
-    - output_format (str): Specifies the output format ("absolute", "normalized_original", "normalized_resized").
-
+      json_folder_path (str): Path to the folder containing JSON annotation files.
+      output_folder_path (str): Path to the folder where TXT files will be saved.
+      class_list (list): A list of class names ordered according to their class index.
+      original_size (bool): Whether to use the original image dimensions for calculations.
+      image_resize (tuple): The dimensions (width, height) to which the image has been resized.
+      output_format (str): Specifies the output format ("absolute", "normalized_original", "normalized_resized").
+      include_angle (bool): If True, the rotation angle will be appended to the output.
+      angle_unit (str): The unit for the angle. Either "degrees" (default) or "radians".
+    
     Outputs:
-    - TXT files containing the annotations in YOLO OBB format, saved to the destination folder.
+      TXT files containing the annotations in YOLO OBB format, saved to the destination folder.
     """
-    # Create the destination folder if it does not exist
+    # Create the destination folder if it does not exist.
     if not os.path.exists(output_folder_path):
-        create_directories(output_folder_path)
+        os.makedirs(output_folder_path, exist_ok=True)
 
-    # Loop through all the files in the json directory
+    # Process each JSON file in the given folder.
     for file_name in os.listdir(json_folder_path):
         if file_name.endswith(".json"):
-            # Read the JSON file
-            with open(os.path.join(json_folder_path, file_name), "r") as json_file:
+            # Read the JSON file.
+            json_path = os.path.join(json_folder_path, file_name)
+            with open(json_path, "r") as json_file:
                 data = json.load(json_file)
 
-            # Prepare the content for the TXT file
             txt_content = []
+            # Loop through each annotation in the JSON.
             for annotation in data["label"]:
-                # Calculate the rotated bounding box coordinates
+                # Calculate the 4 corner coordinates of the rotated bbox.
                 corners = calculate_rotated_bbox_for_yolo_v8(
                     annotation, original_size, image_resize, output_format
                 )
-                # Get the class index
+                # Get the class index based on the rectangle label.
                 class_index = class_list.index(annotation["rectanglelabels"][0])
-                # Convert coordinates to the YOLO OBB format, absolute or normalized
+                # Flatten the corners list.
                 yolo_obb = [class_index] + [val for corner in corners for val in corner]
+                # Optionally, append the rotation angle.
+                if include_angle:
+                    angle = annotation.get("rotation", 0)
+                    if angle_unit.lower() == "radians":
+                        angle = math.radians(angle)
+                    yolo_obb.append(angle)
+                # Create a string from the list.
                 txt_content.append(" ".join(map(str, yolo_obb)))
 
-            # Write the content to the corresponding TXT file
-            txt_file_name = os.path.splitext(data["image"].split("/")[-1])[0] + ".txt"
-            with open(os.path.join(output_folder_path, txt_file_name), "w") as txt_file:
+            # Determine the TXT file name based on the image file name in the JSON.
+            image_file_name = os.path.splitext(data["image"].split("/")[-1])[0] + ".txt"
+            txt_file_path = os.path.join(output_folder_path, image_file_name)
+            # Write the content to the TXT file.
+            with open(txt_file_path, "w") as txt_file:
                 txt_file.write("\n".join(txt_content))
-
 
 def create_yolov8_pairs(root_directory: str) -> list[tuple]:
     """
@@ -1407,7 +1424,7 @@ def delete_json_without_jpg(json_folder: str, images_folder: str) -> None:
     jpg_files = {
         os.path.splitext(filename)[0]
         for filename in os.listdir(images_folder)
-        if filename.endswith(".jpg")
+        if filename.endswith(".jpg", ".JPG")
     }
 
     # Iterate over .json files in the specified folder

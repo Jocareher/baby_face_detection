@@ -1,5 +1,4 @@
-path: ../data
-
+path: /Users/jocareher/Downloads/obb_testing/
 train: train/images
 val: val/images
 test: test/images

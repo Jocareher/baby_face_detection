@@ -287,37 +287,35 @@ def convert_annotations_to_yolo_obb(
     # Process each JSON file in the given folder.
     for file_name in os.listdir(json_folder_path):
         if file_name.endswith(".json"):
-            # Read the JSON file.
             json_path = os.path.join(json_folder_path, file_name)
             with open(json_path, "r") as json_file:
                 data = json.load(json_file)
 
+            # Use .get() to safely access "label" key.
+            annotations = data.get("label", [])
+            if not annotations:
+                # Skip this file if there are no annotations
+                continue
+
             txt_content = []
-            # Loop through each annotation in the JSON.
-            for annotation in data["label"]:
-                # Calculate the 4 corner coordinates of the rotated bbox.
+            for annotation in annotations:
                 corners = calculate_rotated_bbox_for_yolo_v8(
                     annotation, original_size, image_resize, output_format
                 )
-                # Get the class index based on the rectangle label.
                 class_index = class_list.index(annotation["rectanglelabels"][0])
-                # Flatten the corners list.
                 yolo_obb = [class_index] + [val for corner in corners for val in corner]
-                # Optionally, append the rotation angle.
                 if include_angle:
                     angle = annotation.get("rotation", 0)
                     if angle_unit.lower() == "radians":
                         angle = math.radians(angle)
                     yolo_obb.append(angle)
-                # Create a string from the list.
                 txt_content.append(" ".join(map(str, yolo_obb)))
 
-            # Determine the TXT file name based on the image file name in the JSON.
             image_file_name = os.path.splitext(data["image"].split("/")[-1])[0] + ".txt"
             txt_file_path = os.path.join(output_folder_path, image_file_name)
-            # Write the content to the TXT file.
             with open(txt_file_path, "w") as txt_file:
                 txt_file.write("\n".join(txt_content))
+
 
 def create_yolov8_pairs(root_directory: str) -> list[tuple]:
     """

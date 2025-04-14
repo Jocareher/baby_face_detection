@@ -258,15 +258,15 @@ def convert_annotations_to_yolo_obb(
 ):
     """
     Convert rotated bounding box annotations from JSON files to YOLO OBB format and save to TXT files.
-    
-    For each JSON annotation file, this function reads the annotations, converts the rotated bounding box 
+
+    For each JSON annotation file, this function reads the annotations, converts the rotated bounding box
     to YOLO OBB format, and optionally appends the rotation angle. The output for each annotation will be:
-    
+
         class_index x1 y1 x2 y2 x3 y3 x4 y4 [angle]
-    
-    where the angle is included only if include_angle is True. The angle will be in degrees or radians 
+
+    where the angle is included only if include_angle is True. The angle will be in degrees or radians
     based on the angle_unit parameter.
-    
+
     Args:
       json_folder_path (str): Path to the folder containing JSON annotation files.
       output_folder_path (str): Path to the folder where TXT files will be saved.
@@ -276,7 +276,7 @@ def convert_annotations_to_yolo_obb(
       output_format (str): Specifies the output format ("absolute", "normalized_original", "normalized_resized").
       include_angle (bool): If True, the rotation angle will be appended to the output.
       angle_unit (str): The unit for the angle. Either "degrees" (default) or "radians".
-    
+
     Outputs:
       TXT files containing the annotations in YOLO OBB format, saved to the destination folder.
     """
@@ -726,31 +726,34 @@ def count_labels_per_class_and_set(root_path: str) -> None:
 
 def flip_coordinates(labels: List[str]) -> List[str]:
     """
-    Updates the class and coordinates of a YOLO label after a horizontal flip of the image.
+    Updates the class, coordinates, and angle of a YOLO OBB label after a horizontal flip of the image.
 
     Args:
-        - labels: List of strings, where the first element is the class index, and the following eight are coordinates.
+        - labels: List of strings, where the first element is the class index, followed by 8 coords and an angle.
 
     Returns:
-        - List of strings updated with the flipped class and modified coordinates.
+        - List of strings updated with the flipped class, coordinates, and angle.
     """
     # Update class
     class_id = int(labels[0])
-    # Swap class indices for side and 3/4 views
     if class_id in [0, 1]:
         labels[0] = str(1 - class_id)
     elif class_id in [3, 4]:
         labels[0] = str(7 - class_id)
 
-    # Update coordinates
-    coords = np.array(labels[1:], dtype=float).reshape(4, 2)
-    coords[:, 0] = 1 - coords[:, 0]  # Reflect the x coordinates
-    coords = coords[
-        [1, 0, 3, 2], :
-    ]  # Reorder points to maintain bounding box consistency
+    # Extract coordinates and angle
+    coords = np.array(labels[1:9], dtype=float).reshape(4, 2)
+    angle = float(labels[9])
 
-    return [labels[0]] + coords.flatten().tolist()
+    # Flip x coordinates (horizontal mirror)
+    coords[:, 0] = 1 - coords[:, 0]
+    coords = coords[[1, 0, 3, 2], :]  # Maintain point order consistency
 
+    # Flip the angle (clockwise to clockwise mirrored)
+    flipped_angle = -angle
+
+    # Return updated label
+    return [labels[0]] + coords.flatten().tolist() + [flipped_angle]
 
 def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
     """

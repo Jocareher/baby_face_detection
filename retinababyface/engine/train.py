@@ -47,7 +47,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.Inf
+        self.val_loss_min = np.inf
         self.delta = delta
         self.path = path
         self.use_kfold = use_kfold
@@ -74,7 +74,7 @@ class EarlyStopping:
                 self.counter = 0
                 self.best_score = None
                 self.early_stop = False
-                self.val_loss_min = np.Inf
+                self.val_loss_min = np.inf
                 self.filename = self.path.replace(".pt", f"_fold_{fold}.pt")
 
         # Calculating the score by negating the validation loss
@@ -527,9 +527,13 @@ def train(
                 device=device,
                 anchors=anchors,
             )  # Perform a testing step.
-            
-            if scheduler is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(test_total_loss) # Update learning rate scheduler if ReduceLROnPlateau.
+
+            if scheduler is not None and isinstance(
+                scheduler, lr_scheduler.ReduceLROnPlateau
+            ):
+                scheduler.step(
+                    test_total_loss
+                )  # Update learning rate scheduler if ReduceLROnPlateau.
 
             epoch_time = time.time() - epoch_start
             print(
@@ -541,11 +545,15 @@ def train(
             print(
                 f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}"
             )
-            
+
             if device.type == "cuda":
-                allocated_mem_MB = torch.cuda.memory_allocated(device) / (1024 ** 2)
-                max_allocated_mem_MB = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
-                print(f"[GPU] Memory used: {allocated_mem_MB:.2f} MB | Max used this epoch: {max_allocated_mem_MB:.2f} MB")
+                allocated_mem_MB = torch.cuda.memory_allocated(device) / (1024**2)
+                max_allocated_mem_MB = torch.cuda.max_memory_allocated(device) / (
+                    1024**2
+                )
+                print(
+                    f"[GPU] Memory used: {allocated_mem_MB:.2f} MB | Max used this epoch: {max_allocated_mem_MB:.2f} MB"
+                )
                 torch.cuda.reset_peak_memory_stats(device)
 
             if record_metrics:
@@ -587,6 +595,6 @@ def train(
 
     elapsed_time = time.time() - start_time
     print(
-        f"[INFO] Total training time: {elapsed_time//60:.0f} minutes, {elapsed_time%60:.2f} seconds"
+        f"[iNFO] Total training time: {elapsed_time//60:.0f} minutes, {elapsed_time%60:.2f} seconds"
     )
     return results

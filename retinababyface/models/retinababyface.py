@@ -12,13 +12,13 @@ class OBBHead(nn.Module):
     Head module for oriented bounding box (OBB) regression.
     """
 
-    def __init__(self, inchannels: int = 64, num_anchors: int = 2):
+    def __init__(self, inchannels: int = 64, num_anchors: int = 3):
         """
         Initializes the OBBHead module.
 
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
-            num_anchors (int): Number of anchors per location. Defaults to 2.
+            num_anchors (int): Number of anchors per location. Defaults to 3.
         """
         super().__init__()
         self.conv = nn.Conv2d(
@@ -47,13 +47,13 @@ class AngleHead(nn.Module):
     Head module for angle prediction.
     """
 
-    def __init__(self, inchannels: int = 64, num_anchors: int = 2):
+    def __init__(self, inchannels: int = 64, num_anchors: int = 3):
         """
         Initializes the AngleHead module.
 
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
-            num_anchors (int): Number of anchors per location. Defaults to 2.
+            num_anchors (int): Number of anchors per location. Defaults to 3.
         """
         super().__init__()
         self.conv = nn.Conv2d(
@@ -83,7 +83,7 @@ class ClassHead(nn.Module):
     """
 
     def __init__(
-        self, inchannels: int = 64, num_classes: int = 6, num_anchors: int = 2
+        self, inchannels: int = 64, num_classes: int = 6, num_anchors: int = 3
     ):
         """
         Initializes the ClassHead module.
@@ -91,7 +91,7 @@ class ClassHead(nn.Module):
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
             num_classes (int): Number of classes to predict. Defaults to 6.
-            num_anchors (int): Number of anchors per location. Defaults to 2.
+            num_anchors (int): Number of anchors per location. Defaults to 3.
         """
         super().__init__()
         self.conv = nn.Conv2d(

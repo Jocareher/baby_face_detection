@@ -5,6 +5,7 @@ from typing import List, Optional, Callable, Dict, Any, Tuple
 import torch
 from torch.utils.data import Dataset
 
+
 class BabyFacesDataset(Dataset):
     """
     PyTorch Dataset class for loading baby face images and their associated oriented bounding box (OBB) annotations.
@@ -57,15 +58,21 @@ class BabyFacesDataset(Dataset):
         self.split = split  # Assigns the split (train, val, test, etc.).
         self.transform = transform  # Assigns the transform to apply to each sample.
 
-        self.images_dir = os.path.join(root_dir, split, "images")  # Constructs the path to the images directory.
-        self.labels_dir = os.path.join(root_dir, split, "labels")  # Constructs the path to the labels directory.
+        self.images_dir = os.path.join(
+            root_dir, split, "images"
+        )  # Constructs the path to the images directory.
+        self.labels_dir = os.path.join(
+            root_dir, split, "labels"
+        )  # Constructs the path to the labels directory.
 
         if file_list is None:  # Checks if a file list is provided.
-            self.file_list = [  # Creates a list of image base names from the images directory.
-                os.path.splitext(f)[0]
-                for f in os.listdir(self.images_dir)
-                if f.lower().endswith(".jpg")
-            ]
+            self.file_list = (
+                [  # Creates a list of image base names from the images directory.
+                    os.path.splitext(f)[0]
+                    for f in os.listdir(self.images_dir)
+                    if f.lower().endswith(".jpg")
+                ]
+            )
         else:
             self.file_list = file_list  # Assigns the provided file list.
 
@@ -93,15 +100,25 @@ class BabyFacesDataset(Dataset):
                     - "angles": A torch tensor of shape (N,) representing the rotation angles in radians.
                     - "class_idxs": A torch tensor of shape (N,) or (1,) if background, representing the class indices.
         """
-        base_name = self.file_list[idx]  # Gets the base name of the image from the file list.
-        img_path = os.path.join(self.images_dir, base_name + ".jpg")  # Constructs the path to the image.
-        label_path = os.path.join(self.labels_dir, base_name + ".txt")  # Constructs the path to the label file.
+        base_name = self.file_list[
+            idx
+        ]  # Gets the base name of the image from the file list.
+        img_path = os.path.join(
+            self.images_dir, base_name + ".jpg"
+        )  # Constructs the path to the image.
+        label_path = os.path.join(
+            self.labels_dir, base_name + ".txt"
+        )  # Constructs the path to the label file.
 
         # Load image in RGB format
         image = cv2.imread(img_path)  # Reads the image using OpenCV.
         if image is None:  # Checks if the image was loaded successfully.
-            raise FileNotFoundError(f"Could not read image file: {img_path}")  # Raises an error if the image could not be read.
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Converts the image from BGR to RGB.
+            raise FileNotFoundError(
+                f"Could not read image file: {img_path}"
+            )  # Raises an error if the image could not be read.
+        image = cv2.cvtColor(
+            image, cv2.COLOR_BGR2RGB
+        )  # Converts the image from BGR to RGB.
         height, width = image.shape[:2]  # Gets the height and width of the image.
 
         boxes = []  # List of flattened (x1, y1, ..., x4, y4) in pixel coordinates
@@ -112,7 +129,9 @@ class BabyFacesDataset(Dataset):
             with open(label_path, "r") as f:  # Opens the label file for reading.
                 for line in f:  # Iterates over each line in the label file.
                     parts = line.strip().split()  # Splits the line into parts.
-                    if len(parts) != 10:  # Checks if the line has the correct number of parts.
+                    if (
+                        len(parts) != 10
+                    ):  # Checks if the line has the correct number of parts.
                         continue  # Skips malformed lines.
 
                     class_idx = int(parts[0])  # Gets the class index.
@@ -121,8 +140,12 @@ class BabyFacesDataset(Dataset):
 
                     coords_px = []  # List to store coordinates in pixel space.
                     for i in range(0, 8, 2):  # Iterates over the coordinates.
-                        x = coords[i] * width  # Calculates the x-coordinate in pixel space.
-                        y = coords[i + 1] * height  # Calculates the y-coordinate in pixel space.
+                        x = (
+                            coords[i] * width
+                        )  # Calculates the x-coordinate in pixel space.
+                        y = (
+                            coords[i + 1] * height
+                        )  # Calculates the y-coordinate in pixel space.
                         coords_px.extend([x, y])  # Adds the coordinates to the list.
 
                     class_idxs.append(class_idx)  # Adds the class index to the list.
@@ -136,7 +159,9 @@ class BabyFacesDataset(Dataset):
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32),  # shape (N, 8) or (0, 8)
             "angles": torch.tensor(angles, dtype=torch.float32),  # shape (N,) or (0,)
-            "class_idxs": torch.tensor(class_idxs, dtype=torch.long),  # shape (N,) or (1,) if background
+            "class_idxs": torch.tensor(
+                class_idxs, dtype=torch.long
+            ),  # shape (N,) or (1,) if background
         }
 
         sample = {
@@ -148,8 +173,10 @@ class BabyFacesDataset(Dataset):
             sample = self.transform(sample)
 
         return sample
-    
-    def compute_dataset_mean_std(dataset: Dataset, max_samples: Optional[int] = None) -> Tuple[List[float], List[float]]:
+
+    def compute_dataset_mean_std(
+        dataset: Dataset, max_samples: Optional[int] = None
+    ) -> Tuple[List[float], List[float]]:
         """
         Computes the mean and standard deviation per channel for the given dataset.
 
@@ -160,30 +187,52 @@ class BabyFacesDataset(Dataset):
         Returns:
             tuple: (mean, std) as 3-element lists for RGB channels.
         """
-        mean = torch.zeros(3)  # Initializes a tensor to store the sum of pixel values for each channel.
-        std = torch.zeros(3)  # Initializes a tensor to store the sum of squared pixel values for each channel.
+        mean = torch.zeros(
+            3
+        )  # Initializes a tensor to store the sum of pixel values for each channel.
+        std = torch.zeros(
+            3
+        )  # Initializes a tensor to store the sum of squared pixel values for each channel.
         n_pixels = 0  # Initializes a variable to store the total number of pixels.
 
-        num_samples = len(dataset) if max_samples is None else min(len(dataset), max_samples)  # Determines the number of samples to process.
+        num_samples = (
+            len(dataset) if max_samples is None else min(len(dataset), max_samples)
+        )  # Determines the number of samples to process.
 
-        for i in range(num_samples):  # Iterates through the specified number of samples.
+        for i in range(
+            num_samples
+        ):  # Iterates through the specified number of samples.
             sample = dataset[i]  # Retrieves the i-th sample from the dataset.
-            image = sample["image"]  # numpy array HxWxC, uint8. Retrieves the image from the sample as a NumPy array.
+            image = sample[
+                "image"
+            ]  # numpy array HxWxC, uint8. Retrieves the image from the sample as a NumPy array.
 
             # Convert image to float32
-            image = torch.from_numpy(image).float() / 255.0  # CxHxW. Converts the image to a float tensor and normalizes it to [0, 1].
-            image = image.permute(2, 0, 1)  # Convert to CxHxW. Permutes the image tensor to have channels first (C, H, W).
+            image = (
+                torch.from_numpy(image).float() / 255.0
+            )  # CxHxW. Converts the image to a float tensor and normalizes it to [0, 1].
+            image = image.permute(
+                2, 0, 1
+            )  # Convert to CxHxW. Permutes the image tensor to have channels first (C, H, W).
 
-            n = image.numel() // 3  # pixels per channel. Calculates the number of pixels per channel.
-            mean += image.sum(dim=[1, 2])  # Adds the sum of pixel values for each channel to the mean tensor.
-            std += (image ** 2).sum(dim=[1, 2])  # Adds the sum of squared pixel values for each channel to the std tensor.
+            n = (
+                image.numel() // 3
+            )  # pixels per channel. Calculates the number of pixels per channel.
+            mean += image.sum(
+                dim=[1, 2]
+            )  # Adds the sum of pixel values for each channel to the mean tensor.
+            std += (image**2).sum(
+                dim=[1, 2]
+            )  # Adds the sum of squared pixel values for each channel to the std tensor.
             n_pixels += n  # Adds the number of pixels per channel to the total number of pixels.
 
         mean /= n_pixels  # Calculates the mean pixel value for each channel.
-        std = (std / n_pixels - mean ** 2).sqrt()  # Calculates the standard deviation for each channel.
+        std = (
+            std / n_pixels - mean**2
+        ).sqrt()  # Calculates the standard deviation for each channel.
 
         return mean.tolist(), std.tolist()
-    
+
     def calculate_average_obb_dimensions(dataset: Dataset) -> Dict[str, float]:
         """
         Calculates the average size, width, height, and aspect ratio of oriented bounding boxes (OBBs) in a dataset.
@@ -205,19 +254,33 @@ class BabyFacesDataset(Dataset):
 
         for i in range(len(dataset)):  # Iterates through each sample in the dataset.
             sample = dataset[i]  # Retrieves the i-th sample.
-            for box in sample["target"]["boxes"]:  # Iterates through each OBB in the sample.
-                pts = box.view(4, 2)  # Reshapes the OBB tensor to (4, 2) for easier coordinate access.
-                w = torch.norm(pts[1] - pts[0])  # Calculates the width of the OBB (distance between top-right and top-left points).
-                h = torch.norm(pts[2] - pts[1])  # Calculates the height of the OBB (distance between bottom-right and top-right points).
+            for box in sample["target"][
+                "boxes"
+            ]:  # Iterates through each OBB in the sample.
+                pts = box.view(
+                    4, 2
+                )  # Reshapes the OBB tensor to (4, 2) for easier coordinate access.
+                w = torch.norm(
+                    pts[1] - pts[0]
+                )  # Calculates the width of the OBB (distance between top-right and top-left points).
+                h = torch.norm(
+                    pts[2] - pts[1]
+                )  # Calculates the height of the OBB (distance between bottom-right and top-right points).
                 size = (w + h) / 2  # Calculates the average dimension of the OBB.
-                sizes.append(size.item())  # Appends the average dimension to the sizes list.
+                sizes.append(
+                    size.item()
+                )  # Appends the average dimension to the sizes list.
                 widths.append(w.item())  # Appends the width to the widths list.
                 heights.append(h.item())  # Appends the height to the heights list.
-                ratios.append((h / w).item())  # Appends the aspect ratio to the ratios list.
+                ratios.append(
+                    (h / w).item()
+                )  # Appends the aspect ratio to the ratios list.
 
         return {
             "avg_size": sum(sizes) / len(sizes),  # Calculates the average OBB size.
             "avg_width": sum(widths) / len(widths),  # Calculates the average OBB width.
-            "avg_height": sum(heights) / len(heights),  # Calculates the average OBB height.
-            "avg_ratio": sum(ratios) / len(ratios)  # Calculates the average OBB aspect ratio.
+            "avg_height": sum(heights)
+            / len(heights),  # Calculates the average OBB height.
+            "avg_ratio": sum(ratios)
+            / len(ratios),  # Calculates the average OBB aspect ratio.
         }

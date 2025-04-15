@@ -3,7 +3,7 @@ from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 import torch
-import torch.nn as nn   
+import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader
 from torch.optim import Adam, SGD
@@ -17,7 +17,7 @@ from retinababyface.models.anchors import AnchorGeneratorOBB, get_feature_map_sh
 class EarlyStopping:
     """
     EarlyStopping can be used to monitor the validation loss during training and stop the training process early
-    if the validation loss does not improve after a certain number of epochs. It can handle both KFold and 
+    if the validation loss does not improve after a certain number of epochs. It can handle both KFold and
     non-KFold cases.
     """
 
@@ -122,11 +122,11 @@ class EarlyStopping:
 
         # Update the minimum validation loss seen so far to the current validation loss
         self.val_loss_min = val_loss
-        
-def create_optimizer(which_optimizer: str,
-                     model: nn.Module,
-                     learning_rate: float,
-                     weight_decay: float) -> torch.optim.Optimizer:
+
+
+def create_optimizer(
+    which_optimizer: str, model: nn.Module, learning_rate: float, weight_decay: float
+) -> torch.optim.Optimizer:
     """
     Creates an optimizer for the model.
 
@@ -143,18 +143,30 @@ def create_optimizer(which_optimizer: str,
         ValueError: If the optimizer is not 'ADAM' or 'SGD'.
     """
     if which_optimizer == "ADAM":
-        return Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay, amsgrad=True)
+        return Adam(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            amsgrad=True,
+        )
     elif which_optimizer == "SGD":
-        return SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
+        return SGD(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            momentum=0.9,
+        )
     else:
         raise ValueError("The optimizer must be 'ADAM' or 'SGD'.")
 
 
-def create_scheduler(which_scheduler: Optional[str],
-                     optimizer: torch.optim.Optimizer,
-                     learning_rate: float,
-                     epochs: int,
-                     train_dataloader: DataLoader) -> Optional[lr_scheduler._LRScheduler]:
+def create_scheduler(
+    which_scheduler: Optional[str],
+    optimizer: torch.optim.Optimizer,
+    learning_rate: float,
+    epochs: int,
+    train_dataloader: DataLoader,
+) -> Optional[lr_scheduler._LRScheduler]:
     """
     Creates a learning rate scheduler.
 
@@ -172,19 +184,29 @@ def create_scheduler(which_scheduler: Optional[str],
         ValueError: If the scheduler is not 'ReduceLR', 'OneCycle', or 'Cosine'.
     """
     if which_scheduler == "ReduceLR":
-        return lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.8, patience=5, min_lr=1e-5)
+        return lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.8, patience=5, min_lr=1e-5
+        )
     elif which_scheduler == "OneCycle":
-        return lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate * 10, epochs=epochs,
-                                       steps_per_epoch=len(train_dataloader))
+        return lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=learning_rate * 10,
+            epochs=epochs,
+            steps_per_epoch=len(train_dataloader),
+        )
     elif which_scheduler == "Cosine":
         return lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
     elif which_scheduler is None:
         return None
     else:
-        raise ValueError("The scheduler for learning rate must be either 'ReduceLR', 'OneCycle', or 'Cosine'")
+        raise ValueError(
+            "The scheduler for learning rate must be either 'ReduceLR', 'OneCycle', or 'Cosine'"
+        )
 
 
-def build_multitask_targets(batch_targets: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
+def build_multitask_targets(
+    batch_targets: Dict[str, torch.Tensor], device: torch.device
+) -> Dict[str, torch.Tensor]:
     """
     Extracts padded targets and returns them as tensors for the multitask model.
 
@@ -212,18 +234,21 @@ def build_multitask_targets(batch_targets: Dict[str, torch.Tensor], device: torc
         "class_idx": class_labels,
         "boxes": obb_targets,
         "angle": angle_targets,
-        "valid_mask": valid_mask
+        "valid_mask": valid_mask,
     }
 
-def train_step(model: nn.Module,
-               train_dataloader: DataLoader,
-               loss_fn: nn.Module,
-               optimizer: torch.optim.Optimizer,
-               clip_value: float,
-               grad_clip_mode: str,
-               scheduler: lr_scheduler._LRScheduler,
-               device: torch.device,
-               anchors: torch.Tensor) -> Tuple[float, float, float, float, float]:
+
+def train_step(
+    model: nn.Module,
+    train_dataloader: DataLoader,
+    loss_fn: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    clip_value: float,
+    grad_clip_mode: str,
+    scheduler: lr_scheduler._LRScheduler,
+    device: torch.device,
+    anchors: torch.Tensor,
+) -> Tuple[float, float, float, float, float]:
     """
     Performs a single training step for the model.
 
@@ -251,21 +276,33 @@ def train_step(model: nn.Module,
     for batch in train_dataloader:
         images = batch["image"].to(device)  # Move images to the device.
         targets_raw = batch["target"]
-        targets = build_multitask_targets(targets_raw, device)  # Process targets for multi-task learning.
+        targets = build_multitask_targets(
+            targets_raw, device
+        )  # Process targets for multi-task learning.
 
         optimizer.zero_grad()  # Zero the gradients.
-        batch_anchors = anchors.unsqueeze(0).repeat(images.size(0), 1, 1)  # Create batch anchors.
+        batch_anchors = anchors.unsqueeze(0).repeat(
+            images.size(0), 1, 1
+        )  # Create batch anchors.
         pred = model(images)  # Forward pass.
-        image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)  # [(W, H), ...]
-        loss, loss_class, loss_obb, loss_angle = loss_fn(pred, targets, batch_anchors, image_sizes)  # Calculate loss.
+        image_sizes = [(images.shape[3], images.shape[2])] * images.size(
+            0
+        )  # [(W, H), ...]
+        loss, loss_class, loss_obb, loss_angle = loss_fn(
+            pred, targets, batch_anchors, image_sizes
+        )  # Calculate loss.
 
         loss.backward()  # Backward pass.
 
         if clip_value is not None:
             if grad_clip_mode == "Norm":
-                clip_grad_norm_(model.parameters(), clip_value)  # Clip gradients by norm.
+                clip_grad_norm_(
+                    model.parameters(), clip_value
+                )  # Clip gradients by norm.
             elif grad_clip_mode == "Value":
-                clip_grad_value_(model.parameters(), clip_value)  # Clip gradients by value.
+                clip_grad_value_(
+                    model.parameters(), clip_value
+                )  # Clip gradients by value.
 
         optimizer.step()  # Update model parameters.
 
@@ -286,11 +323,14 @@ def train_step(model: nn.Module,
 
     return avg_total_loss, avg_class_loss, avg_obb_loss, avg_angular_loss, current_lr
 
-def test_step(model: nn.Module,
-              test_dataloader: DataLoader,
-              loss_fn: nn.Module,
-              device: torch.device,
-              anchors: torch.Tensor) -> Tuple[float, float, float, float]:
+
+def test_step(
+    model: nn.Module,
+    test_dataloader: DataLoader,
+    loss_fn: nn.Module,
+    device: torch.device,
+    anchors: torch.Tensor,
+) -> Tuple[float, float, float, float]:
     """
     Performs a single testing step for the model.
 
@@ -315,12 +355,20 @@ def test_step(model: nn.Module,
         for batch in test_dataloader:
             images = batch["image"].to(device)  # Move images to the device.
             targets_raw = batch["target"]
-            targets = build_multitask_targets(targets_raw, device)  # Process targets for multi-task learning.
+            targets = build_multitask_targets(
+                targets_raw, device
+            )  # Process targets for multi-task learning.
 
-            batch_anchors = anchors.unsqueeze(0).repeat(images.size(0), 1, 1)  # Create batch anchors.
+            batch_anchors = anchors.unsqueeze(0).repeat(
+                images.size(0), 1, 1
+            )  # Create batch anchors.
             pred = model(images)  # Forward pass.
-            image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)  # [(W, H), ...]
-            loss, loss_class, loss_obb, loss_angle = loss_fn(pred, targets, batch_anchors, image_sizes)  # Calculate loss.
+            image_sizes = [(images.shape[3], images.shape[2])] * images.size(
+                0
+            )  # [(W, H), ...]
+            loss, loss_class, loss_obb, loss_angle = loss_fn(
+                pred, targets, batch_anchors, image_sizes
+            )  # Calculate loss.
 
             total_loss += loss.item()
             class_loss_sum += loss_class
@@ -336,26 +384,28 @@ def test_step(model: nn.Module,
     return avg_loss, avg_class_loss, avg_obb_loss, avg_angular_loss
 
 
-def train(model: nn.Module,
-          train_dataloader: DataLoader,
-          test_dataloader: DataLoader,
-          loss_fn: nn.Module,
-          which_optimizer: str,
-          weight_decay: float,
-          learning_rate: float,
-          epochs: int,
-          device: torch.device,
-          early_stopping=None,
-          which_scheduler: str = None,
-          clip_value: float = None,
-          grad_clip_mode: str = None,
-          record_metrics: bool = False,
-          project: str = "My_WandB_Project",
-          run_name: str = "My_Run",
-          base_size: float = 209.56,
-          base_ratio: float = 1.1851,
-          scale_factors: List[float] = [0.75, 1.0, 1.25],
-          ratio_factors: List[float] = [0.85, 1.0, 1.15]) -> Dict[str, List[float]]:
+def train(
+    model: nn.Module,
+    train_dataloader: DataLoader,
+    test_dataloader: DataLoader,
+    loss_fn: nn.Module,
+    which_optimizer: str,
+    weight_decay: float,
+    learning_rate: float,
+    epochs: int,
+    device: torch.device,
+    early_stopping=None,
+    which_scheduler: str = None,
+    clip_value: float = None,
+    grad_clip_mode: str = None,
+    record_metrics: bool = False,
+    project: str = "My_WandB_Project",
+    run_name: str = "My_Run",
+    base_size: float = 209.56,
+    base_ratio: float = 1.1851,
+    scale_factors: List[float] = [0.75, 1.0, 1.25],
+    ratio_factors: List[float] = [0.85, 1.0, 1.15],
+) -> Dict[str, List[float]]:
     """
     Trains the model and optionally records metrics.
 
@@ -397,42 +447,59 @@ def train(model: nn.Module,
     }
 
     model.to(device)  # Move model to the specified device.
-    optimizer = create_optimizer(which_optimizer=which_optimizer,
-                                 model=model,
-                                 learning_rate=learning_rate,
-                                 weight_decay=weight_decay)  # Create optimizer.
+    optimizer = create_optimizer(
+        which_optimizer=which_optimizer,
+        model=model,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+    )  # Create optimizer.
 
-    scheduler = create_scheduler(which_scheduler=which_scheduler,
-                                 optimizer=optimizer,
-                                 learning_rate=learning_rate,
-                                 epochs=epochs,
-                                 train_dataloader=train_dataloader)  # Create learning rate scheduler.
+    scheduler = create_scheduler(
+        which_scheduler=which_scheduler,
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        epochs=epochs,
+        train_dataloader=train_dataloader,
+    )  # Create learning rate scheduler.
 
     if grad_clip_mode:
-        assert grad_clip_mode in ["Norm", "Value"], "grad_clip_mode must be 'Norm' or 'Value'" # Check valid gradient clip mode
+        assert grad_clip_mode in [
+            "Norm",
+            "Value",
+        ], "grad_clip_mode must be 'Norm' or 'Value'"  # Check valid gradient clip mode
 
-    feature_shapes = get_feature_map_shapes(model) # Get feature map shapes from the model.
+    feature_shapes = get_feature_map_shapes(
+        model
+    )  # Get feature map shapes from the model.
     anchor_gen = AnchorGeneratorOBB(
         feature_map_shapes=feature_shapes,
         strides=[8, 16, 32],
         base_size=base_size,
         base_ratio=base_ratio,
         scale_factors=scale_factors,
-        ratio_factors=ratio_factors
-    ) # Create Anchor Generator.
-    anchors = anchor_gen.generate_anchors(device=device) # Generate anchors.
+        ratio_factors=ratio_factors,
+    )  # Create Anchor Generator.
+    anchors = anchor_gen.generate_anchors(device=device)  # Generate anchors.
 
     start_time = time.time()
     if record_metrics:
-        wandb.init(project=project, name=run_name) # Initialize Weights & Biases.
-        wandb.watch(model, loss_fn, log="all") # Watch model and loss function.
+        wandb.init(project=project, name=run_name)  # Initialize Weights & Biases.
+        wandb.watch(model, loss_fn, log="all")  # Watch model and loss function.
 
     try:
         for epoch in tqdm(range(epochs), desc="Epochs", unit="epoch"):
             epoch_start = time.time()
 
-            train_dataloader_tqdm = tqdm(train_dataloader, desc=f"Train {epoch+1}", leave=False)
-            train_total_loss, train_class_loss, train_obb_loss, train_angular_loss, current_lr = train_step(
+            train_dataloader_tqdm = tqdm(
+                train_dataloader, desc=f"Train {epoch+1}", leave=False
+            )
+            (
+                train_total_loss,
+                train_class_loss,
+                train_obb_loss,
+                train_angular_loss,
+                current_lr,
+            ) = train_step(
                 model=model,
                 train_dataloader=train_dataloader,
                 loss_fn=loss_fn,
@@ -441,40 +508,59 @@ def train(model: nn.Module,
                 grad_clip_mode=grad_clip_mode,
                 scheduler=scheduler,
                 device=device,
-                anchors=anchors
-            ) # Perform a training step.
+                anchors=anchors,
+            )  # Perform a training step.
 
-            if scheduler is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(train_total_loss) # Update learning rate scheduler if ReduceLROnPlateau.
+            if scheduler is not None and isinstance(
+                scheduler, lr_scheduler.ReduceLROnPlateau
+            ):
+                scheduler.step(
+                    train_total_loss
+                )  # Update learning rate scheduler if ReduceLROnPlateau.
 
-            test_dataloader_tqdm = tqdm(test_dataloader, desc=f"Test {epoch+1}", leave=False)
-            test_total_loss, test_class_loss, test_obb_loss, test_angular_loss = test_step(
+            test_dataloader_tqdm = tqdm(
+                test_dataloader, desc=f"Test {epoch+1}", leave=False
+            )
+            (
+                test_total_loss,
+                test_class_loss,
+                test_obb_loss,
+                test_angular_loss,
+            ) = test_step(
                 model=model,
                 test_dataloader=test_dataloader,
                 loss_fn=loss_fn,
                 device=device,
-                anchors=anchors
-            ) # Perform a testing step.
+                anchors=anchors,
+            )  # Perform a testing step.
 
             epoch_time = time.time() - epoch_start
-            print(f"Epoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s")
-            print(f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}")
-            print(f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}")
+            print(
+                f"Epoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
+            )
+            print(
+                f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
+            )
+            print(
+                f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}"
+            )
 
             if record_metrics:
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "train_total_loss": train_total_loss,
-                    "train_class_loss": train_class_loss,
-                    "train_obb_loss": train_obb_loss,
-                    "train_angular_loss": train_angular_loss,
-                    "test_total_loss": test_total_loss,
-                    "test_class_loss": test_class_loss,
-                    "test_obb_loss": test_obb_loss,
-                    "test_angular_loss": test_angular_loss,
-                    "learning_rate": current_lr,
-                    "epoch_time": epoch_time
-                }) # Log metrics to Weights & Biases.
+                wandb.log(
+                    {
+                        "epoch": epoch + 1,
+                        "train_total_loss": train_total_loss,
+                        "train_class_loss": train_class_loss,
+                        "train_obb_loss": train_obb_loss,
+                        "train_angular_loss": train_angular_loss,
+                        "test_total_loss": test_total_loss,
+                        "test_class_loss": test_class_loss,
+                        "test_obb_loss": test_obb_loss,
+                        "test_angular_loss": test_angular_loss,
+                        "learning_rate": current_lr,
+                        "epoch_time": epoch_time,
+                    }
+                )  # Log metrics to Weights & Biases.
 
             results["train_total_loss"].append(train_total_loss)
             results["train_class_loss"].append(train_class_loss)
@@ -486,14 +572,18 @@ def train(model: nn.Module,
             results["test_angular_loss"].append(test_angular_loss)
 
             if early_stopping is not None:
-                early_stopping(test_total_loss, model) # Check early stopping condition.
+                early_stopping(
+                    test_total_loss, model
+                )  # Check early stopping condition.
                 if early_stopping.early_stop:
                     print("Early stopping")
                     break
     finally:
         if record_metrics:
-            wandb.finish() # Finish Weights & Biases run.
+            wandb.finish()  # Finish Weights & Biases run.
 
     elapsed_time = time.time() - start_time
-    print(f"[INFO] Total training time: {elapsed_time//60:.0f} minutes, {elapsed_time%60:.2f} seconds")
+    print(
+        f"[INFO] Total training time: {elapsed_time//60:.0f} minutes, {elapsed_time%60:.2f} seconds"
+    )
     return results

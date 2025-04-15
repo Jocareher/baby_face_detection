@@ -755,6 +755,7 @@ def flip_coordinates(labels: List[str]) -> List[str]:
     # Return updated label
     return [labels[0]] + coords.flatten().tolist() + [flipped_angle]
 
+
 def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
     """
     Processes a directory of images and labels, applying a horizontal flip to images with a single annotation

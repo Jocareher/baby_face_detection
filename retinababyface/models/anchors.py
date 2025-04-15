@@ -9,13 +9,16 @@ class AnchorGeneratorOBB:
     """
     Anchor generator tailored to the dataset's statistics.
     """
-    def __init__(self,
-                 feature_map_shapes: List[Tuple[int, int]],
-                 strides: List[int],
-                 base_size: float,
-                 base_ratio: float,
-                 scale_factors: List[float] = [0.75, 1.0, 1.25],
-                 ratio_factors: List[float] = [0.85, 1.0, 1.15]):
+
+    def __init__(
+        self,
+        feature_map_shapes: List[Tuple[int, int]],
+        strides: List[int],
+        base_size: float,
+        base_ratio: float,
+        scale_factors: List[float] = [0.75, 1.0, 1.25],
+        ratio_factors: List[float] = [0.85, 1.0, 1.15],
+    ):
         """
         Initializes the AnchorGeneratorOBB module.
 
@@ -29,8 +32,12 @@ class AnchorGeneratorOBB:
         """
         self.fm_shapes = feature_map_shapes
         self.strides = strides
-        self.scales = [base_size * s for s in scale_factors]  # Calculate the anchor scales.
-        self.ratios = [base_ratio * r for r in ratio_factors]  # Calculate the anchor ratios.
+        self.scales = [
+            base_size * s for s in scale_factors
+        ]  # Calculate the anchor scales.
+        self.ratios = [
+            base_ratio * r for r in ratio_factors
+        ]  # Calculate the anchor ratios.
 
     def generate_anchors(self, device: torch.device) -> torch.Tensor:
         """
@@ -46,7 +53,7 @@ class AnchorGeneratorOBB:
         anchors_per_image = []
 
         # Iterate through each feature map shape and corresponding stride.
-         # For each feature map, generate anchors based on the center coordinates and the specified scales and ratios.
+        # For each feature map, generate anchors based on the center coordinates and the specified scales and ratios.
         for k, (fm_shape, stride) in enumerate(zip(self.fm_shapes, self.strides)):
             # Get the height and width of the feature map.
             h, w = fm_shape
@@ -57,7 +64,9 @@ class AnchorGeneratorOBB:
             grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
             centers_x = (grid_x + 0.5) * stride  # shape (h, w)
             centers_y = (grid_y + 0.5) * stride  # shape (h, w)
-            centers = np.stack([centers_x, centers_y], axis=-1).reshape(-1, 2)  # shape (h*w, 2)
+            centers = np.stack([centers_x, centers_y], axis=-1).reshape(
+                -1, 2
+            )  # shape (h*w, 2)
 
             anchors = []
 
@@ -74,16 +83,20 @@ class AnchorGeneratorOBB:
                 dy = h_anchor / 2
 
                 # Generate anchor corners around each center
-                corners = np.array([
-                    [-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]
-                ])  # shape (4, 2)
+                corners = np.array(
+                    [[-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]]
+                )  # shape (4, 2)
 
                 # Calculate all anchor boxes by adding the corners to the centers
-                all_anchors = centers[:, None, :] + corners[None, :, :]  # shape (N, 4, 2)
+                all_anchors = (
+                    centers[:, None, :] + corners[None, :, :]
+                )  # shape (N, 4, 2)
                 anchors.append(all_anchors.reshape(-1, 8))  # reshape to (N, 8)
 
             anchors = np.concatenate(anchors, axis=0)  # shape (N_total, 8)
-            anchors_per_image.append(torch.tensor(anchors, dtype=torch.float32, device=device))
+            anchors_per_image.append(
+                torch.tensor(anchors, dtype=torch.float32, device=device)
+            )
 
         return torch.cat(anchors_per_image, dim=0)
 

@@ -25,21 +25,20 @@ class OBBHead(nn.Module):
             inchannels, num_anchors * 8, kernel_size=1
         )  # 1x1 convolution to predict OBB coordinates.
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the OBBHead module.
 
-def forward(self, x: torch.Tensor) -> torch.Tensor:
-    """
-    Forward pass of the OBBHead module.
+        Args:
+            x (torch.Tensor): Input feature map.
 
-    Args:
-        x (torch.Tensor): Input feature map.
-
-    Returns:
-        torch.Tensor: Predicted OBB coordinates.
-    """
-    # Apply the convolution and rearrange the tensor dimensions.
-    # The output shape is (batch_size, num_anchors * H * W, 8).
-    # The 8 values correspond to the coordinates of the OBB.
-    return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
+        Returns:
+            torch.Tensor: Predicted OBB coordinates.
+        """
+        # Apply the convolution and rearrange the tensor dimensions.
+        # The output shape is (batch_size, num_anchors * H * W, 8).
+        # The 8 values correspond to the coordinates of the OBB.
+        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
 
 
 class AngleHead(nn.Module):
@@ -98,27 +97,26 @@ class ClassHead(nn.Module):
         )  # 1x1 convolution for class prediction.
         self.num_classes = num_classes  # Store the number of classes.
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the ClassHead module.
 
-def forward(self, x: torch.Tensor) -> torch.Tensor:
-    """
-    Forward pass of the ClassHead module.
+        Args:
+            x (torch.Tensor): Input feature map.
 
-    Args:
-        x (torch.Tensor): Input feature map.
-
-    Returns:
-        torch.Tensor: Predicted class logits.
-    """
-    # Apply the convolution and rearrange the tensor dimensions.
-    # The output shape is (batch_size, num_anchors * H * W, num_classes).
-    # The num_classes values correspond to the class logits for each anchor.
-    # The logits are not normalized, so they can be used directly for classification.
-    return (
-        self.conv(x)
-        .permute(0, 2, 3, 1)
-        .contiguous()
-        .view(x.size(0), -1, self.num_classes)
-    )
+        Returns:
+            torch.Tensor: Predicted class logits.
+        """
+        # Apply the convolution and rearrange the tensor dimensions.
+        # The output shape is (batch_size, num_anchors * H * W, num_classes).
+        # The num_classes values correspond to the class logits for each anchor.
+        # The logits are not normalized, so they can be used directly for classification.
+        return (
+            self.conv(x)
+            .permute(0, 2, 3, 1)
+            .contiguous()
+            .view(x.size(0), -1, self.num_classes)
+        )
 
 
 class RetinaBabyFace(nn.Module):
@@ -196,7 +194,9 @@ class RetinaBabyFace(nn.Module):
             [ClassHead(out_channel, num_anchors=3, num_classes=6) for _ in range(3)]
         )  # Class prediction heads.
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass of the RetinaBabyFace model.
 
@@ -219,10 +219,12 @@ class RetinaBabyFace(nn.Module):
         # - persp_logits: (batch_size, num_anchors * H * W, num_classes)
         # - obbs: (batch_size, num_anchors * H * W, 8)
         # - angles: (batch_size, num_anchors * H * W, 1)
-        persp_logits = torch.cat([head(f) for head, f in zip(self.class_head, features)], dim=1)
+        persp_logits = torch.cat(
+            [head(f) for head, f in zip(self.class_head, features)], dim=1
+        )
         obbs = torch.cat([head(f) for head, f in zip(self.obb_head, features)], dim=1)
-        angles = torch.cat([head(f) for head, f in zip(self.angle_head, features)], dim=1)
+        angles = torch.cat(
+            [head(f) for head, f in zip(self.angle_head, features)], dim=1
+        )
 
         return persp_logits, obbs, angles
-
-

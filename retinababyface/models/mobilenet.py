@@ -136,17 +136,17 @@ class SSH(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        conv3X3 = self.conv3X3(input)  # 3x3 convolution.
-
-        conv5X5_1 = self.conv5X5_1(input)  # 5x5 convolution (part 1).
-        conv5X5 = self.conv5X5_2(conv5X5_1)  # 5x5 convolution (part 2).
-
-        conv7X7_2 = self.conv7X7_2(conv5X5_1)  # 7x7 convolution (part 2).
-        conv7X7 = self.conv7x7_3(conv7X7_2)  # 7x7 convolution (part 3).
-
-        out = torch.cat([conv3X3, conv5X5, conv7X7], dim=1)  # Concatenate the outputs.
-        out = F.relu(out)  # Apply ReLU activation.
-        return out
+        conv5X5_1 = self.conv5X5_1(input)
+        return F.relu(
+            torch.cat(
+                [
+                    self.conv3X3(input),
+                    self.conv5X5_2(conv5X5_1),
+                    self.conv7x7_3(self.conv7X7_2(conv5X5_1)),
+                ],
+                dim=1,
+            )
+        )
 
 
 class FPN(nn.Module):
@@ -193,26 +193,22 @@ class FPN(nn.Module):
         Returns:
             List[torch.Tensor]: List of output feature maps.
         """
-        input = list(input.values())  # Get the values of the input dictionary.
-
-        output1 = self.output1(input[0])  # Process feature level 1.
-        output2 = self.output2(input[1])  # Process feature level 2.
-        output3 = self.output3(input[2])  # Process feature level 3.
-
-        up3 = F.interpolate(
-            output3, size=[output2.size(2), output2.size(3)], mode="nearest"
-        )  # Upsample feature level 3.
-        output2 = output2 + up3  # Add upsampled feature level 3 to feature level 2.
-        output2 = self.merge2(output2)  # Merge feature level 2.
-
-        up2 = F.interpolate(
-            output2, size=[output1.size(2), output1.size(3)], mode="nearest"
-        )  # Upsample feature level 2.
-        output1 = output1 + up2  # Add upsampled feature level 2 to feature level 1.
-        output1 = self.merge1(output1)  # Merge feature level 1.
-
-        out = [output1, output2, output3]  # Create the output list.
-        return out
+        # input is a dictionary with keys 'feat1', 'feat2', 'feat3'.
+        input = list(input.values())
+        # input[0] is the feature map from the first stage, input[1] from the second stage, and input[2] from the third stage.
+        output1 = self.output1(input[0])
+        # output2 is the feature map from the second stage, merged with the upsampled feature map from the third stage.
+        output2 = self.merge2(
+            self.output2(input[1])
+            + F.interpolate(
+                self.output3(input[2]), size=input[1].shape[2:], mode="nearest"
+            )
+        )
+        # output1 is the feature map from the first stage, merged with the upsampled feature map from the second stage.
+        output1 = self.merge1(
+            output1 + F.interpolate(output2, size=input[0].shape[2:], mode="nearest")
+        )
+        return [output1, output2, self.output3(input[2])]
 
 
 class MobileNetV1(nn.Module):
@@ -258,10 +254,4 @@ class MobileNetV1(nn.Module):
         Returns:
             torch.Tensor: Output tensor.
         """
-        x = self.stage1(x)  # Stage 1.
-        x = self.stage2(x)  # Stage 2.
-        x = self.stage3(x)  # Stage 3.
-        x = self.avg(x)  # Adaptive average pooling.
-        x = x.view(-1, 256)  # Reshape the tensor.
-        x = self.fc(x)  # Fully connected layer.
-        return x
+        return self.fc(self.avg(self.stage3(self.stage2(self.stage1(x)))).view(-1, 256))

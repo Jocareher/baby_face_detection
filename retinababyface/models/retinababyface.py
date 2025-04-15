@@ -196,9 +196,7 @@ class RetinaBabyFace(nn.Module):
             [ClassHead(out_channel, num_anchors=3, num_classes=6) for _ in range(3)]
         )  # Class prediction heads.
 
-    def forward(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass of the RetinaBabyFace model.
 
@@ -208,27 +206,23 @@ class RetinaBabyFace(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Predicted class logits, OBB coordinates, and angles.
         """
-        # Extract features from the backbone.
-        # The features are extracted from the specified layers in the backbone.
-        # The output is a dictionary with keys corresponding to the layer names.
-        # The values are the feature maps from those layers.
-        # The feature maps are then passed through the FPN and SSH modules.
-        # The output is a list of feature maps from the FPN and SSH modules.
-        # The feature maps are then passed through the class, OBB, and angle heads.
-        # The output is a tuple of tensors containing the predicted class logits, OBB coordinates, and angles.
-        # The feature maps are passed through the SSH module to enhance the features.
-        # The output is a list of feature maps from the SSH module.
-        # The feature maps are then passed through the class, OBB, and angle heads.
-        # The output is a tuple of tensors containing the predicted class logits, OBB coordinates, and angles.
-        features = [self.ssh1(f) for f in self.fpn(self.body(x)).values()]
-        return (
-            torch.cat(
-                [head(f) for head, f in zip(self.class_head, features)], dim=1
-            ),  # Predicted class logits.
-            torch.cat(
-                [head(f) for head, f in zip(self.obb_head, features)], dim=1
-            ),  # Predicted OBB coordinates.
-            torch.cat(
-                [head(f) for head, f in zip(self.angle_head, features)], dim=1
-            ),  # Predicted angles.
-        )
+        out = self.body(x)  # Extract features from the backbone
+        fpn_out = self.fpn(out)  # Apply FPN (returns List[Tensor])
+
+        # Apply SSH modules
+        features = [self.ssh1(fpn_out[0]), self.ssh2(fpn_out[1]), self.ssh3(fpn_out[2])]
+
+        # Run heads and concatenate outputs
+        # Each head processes the corresponding feature map.
+        # The outputs are concatenated along the channel dimension.
+        # The final output shapes are:
+        # - persp_logits: (batch_size, num_anchors * H * W, num_classes)
+        # - obbs: (batch_size, num_anchors * H * W, 8)
+        # - angles: (batch_size, num_anchors * H * W, 1)
+        persp_logits = torch.cat([head(f) for head, f in zip(self.class_head, features)], dim=1)
+        obbs = torch.cat([head(f) for head, f in zip(self.obb_head, features)], dim=1)
+        angles = torch.cat([head(f) for head, f in zip(self.angle_head, features)], dim=1)
+
+        return persp_logits, obbs, angles
+
+

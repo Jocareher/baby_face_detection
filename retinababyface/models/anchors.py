@@ -2,22 +2,20 @@ from typing import List, Tuple
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 
 class AnchorGeneratorOBB:
     """
     Anchor generator tailored to the dataset's statistics.
     """
-
-    def __init__(
-        self,
-        feature_map_shapes: List[Tuple[int, int]],
-        strides: List[int],
-        base_size: float,
-        base_ratio: float,
-        scale_factors: List[float] = [0.75, 1.0, 1.25],
-        ratio_factors: List[float] = [0.85, 1.0, 1.15],
-    ):
+    def __init__(self,
+                 feature_map_shapes: List[Tuple[int, int]],
+                 strides: List[int],
+                 base_size: float,
+                 base_ratio: float,
+                 scale_factors: List[float] = [0.75, 1.0, 1.25],
+                 ratio_factors: List[float] = [0.85, 1.0, 1.15]):
         """
         Initializes the AnchorGeneratorOBB module.
 
@@ -31,12 +29,8 @@ class AnchorGeneratorOBB:
         """
         self.fm_shapes = feature_map_shapes
         self.strides = strides
-        self.scales = [
-            base_size * s for s in scale_factors
-        ]  # Calculate the anchor scales.
-        self.ratios = [
-            base_ratio * r for r in ratio_factors
-        ]  # Calculate the anchor ratios.
+        self.scales = [base_size * s for s in scale_factors]  # Calculate the anchor scales.
+        self.ratios = [base_ratio * r for r in ratio_factors]  # Calculate the anchor ratios.
 
     def generate_anchors(self, device: torch.device) -> torch.Tensor:
         """
@@ -48,80 +42,50 @@ class AnchorGeneratorOBB:
         Returns:
             torch.Tensor: Tensor containing all generated anchor boxes (N_anchors_total, 8).
         """
-        anchors_per_image = []  # List to store anchor boxes for each feature map level.
+        # Initialize an empty list to store anchors for each feature map level.
+        anchors_per_image = []
 
-        for k, (fm_shape, stride) in enumerate(
-            zip(self.fm_shapes, self.strides)
-        ):  # Iterate through feature map levels.
-            h, w = fm_shape  # Get the height and width of the feature map.
-            scale = self.scales[k]  # Get the scale for the current level.
-            anchors = []  # List to store anchors for the current level.
+        # Iterate through each feature map shape and corresponding stride.
+         # For each feature map, generate anchors based on the center coordinates and the specified scales and ratios.
+        for k, (fm_shape, stride) in enumerate(zip(self.fm_shapes, self.strides)):
+            # Get the height and width of the feature map.
+            h, w = fm_shape
+            # Calculate the scale for the current feature map level.
+            scale = self.scales[k]
 
-            for i in range(h):  # Iterate through rows of the feature map.
-                for j in range(w):  # Iterate through columns of the feature map.
-                    cx = (
-                        j + 0.5
-                    ) * stride  # Calculate the center x-coordinate of the anchor.
-                    cy = (
-                        i + 0.5
-                    ) * stride  # Calculate the center y-coordinate of the anchor.
+            # Prepare all grid center coordinates at once
+            grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+            centers_x = (grid_x + 0.5) * stride  # shape (h, w)
+            centers_y = (grid_y + 0.5) * stride  # shape (h, w)
+            centers = np.stack([centers_x, centers_y], axis=-1).reshape(-1, 2)  # shape (h*w, 2)
 
-                    for ratio in self.ratios:  # Iterate through anchor ratios.
-                        area = scale * scale  # Calculate the area of the anchor.
-                        w_anchor = (
-                            area / ratio
-                        ) ** 0.5  # Calculate the width of the anchor.
-                        h_anchor = (
-                            w_anchor * ratio
-                        )  # Calculate the height of the anchor.
+            anchors = []
 
-                        x1 = (
-                            cx - w_anchor / 2
-                        )  # Calculate the x-coordinate of the top-left corner.
-                        y1 = (
-                            cy - h_anchor / 2
-                        )  # Calculate the y-coordinate of the top-left corner.
-                        x2 = (
-                            cx + w_anchor / 2
-                        )  # Calculate the x-coordinate of the top-right corner.
-                        y2 = (
-                            cy - h_anchor / 2
-                        )  # Calculate the y-coordinate of the top-right corner.
-                        x3 = (
-                            cx + w_anchor / 2
-                        )  # Calculate the x-coordinate of the bottom-right corner.
-                        y3 = (
-                            cy + h_anchor / 2
-                        )  # Calculate the y-coordinate of the bottom-right corner.
-                        x4 = (
-                            cx - w_anchor / 2
-                        )  # Calculate the x-coordinate of the bottom-left corner.
-                        y4 = (
-                            cy + h_anchor / 2
-                        )  # Calculate the y-coordinate of the bottom-left corner.
+            # Generate anchors for each scale and ratio
+            for ratio in self.ratios:
+                # Calculate the width and height of the anchor box based on the scale and ratio.
+                area = scale * scale
+                # Calculate the width and height of the anchor box.
+                w_anchor = np.sqrt(area / ratio)
+                h_anchor = w_anchor * ratio
 
-                        anchor = [
-                            x1,
-                            y1,
-                            x2,
-                            y2,
-                            x3,
-                            y3,
-                            x4,
-                            y4,
-                        ]  # Create the anchor box.
-                        anchors.append(anchor)  # Add the anchor to the list.
+                # Calculate the half-width and half-height of the anchor box.
+                dx = w_anchor / 2
+                dy = h_anchor / 2
 
-            anchors = torch.tensor(
-                anchors, dtype=torch.float32, device=device
-            )  # Convert the anchors to a tensor.
-            anchors_per_image.append(
-                anchors
-            )  # Add the anchors to the list of anchors per image.
+                # Generate anchor corners around each center
+                corners = np.array([
+                    [-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]
+                ])  # shape (4, 2)
 
-        return torch.cat(
-            anchors_per_image, dim=0
-        )  # Concatenate the anchors from all levels.
+                # Calculate all anchor boxes by adding the corners to the centers
+                all_anchors = centers[:, None, :] + corners[None, :, :]  # shape (N, 4, 2)
+                anchors.append(all_anchors.reshape(-1, 8))  # reshape to (N, 8)
+
+            anchors = np.concatenate(anchors, axis=0)  # shape (N_total, 8)
+            anchors_per_image.append(torch.tensor(anchors, dtype=torch.float32, device=device))
+
+        return torch.cat(anchors_per_image, dim=0)
 
 
 def get_feature_map_shapes(

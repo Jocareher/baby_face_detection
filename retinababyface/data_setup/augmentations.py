@@ -375,7 +375,7 @@ class RandomScaleTranslateOBB:
             )  # background. Creates a tensor for background class index.
         else:
             target["boxes"] = torch.tensor(
-                valid_boxes, dtype=torch.float32
+                np.array(valid_boxes), dtype=torch.float32
             )  # Creates a tensor for valid boxes.
             target["angles"] = torch.tensor(
                 valid_angles, dtype=torch.float32

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from shapely.geometry import Polygon
 from shapely.errors import TopologicalError
 
-from retinababyface.loss.utils import match_anchors_to_targets
+from .utils import match_anchors_to_targets
 
 
 class RotationLoss(nn.Module):

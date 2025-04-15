@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torchvision.models._utils import IntermediateLayerGetter
 
-from retinababyface.models.mobilenet import FPN, SSH
+from .mobilenet import FPN, SSH
 
 
 class OBBHead(nn.Module):

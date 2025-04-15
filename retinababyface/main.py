@@ -1,7 +1,23 @@
+# This script is used to train the RetinaBabyFace model on the BabyFace dataset.
+# It includes data loading, augmentation, model definition, and training loop.
+# The script uses PyTorch and torchvision for model training and data handling.
+# The RetinaBabyFace model is a custom architecture designed for face detection and recognition tasks.
+
 import argparse
+import os
+import sys
+
+# Adding the root directory to the system path to import modules from the parent directory
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+print(f"[INFO] Adding {ROOT_DIR} to sys.path")
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
 from torch.utils.data import DataLoader
-from retinababyface.data_setup.dataset import BabyFacesDataset
-from retinababyface.data_setup.augmentations import (
+import torchvision.transforms as transforms
+
+from data_setup.dataset import BabyFacesDataset
+from data_setup.augmentations import (
     RandomHorizontalFlipOBB,
     RandomRotateOBB,
     RandomScaleTranslateOBB,
@@ -12,15 +28,12 @@ from retinababyface.data_setup.augmentations import (
     Resize,
     ToTensorNormalize,
 )
-from retinababyface.data_setup.collate import custom_collate
-
-import torchvision.transforms as transforms
-from retinababyface.models.mobilenet import MobileNetV1
-from retinababyface.models.retinababyface import RetinaBabyFace
-from retinababyface.utils.helpers import set_seed, get_default_device
-
-from retinababyface.engine.train import train, EarlyStopping
-from retinababyface.loss.losses import MultiTaskLoss
+from data_setup.collate import custom_collate
+from models.mobilenet import MobileNetV1
+from models.retinababyface import RetinaBabyFace
+from utils.helpers import set_seed, get_default_device
+from engine.train import train, EarlyStopping
+from loss.losses import MultiTaskLoss
 
 
 def parse_args():

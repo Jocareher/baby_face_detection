@@ -1,3 +1,16 @@
-numpy
-opencv-python
+# Core
+torch>=1.13.0
+torchvision>=0.14.0
+numpy>=1.21.0
+opencv-python>=4.5.5.64
+matplotlib>=3.5.0
+tqdm>=4.62.3
 
+# Data & Geometry
+shapely>=2.0.0
+
+# Model summary (optional but useful)
+torchinfo>=1.7.2
+
+# Experiment tracking (optional)
+wandb>=0.15.0

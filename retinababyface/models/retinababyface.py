@@ -12,34 +12,34 @@ class OBBHead(nn.Module):
     Head module for oriented bounding box (OBB) regression.
     """
 
-    def __init__(self, inchannels: int = 64, num_anchors: int = 3):
+    def __init__(self, inchannels: int = 64, num_anchors: int = 2):
         """
         Initializes the OBBHead module.
 
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
-            num_anchors (int): Number of anchors per location. Defaults to 3.
+            num_anchors (int): Number of anchors per location. Defaults to 2.
         """
         super().__init__()
         self.conv = nn.Conv2d(
             inchannels, num_anchors * 8, kernel_size=1
         )  # 1x1 convolution to predict OBB coordinates.
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the OBBHead module.
 
-        Args:
-            x (torch.Tensor): Input feature map.
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Forward pass of the OBBHead module.
 
-        Returns:
-            torch.Tensor: Predicted OBB coordinates.
-        """
-        out = self.conv(x)  # Apply the convolution.
-        out = out.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions.
-        return out.view(
-            out.shape[0], -1, 8
-        )  # Reshape the tensor to (batch_size, num_anchors * H * W, 8).
+    Args:
+        x (torch.Tensor): Input feature map.
+
+    Returns:
+        torch.Tensor: Predicted OBB coordinates.
+    """
+    # Apply the convolution and rearrange the tensor dimensions.
+    # The output shape is (batch_size, num_anchors * H * W, 8).
+    # The 8 values correspond to the coordinates of the OBB.
+    return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
 
 
 class AngleHead(nn.Module):
@@ -47,13 +47,13 @@ class AngleHead(nn.Module):
     Head module for angle prediction.
     """
 
-    def __init__(self, inchannels: int = 64, num_anchors: int = 3):
+    def __init__(self, inchannels: int = 64, num_anchors: int = 2):
         """
         Initializes the AngleHead module.
 
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
-            num_anchors (int): Number of anchors per location. Defaults to 3.
+            num_anchors (int): Number of anchors per location. Defaults to 2.
         """
         super().__init__()
         self.conv = nn.Conv2d(
@@ -70,11 +70,10 @@ class AngleHead(nn.Module):
         Returns:
             torch.Tensor: Predicted angles.
         """
-        out = self.conv(x)  # Apply the convolution.
-        out = out.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions.
-        return out.view(
-            out.shape[0], -1, 1
-        )  # Reshape the tensor to (batch_size, num_anchors * H * W, 1).
+        # Apply the convolution and rearrange the tensor dimensions.
+        # The output shape is (batch_size, num_anchors * H * W, 1).
+        # The 1 value corresponds to the angle of the OBB.
+        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 1)
 
 
 class ClassHead(nn.Module):
@@ -83,7 +82,7 @@ class ClassHead(nn.Module):
     """
 
     def __init__(
-        self, inchannels: int = 64, num_classes: int = 6, num_anchors: int = 3
+        self, inchannels: int = 64, num_classes: int = 6, num_anchors: int = 2
     ):
         """
         Initializes the ClassHead module.
@@ -91,7 +90,7 @@ class ClassHead(nn.Module):
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
             num_classes (int): Number of classes to predict. Defaults to 6.
-            num_anchors (int): Number of anchors per location. Defaults to 3.
+            num_anchors (int): Number of anchors per location. Defaults to 2.
         """
         super().__init__()
         self.conv = nn.Conv2d(
@@ -99,19 +98,27 @@ class ClassHead(nn.Module):
         )  # 1x1 convolution for class prediction.
         self.num_classes = num_classes  # Store the number of classes.
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the ClassHead module.
 
-        Args:
-            x (torch.Tensor): Input feature map.
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Forward pass of the ClassHead module.
 
-        Returns:
-            torch.Tensor: Predicted class logits.
-        """
-        out = self.conv(x)  # Apply the convolution.
-        out = out.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions.
-        return out.view(out.shape[0], -1, self.num_classes)  # Reshape the tensor.
+    Args:
+        x (torch.Tensor): Input feature map.
+
+    Returns:
+        torch.Tensor: Predicted class logits.
+    """
+    # Apply the convolution and rearrange the tensor dimensions.
+    # The output shape is (batch_size, num_anchors * H * W, num_classes).
+    # The num_classes values correspond to the class logits for each anchor.
+    # The logits are not normalized, so they can be used directly for classification.
+    return (
+        self.conv(x)
+        .permute(0, 2, 3, 1)
+        .contiguous()
+        .view(x.size(0), -1, self.num_classes)
+    )
 
 
 class RetinaBabyFace(nn.Module):
@@ -180,13 +187,13 @@ class RetinaBabyFace(nn.Module):
 
         # Heads
         self.obb_head = nn.ModuleList(
-            [OBBHead(out_channel) for _ in range(3)]
+            [OBBHead(out_channel, num_anchors=3) for _ in range(3)]
         )  # OBB regression heads.
         self.angle_head = nn.ModuleList(
-            [AngleHead(out_channel) for _ in range(3)]
+            [AngleHead(out_channel, num_anchors=3) for _ in range(3)]
         )  # Angle prediction heads.
         self.class_head = nn.ModuleList(
-            [ClassHead(out_channel, num_classes=6) for _ in range(3)]
+            [ClassHead(out_channel, num_anchors=3, num_classes=6) for _ in range(3)]
         )  # Class prediction heads.
 
     def forward(
@@ -201,22 +208,27 @@ class RetinaBabyFace(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Predicted class logits, OBB coordinates, and angles.
         """
-        out = self.body(x)  # Extract features from the backbone.
-        fpn_outs = self.fpn(out)  # Apply the FPN.
-        features = [
-            self.ssh1(fpn_outs[0]),
-            self.ssh2(fpn_outs[1]),
-            self.ssh3(fpn_outs[2]),
-        ]  # Apply the SSH modules.
-
-        obbs = torch.cat(
-            [self.obb_head[i](f) for i, f in enumerate(features)], dim=1
-        )  # Concatenate OBB predictions.
-        angles = torch.cat(
-            [self.angle_head[i](f) for i, f in enumerate(features)], dim=1
-        )  # Concatenate angle predictions.
-        persp_logits = torch.cat(
-            [self.class_head[i](f) for i, f in enumerate(features)], dim=1
-        )  # Concatenate class predictions.
-
-        return persp_logits, obbs, angles  # Return the predictions.
+        # Extract features from the backbone.
+        # The features are extracted from the specified layers in the backbone.
+        # The output is a dictionary with keys corresponding to the layer names.
+        # The values are the feature maps from those layers.
+        # The feature maps are then passed through the FPN and SSH modules.
+        # The output is a list of feature maps from the FPN and SSH modules.
+        # The feature maps are then passed through the class, OBB, and angle heads.
+        # The output is a tuple of tensors containing the predicted class logits, OBB coordinates, and angles.
+        # The feature maps are passed through the SSH module to enhance the features.
+        # The output is a list of feature maps from the SSH module.
+        # The feature maps are then passed through the class, OBB, and angle heads.
+        # The output is a tuple of tensors containing the predicted class logits, OBB coordinates, and angles.
+        features = [self.ssh1(f) for f in self.fpn(self.body(x)).values()]
+        return (
+            torch.cat(
+                [head(f) for head, f in zip(self.class_head, features)], dim=1
+            ),  # Predicted class logits.
+            torch.cat(
+                [head(f) for head, f in zip(self.obb_head, features)], dim=1
+            ),  # Predicted OBB coordinates.
+            torch.cat(
+                [head(f) for head, f in zip(self.angle_head, features)], dim=1
+            ),  # Predicted angles.
+        )

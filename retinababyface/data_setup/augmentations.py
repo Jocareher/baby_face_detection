@@ -49,17 +49,10 @@ class Resize(object):
         scale_y = new_h / h  # Calculates the scaling factor for the y-axis.
         boxes = target["boxes"].clone()  # Creates a copy of the bounding boxes tensor.
         # Each row has [x1, y1, x2, y2, x3, y3, x4, y4]
-        for i in range(boxes.shape[0]):  # Iterates through each bounding box.
-            box = boxes[i]  # Gets the i-th bounding box.
-            box[0] *= scale_x  # Scales the x1 coordinate.
-            box[2] *= scale_x  # Scales the x2 coordinate.
-            box[4] *= scale_x  # Scales the x3 coordinate.
-            box[6] *= scale_x  # Scales the x4 coordinate.
-            box[1] *= scale_y  # Scales the y1 coordinate.
-            box[3] *= scale_y  # Scales the y2 coordinate.
-            box[5] *= scale_y  # Scales the y3 coordinate.
-            box[7] *= scale_y  # Scales the y4 coordinate.
-            boxes[i] = box  # Updates the bounding box in the tensor.
+        boxes = boxes.view(-1, 4, 2)  # Reshape to (N, 4, 2) for vectorized scaling.
+        boxes[..., 0] *= scale_x  # Scale x-coordinates.
+        boxes[..., 1] *= scale_y  # Scale y-coordinates.
+        boxes = boxes.view(-1, 8)  # Reshape back to (N, 8)
 
         target["boxes"] = boxes  # Updates the boxes in the target dictionary.
         sample["image"] = image_resized  # Updates the resized image in the sample.
@@ -111,31 +104,29 @@ class RandomHorizontalFlipOBB:
                 "class_idxs"
             ].clone()  # Creates a copy of the class indices tensor.
 
-            for i in range(boxes.shape[0]):  # Iterates through each bounding box.
-                box = boxes[i].view(4, 2)  # Reshapes the bounding box to (4, 2).
-                box[:, 0] = w - box[:, 0]  # Flips the X coordinates.
-                box = box[
-                    [1, 0, 3, 2]
-                ]  # Reorders the coordinates to keep the OBB orientation.
-                boxes[i] = box.view(-1)  # Reshapes the bounding box back to (8,).
+            # Flip X coordinates
+            boxes = boxes.view(-1, 4, 2)  # (N, 4, 2)
+            boxes[..., 0] = w - boxes[..., 0]  # Flip x-coordinates
 
-                angles[i] = -angles[i]  # Negates the angle.
+            # Reorder points to maintain orientation: [1, 0, 3, 2]
+            reorder_idx = torch.tensor([1, 0, 3, 2], device=boxes.device)
+            boxes = boxes[:, reorder_idx, :]
+            boxes = boxes.view(-1, 8)  # Back to (N, 8)
 
-                # Flip class indices
-                if class_idxs[i] == 0:  # Flips class index 0 to 1.
-                    class_idxs[i] = 1
-                elif class_idxs[i] == 1:  # Flips class index 1 to 0.
-                    class_idxs[i] = 0
-                elif class_idxs[i] == 3:  # Flips class index 3 to 4.
-                    class_idxs[i] = 4
-                elif class_idxs[i] == 4:  # Flips class index 4 to 3.
-                    class_idxs[i] = 3
+            # Negate angles
+            angles = -angles
+
+            # Flip class indices: vectorized swap using masks
+            class_idxs_flipped = class_idxs.clone()
+            swap_map = {0: 1, 1: 0, 3: 4, 4: 3}
+            for a, b in swap_map.items():
+                class_idxs_flipped[class_idxs == a] = b
 
             target["boxes"] = boxes  # Updates the boxes in the target dictionary.
             target["angles"] = angles  # Updates the angles in the target dictionary.
             target[
                 "class_idxs"
-            ] = class_idxs  # Updates the class indices in the target dictionary.
+            ] = class_idxs_flipped  # Updates the class indices in the target dictionary.
 
         sample["image"] = image  # Updates the image in the sample.
         sample["target"] = target  # Updates the target in the sample.
@@ -217,26 +208,22 @@ class RandomRotateOBB:
             "class_idxs"
         ].clone()  # Creates a copy of the class indices tensor.
 
-        for i in range(boxes.shape[0]):  # Iterates through each bounding box.
-            box = (
-                boxes[i].view(4, 2).numpy()
-            )  # Reshapes the bounding box to (4, 2) and converts it to a NumPy array.
-            ones = np.ones(
-                (4, 1)
-            )  # Creates a tensor of ones for homogeneous coordinates.
-            box_hom = np.hstack(
-                [box, ones]
-            )  # Concatenates the bounding box with the ones.
-            rotated_box = np.dot(rot_mat, box_hom.T).T  # Rotates the bounding box.
-            boxes[i] = torch.tensor(
-                rotated_box.flatten(), dtype=torch.float32
-            )  # Updates the bounding box in the tensor.
+        # Vectorized rotation of all boxes
+        N = boxes.shape[0]
+        boxes_np = boxes.view(N, 4, 2).cpu().numpy()  # (N, 4, 2)
+        ones = np.ones((N, 4, 1), dtype=np.float32)
+        boxes_hom = np.concatenate([boxes_np, ones], axis=2)  # (N, 4, 3)
+        rot_mat_np = rot_mat.astype(np.float32)
 
-            # Update angle and normalize to [0, 2π)
-            new_angle = normalize_angle(
-                angles[i].item() + angle_rad
-            )  # Calculates the new angle and normalizes it.
-            angles[i] = new_angle  # Updates the angle in the tensor.
+        rotated_boxes = np.matmul(boxes_hom, rot_mat_np.T)  # (N, 4, 2)
+        boxes = torch.tensor(
+            rotated_boxes.reshape(N, 8),
+            dtype=torch.float32,
+            device=target["boxes"].device,
+        )
+
+        # Update angle and normalize to [0, 2π)
+        angles = (angles + angle_rad) % (2 * math.pi)
 
         target["boxes"] = boxes  # Updates the boxes in the target dictionary.
         target["angles"] = angles  # Updates the angles in the target dictionary.
@@ -290,104 +277,83 @@ class RandomScaleTranslateOBB:
         Returns:
             dict: The transformed sample.
         """
-        if random.random() > self.prob:  # Checks if the transform should be applied.
+        # Checks if the transform should be applied.
+        if random.random() > self.prob:
             return sample
 
-        image, target = (
-            sample["image"],
-            sample["target"],
-        )  # Extracts the image and target from the sample.
-        h, w = image.shape[:2]  # Gets the height and width of the image.
+        # Extracts the image and target from the sample.
+        image, target = sample["image"], sample["target"]
+        h, w = image.shape[:2]
 
-        # Sample scale factor and translations
-        scale = random.uniform(*self.scale_range)  # Generates a random scaling factor.
-        tx = (
-            random.uniform(*self.translate_range) * w
-        )  # Generates a random translation in the x-axis.
-        ty = (
-            random.uniform(*self.translate_range) * h
-        )  # Generates a random translation in the y-axis.
+        # Randomly generates scale and translation factors.
+        scale = random.uniform(*self.scale_range)
+        # Calculates the translation factors based on the image dimensions.
+        tx = random.uniform(*self.translate_range) * w
+        ty = random.uniform(*self.translate_range) * h
 
-        # New canvas size to accommodate transformed image
-        new_w = int(w * scale + abs(tx))  # Calculates the new width of the canvas.
-        new_h = int(h * scale + abs(ty))  # Calculates the new height of the canvas.
+        # Calculates the new width and height of the canvas.
+        new_w = int(w * scale + abs(tx))
+        new_h = int(h * scale + abs(ty))
 
-        # Build affine matrix
+        # Calculates the translation matrix.
         M = np.array(
             [[scale, 0, tx if tx > 0 else -tx], [0, scale, ty if ty > 0 else -ty]],
             dtype=np.float32,
-        )  # Creates the affine transformation matrix.
+        )
 
-        # Transform image
+        # Applies the translation to the rotation matrix.
         transformed_image = cv2.warpAffine(
             image, M, (new_w, new_h), flags=cv2.INTER_LINEAR
-        )  # Transforms the image.
+        )
 
-        boxes = target["boxes"].clone()  # Creates a copy of the bounding boxes tensor.
-        angles = target["angles"].clone()  # Creates a copy of the angles tensor.
-        class_idxs = target[
-            "class_idxs"
-        ].clone()  # Creates a copy of the class indices tensor.
+        # Adjusts the translation matrix for the new canvas size.
+        boxes = target["boxes"]
+        angles = target["angles"]
+        class_idxs = target["class_idxs"]
 
-        valid_boxes = []  # List to store valid bounding boxes.
-        valid_angles = []  # List to store valid angles.
-        valid_class_idxs = []  # List to store valid class indices.
-
-        for i in range(boxes.shape[0]):  # Iterates through each bounding box.
-            box = (
-                boxes[i].view(4, 2).numpy()
-            )  # Reshapes the bounding box to (4, 2) and converts it to a NumPy array.
-            ones = np.ones(
-                (4, 1)
-            )  # Creates a tensor of ones for homogeneous coordinates.
-            box_hom = np.hstack(
-                [box, ones]
-            )  # Concatenates the bounding box with the ones.
-            transformed_box = np.dot(M, box_hom.T).T  # Transforms the bounding box.
-
-            # Check if all points are within the new image
-            if np.all(
-                (0 <= transformed_box[:, 0])
-                & (transformed_box[:, 0] < new_w)
-                & (0 <= transformed_box[:, 1])
-                & (transformed_box[:, 1] < new_h)
-            ):  # Checks if the bounding box is within the new image.
-                valid_boxes.append(
-                    transformed_box.flatten()
-                )  # Adds the transformed bounding box to the list.
-                valid_angles.append(
-                    angles[i].item()
-                )  # angle doesn't change. Adds the angle to the list.
-                valid_class_idxs.append(
-                    class_idxs[i].item()
-                )  # Adds the class index to the list.
-
-        # Build target
-        if len(valid_boxes) == 0:  # Checks if there are any valid bounding boxes.
-            target["boxes"] = torch.empty(
-                (0, 8), dtype=torch.float32
-            )  # Creates an empty tensor for boxes.
-            target["angles"] = torch.empty(
-                (0,), dtype=torch.float32
-            )  # Creates an empty tensor for angles.
-            target["class_idxs"] = torch.tensor(
-                [5], dtype=torch.long
-            )  # background. Creates a tensor for background class index.
+        # Vectorized transform
+        if boxes.shape[0] == 0:
+            # No boxes to transform
+            target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
+            target["angles"] = torch.empty((0,), dtype=torch.float32)
+            target["class_idxs"] = torch.tensor([5], dtype=torch.long)
         else:
-            target["boxes"] = torch.tensor(
-                np.array(valid_boxes), dtype=torch.float32
-            )  # Creates a tensor for valid boxes.
-            target["angles"] = torch.tensor(
-                valid_angles, dtype=torch.float32
-            )  # Creates a tensor for valid angles.
-            target["class_idxs"] = torch.tensor(
-                valid_class_idxs, dtype=torch.long
-            )  # Creates a tensor for valid class indices.
+            # Vectorized transform
+            N = boxes.shape[0]
+            boxes_np = boxes.view(N, 4, 2).cpu().numpy()  # (N, 4, 2)
+            ones = np.ones((N, 4, 1), dtype=np.float32)
+            boxes_hom = np.concatenate([boxes_np, ones], axis=2)  # (N, 4, 3)
+            transformed_boxes = np.matmul(boxes_hom, M.T)  # (N, 4, 2)
 
-        sample[
-            "image"
-        ] = transformed_image  # Updates the transformed image in the sample.
-        sample["target"] = target  # Updates the target in the sample.
+            # Check validity mask (all 4 points must lie inside the new canvas)
+            x_in_bounds = (0 <= transformed_boxes[:, :, 0]) & (
+                transformed_boxes[:, :, 0] < new_w
+            )
+            y_in_bounds = (0 <= transformed_boxes[:, :, 1]) & (
+                transformed_boxes[:, :, 1] < new_h
+            )
+            is_valid = (x_in_bounds & y_in_bounds).all(axis=1)  # (N,)
+
+            # Reshape to (N, 8) and filter out invalid boxes
+            valid_boxes = transformed_boxes[is_valid].reshape(-1, 8)
+            valid_angles = angles[is_valid]
+            valid_class_idxs = class_idxs[is_valid]
+
+            # If no boxes are valid, assign empty tensors
+            if valid_boxes.shape[0] == 0:
+                target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
+                target["angles"] = torch.empty((0,), dtype=torch.float32)
+                target["class_idxs"] = torch.tensor([5], dtype=torch.long)
+            else:
+                target["boxes"] = torch.tensor(
+                    valid_boxes, dtype=torch.float32, device=boxes.device
+                )
+                target["angles"] = valid_angles
+                target["class_idxs"] = valid_class_idxs
+
+        # Updates the target in the sample.
+        sample["image"] = transformed_image
+        sample["target"] = target
         return sample
 
 
@@ -430,6 +396,7 @@ class ColorJitterOBB:
         """
         if random.random() > self.prob:  # Checks if the transform should be applied.
             return sample
+
         image = sample["image"].astype(np.float32)  # Converts the image to float32.
 
         # Brightness
@@ -441,8 +408,8 @@ class ColorJitterOBB:
 
         # Contrast
         if self.contrast > 0:  # Checks if contrast adjustment should be applied.
-            mean = image.mean(
-                axis=(0, 1), keepdims=True
+            mean = np.mean(
+                image, axis=(0, 1), keepdims=True
             )  # Calculates the mean of the image.
             factor = 1.0 + random.uniform(
                 -self.contrast, self.contrast
@@ -451,9 +418,10 @@ class ColorJitterOBB:
 
         # Saturation (only affects RGB, so convert to HSV)
         if self.saturation > 0:  # Checks if saturation adjustment should be applied.
-            hsv = cv2.cvtColor(
-                np.clip(image, 0, 255).astype(np.uint8), cv2.COLOR_RGB2HSV
-            ).astype(
+            image_uint8 = np.clip(image, 0, 255).astype(
+                np.uint8
+            )  # Clip before HSV conversion.
+            hsv = cv2.cvtColor(image_uint8, cv2.COLOR_RGB2HSV).astype(
                 np.float32
             )  # Converts the image to HSV.
             factor = 1.0 + random.uniform(
@@ -466,10 +434,12 @@ class ColorJitterOBB:
             image = cv2.cvtColor(
                 hsv.astype(np.uint8), cv2.COLOR_HSV2RGB
             )  # Converts the image back to RGB.
+        else:
+            image = np.clip(image, 0, 255).astype(
+                np.uint8
+            )  # Ensures the image is valid if saturation not applied.
 
-        sample["image"] = np.clip(image, 0, 255).astype(
-            np.uint8
-        )  # Clips the image values to [0, 255] and converts it to uint8.
+        sample["image"] = image  # Updates the image in the sample.
         return sample
 
 
@@ -501,13 +471,15 @@ class RandomNoiseOBB:
         """
         if random.random() > self.prob:  # Checks if the transform should be applied.
             return sample
+
         image = sample["image"].astype(np.float32)  # Converts the image to float32.
-        noise = np.random.normal(0, self.std, image.shape).astype(
+        noise = np.random.normal(loc=0.0, scale=self.std, size=image.shape).astype(
             np.float32
         )  # Generates random Gaussian noise.
         image = np.clip(image + noise, 0, 255).astype(
             np.uint8
         )  # Adds the noise to the image and clips the values to [0, 255].
+
         sample["image"] = image  # Updates the image in the sample.
         return sample
 
@@ -540,11 +512,13 @@ class RandomBlurOBB:
         """
         if random.random() > self.prob:  # Checks if the transform should be applied.
             return sample
+
         image = sample["image"]  # Gets the image from the sample.
-        blurred = cv2.GaussianBlur(
-            image, self.ksize, 0
+        image = cv2.GaussianBlur(
+            image, self.ksize, sigmaX=0
         )  # Applies Gaussian blur to the image.
-        sample["image"] = blurred  # Updates the blurred image in the sample.
+
+        sample["image"] = image  # Updates the blurred image in the sample.
         return sample
 
 
@@ -619,25 +593,13 @@ class RandomOcclusionOBB:
             )  # Calculates the height of the occlusion patch.
 
             # Clamp occlusion position within the OBB bounding rectangle
-            max_x = int(
-                max(x_min, 0)
-            )  # Gets the maximum x coordinate for the occlusion.
-            max_y = int(
-                max(y_min, 0)
-            )  # Gets the maximum y coordinate for the occlusion.
-            range_x = max(
-                int(x_max - occ_w), max_x + 1
-            )  # Calculates the range for the x coordinate of the occlusion.
-            range_y = max(
-                int(y_max - occ_h), max_y + 1
-            )  # Calculates the range for the y coordinate of the occlusion.
+            x0_min = int(max(x_min, 0))
+            y0_min = int(max(y_min, 0))
+            x0_max = max(int(x_max - occ_w), x0_min + 1)
+            y0_max = max(int(y_max - occ_h), y0_min + 1)
 
-            x0 = random.randint(
-                max_x, max(range_x, max_x + 1)
-            )  # Generates a random x coordinate for the occlusion.
-            y0 = random.randint(
-                max_y, max(range_y, max_y + 1)
-            )  # Generates a random y coordinate for the occlusion.
+            x0 = random.randint(x0_min, x0_max)
+            y0 = random.randint(y0_min, y0_max)
         else:
             # Occlusion anywhere in the image
             occ_w = int(
@@ -709,7 +671,7 @@ class ToTensorNormalize(object):
             sample["target"],
         )  # Gets the image and target from the sample.
         image = (
-            torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
+            torch.from_numpy(image).permute(2, 0, 1).float().div(255.0)
         )  # Converts the image to a PyTorch tensor and normalizes it.
         image = (
             image - self.mean

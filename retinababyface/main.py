@@ -14,6 +14,7 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
 from torch.utils.data import DataLoader
+from torchinfo import summary
 
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
@@ -90,6 +91,9 @@ def main():
         out_channel=64,
         pretrain_path=args.pretrain_path,
     ).to(device)
+    
+    print("[INFO] Model summary:")
+    summary(model, input_size=(1, 3, 640, 640), col_names=["input_size", "output_size", "num_params", "trainable"], row_settings=["var_names"], col_width=20, depth=2)
 
     multitask_loss = MultiTaskLoss(lambda_class=1.0, lambda_obb=1.0, lambda_rot=1.0)
     earlystopping = EarlyStopping(

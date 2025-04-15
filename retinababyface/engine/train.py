@@ -511,13 +511,6 @@ def train(
                 anchors=anchors,
             )  # Perform a training step.
 
-            if scheduler is not None and isinstance(
-                scheduler, lr_scheduler.ReduceLROnPlateau
-            ):
-                scheduler.step(
-                    train_total_loss
-                )  # Update learning rate scheduler if ReduceLROnPlateau.
-
             test_dataloader_tqdm = tqdm(
                 test_dataloader, desc=f"Test {epoch+1}", leave=False
             )
@@ -533,6 +526,9 @@ def train(
                 device=device,
                 anchors=anchors,
             )  # Perform a testing step.
+            
+            if scheduler is not None and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(test_total_loss) # Update learning rate scheduler if ReduceLROnPlateau.
 
             epoch_time = time.time() - epoch_start
             print(

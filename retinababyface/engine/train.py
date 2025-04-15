@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 import torch
+import torch.cuda
 import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader
@@ -540,6 +541,12 @@ def train(
             print(
                 f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}"
             )
+            
+            if device.type == "cuda":
+                allocated_mem_MB = torch.cuda.memory_allocated(device) / (1024 ** 2)
+                max_allocated_mem_MB = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+                print(f"[GPU] Memory used: {allocated_mem_MB:.2f} MB | Max used this epoch: {max_allocated_mem_MB:.2f} MB")
+                torch.cuda.reset_peak_memory_stats(device)
 
             if record_metrics:
                 wandb.log(

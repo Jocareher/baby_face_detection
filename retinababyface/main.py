@@ -30,29 +30,18 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train RetinaBabyFace Model")
 
     # Dataset and paths
-    parser.add_argument(
-        "--root_dir", type=str, required=True, help="Path to dataset root directory"
-    )
-    parser.add_argument(
-        "--pretrain_path",
-        type=str,
-        required=True,
-        help="Path to MobileNet pretrained weights",
-    )
+    parser.add_argument("--root_dir", type=str, required=True, help="Path to dataset root directory")
+    parser.add_argument("--pretrain_path", type=str, required=True, help="Path to MobileNet pretrained weights")
 
     # Training hyperparams
     parser.add_argument("--epochs", type=int, default=config.DEFAULT_EPOCHS)
     parser.add_argument("--lr", type=float, default=config.DEFAULT_LR)
     parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
-    parser.add_argument(
-        "--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY
-    )
+    parser.add_argument("--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY)
     parser.add_argument("--optimizer", type=str, default=config.DEFAULT_OPTIMIZER)
     parser.add_argument("--scheduler", type=str, default=config.DEFAULT_SCHEDULER)
     parser.add_argument("--clip_value", type=float, default=config.DEFAULT_CLIP_VALUE)
-    parser.add_argument(
-        "--grad_clip_mode", type=str, default=config.DEFAULT_GRAD_CLIP_MODE
-    )
+    parser.add_argument("--grad_clip_mode", type=str, default=config.DEFAULT_GRAD_CLIP_MODE)
     parser.add_argument("--patience", type=int, default=config.DEFAULT_PATIENCE)
 
     # WandB
@@ -61,7 +50,6 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default=config.RUN_NAME)
 
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
@@ -84,12 +72,16 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=custom_collate,
+        num_workers=4,
+        pin_memory=True,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         collate_fn=custom_collate,
+        num_workers=4,
+        pin_memory=True,
     )
 
     print("[INFO] Building model...")
@@ -102,16 +94,9 @@ def main():
         out_channel=64,
         pretrain_path=args.pretrain_path,
     ).to(device)
-
+    
     print("[INFO] Model summary:")
-    summary(
-        model,
-        input_size=(1, 3, 640, 640),
-        col_names=["input_size", "output_size", "num_params", "trainable"],
-        row_settings=["var_names"],
-        col_width=20,
-        depth=2,
-    )
+    summary(model, input_size=(1, 3, 640, 640), col_names=["input_size", "output_size", "num_params", "trainable"], row_settings=["var_names"], col_width=20, depth=2)
 
     multitask_loss = MultiTaskLoss(lambda_class=1.0, lambda_obb=1.0, lambda_rot=1.0)
     earlystopping = EarlyStopping(

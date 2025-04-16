@@ -13,6 +13,7 @@ print(f"[INFO] Adding {ROOT_DIR} to sys.path")
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
+import torch
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
@@ -56,7 +57,7 @@ def main():
     print("[INFO] Starting training script with args:", vars(args))
 
     set_seed(42)
-    device = get_default_device()
+    device = torch.device("cpu") #get_default_device()
     print(f"[INFO] Using device: {device}")
 
     print("[INFO] Loading datasets...")
@@ -131,7 +132,7 @@ def main():
         ratio_factors=config.RATIO_FACTORS,
     )
 
-    print("[INFO] Training completed!")
+    print("\n[INFO] Training completed!")
 
 
 if __name__ == "__main__":

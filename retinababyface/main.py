@@ -70,7 +70,7 @@ def main():
     print("[INFO] Starting training script with args:", vars(args))
 
     set_seed(42)
-    device = torch.device("cpu")  # get_default_device()
+    device = get_default_device()
     print(f"[INFO] Using device: {device}")
 
     print("[INFO] Loading datasets...")

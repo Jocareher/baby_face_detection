@@ -496,9 +496,6 @@ def train(
         for epoch in tqdm(range(epochs), desc="Epochs", unit="epoch"):
             epoch_start = time.time()
 
-            train_dataloader_tqdm = tqdm(
-                train_dataloader, desc=f"Train {epoch+1}", leave=False
-            )
             (
                 train_total_loss,
                 train_class_loss,
@@ -517,9 +514,6 @@ def train(
                 anchors=anchors_tuple,
             )  # Perform a training step.
 
-            test_dataloader_tqdm = tqdm(
-                test_dataloader, desc=f"Test {epoch+1}", leave=False
-            )
             (
                 test_total_loss,
                 test_class_loss,
@@ -542,7 +536,7 @@ def train(
 
             epoch_time = time.time() - epoch_start
             print(
-                f"Epoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
+                f"\nEpoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
             )
             print(
                 f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"

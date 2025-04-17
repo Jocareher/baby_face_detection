@@ -15,6 +15,7 @@ import tqdm.auto as tqdm_auto
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
 from models.anchors import AnchorGeneratorOBB, get_feature_map_shapes
+from loss.utils import xyxyxyxy2xywhr
 
 
 class EarlyStopping:

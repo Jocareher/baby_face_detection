@@ -9,9 +9,10 @@ import sys
 
 # Adding the root directory to the system path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-print(f"[INFO] Adding {ROOT_DIR} to sys.path")
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
+    print(f"[INFO] Adding {ROOT_DIR} to sys.path")
+
 
 import torch
 from torch.utils.data import DataLoader
@@ -117,7 +118,7 @@ def main():
         depth=2,
     )
 
-    multitask_loss = MultiTaskLoss(lambda_class=1.0, lambda_obb=1.0, lambda_rot=1.0)
+    multitask_loss = MultiTaskLoss()
     earlystopping = EarlyStopping(
         patience=args.patience,
         verbose=True,

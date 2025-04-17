@@ -52,7 +52,7 @@ def get_train_transform():
     return transforms.Compose(
         [
             RandomHorizontalFlipOBB(prob=0.5),
-            RandomRotateOBB(max_angle=180, prob=0.3),
+            RandomRotateOBB(max_angle=30, prob=0.3),
             RandomScaleTranslateOBB(
                 scale_range=(0.8, 1.1), translate_range=(-0.2, 0.2), prob=0.3
             ),

@@ -98,7 +98,7 @@ class BabyFacesDataset(Dataset):
                 - "target": A dictionary containing the target information:
                     - "boxes": A torch tensor of shape (N, 8) representing the oriented bounding box coordinates in pixel space.
                     - "angles": A torch tensor of shape (N,) representing the rotation angles in radians.
-                    - "class_idxs": A torch tensor of shape (N,) or (1,) if background, representing the class indices.
+                    - "class_idx": A torch tensor of shape (N,) or (1,) if background, representing the class indices.
         """
         base_name = self.file_list[
             idx
@@ -159,7 +159,7 @@ class BabyFacesDataset(Dataset):
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32),  # shape (N, 8) or (0, 8)
             "angles": torch.tensor(angles, dtype=torch.float32),  # shape (N,) or (0,)
-            "class_idxs": torch.tensor(
+            "class_idx": torch.tensor(
                 class_idxs, dtype=torch.long
             ),  # shape (N,) or (1,) if background
         }

@@ -101,7 +101,7 @@ class RandomHorizontalFlipOBB:
             ].clone()  # Creates a copy of the bounding boxes tensor.
             angles = target["angles"].clone()  # Creates a copy of the angles tensor.
             class_idxs = target[
-                "class_idxs"
+                "class_idx"
             ].clone()  # Creates a copy of the class indices tensor.
 
             # Flip X coordinates
@@ -114,7 +114,7 @@ class RandomHorizontalFlipOBB:
             boxes = boxes.view(-1, 8)  # Back to (N, 8)
 
             # Negate angles
-            angles = -angles
+            angles = -angles % (2 * math.pi)
 
             # Flip class indices: vectorized swap using masks
             class_idxs_flipped = class_idxs.clone()
@@ -125,7 +125,7 @@ class RandomHorizontalFlipOBB:
             target["boxes"] = boxes  # Updates the boxes in the target dictionary.
             target["angles"] = angles  # Updates the angles in the target dictionary.
             target[
-                "class_idxs"
+                "class_idx"
             ] = class_idxs_flipped  # Updates the class indices in the target dictionary.
 
         sample["image"] = image  # Updates the image in the sample.
@@ -139,7 +139,7 @@ class RandomRotateOBB:
     expanding the canvas to avoid cropping, and normalizing the resulting angles.
     """
 
-    def __init__(self, max_angle: int = 180, prob: float = 0.5):
+    def __init__(self, max_angle: int = 30, prob: float = 0.5):
         """
         Initializes the RandomRotateOBB transform.
 
@@ -169,8 +169,8 @@ class RandomRotateOBB:
         )  # Extracts the image and target from the sample.
         h, w = image.shape[:2]  # Gets the height and width of the image.
         angle_deg = -random.uniform(
-            -self.max_angle, self.max_angle
-        )  # clockwise. Generates a random rotation angle.
+            self.max_angle, -self.max_angle
+        )  # Generates a random angle in degrees.
         angle_rad = np.radians(angle_deg)  # Converts the angle to radians.
 
         # Compute new canvas size
@@ -205,7 +205,7 @@ class RandomRotateOBB:
         boxes = target["boxes"].clone()  # Creates a copy of the bounding boxes tensor.
         angles = target["angles"].clone()  # Creates a copy of the angles tensor.
         class_idxs = target[
-            "class_idxs"
+            "class_idx"
         ].clone()  # Creates a copy of the class indices tensor.
 
         # Vectorized rotation of all boxes
@@ -223,12 +223,12 @@ class RandomRotateOBB:
         )
 
         # Update angle and normalize to [0, 2π)
-        angles = (angles + angle_rad) % (2 * math.pi)
+        angles = (angles - angle_rad) % (2 * math.pi)
 
         target["boxes"] = boxes  # Updates the boxes in the target dictionary.
         target["angles"] = angles  # Updates the angles in the target dictionary.
         target[
-            "class_idxs"
+            "class_idx"
         ] = class_idxs  # Updates the class indices in the target dictionary.
 
         sample["image"] = rotated_image  # Updates the rotated image in the sample.
@@ -309,14 +309,14 @@ class RandomScaleTranslateOBB:
         # Adjusts the translation matrix for the new canvas size.
         boxes = target["boxes"]
         angles = target["angles"]
-        class_idxs = target["class_idxs"]
+        class_idxs = target["class_idx"]
 
         # Vectorized transform
         if boxes.shape[0] == 0:
             # No boxes to transform
             target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
             target["angles"] = torch.empty((0,), dtype=torch.float32)
-            target["class_idxs"] = torch.tensor([5], dtype=torch.long)
+            target["class_idx"] = torch.tensor([5], dtype=torch.long)
         else:
             # Vectorized transform
             N = boxes.shape[0]
@@ -343,13 +343,13 @@ class RandomScaleTranslateOBB:
             if valid_boxes.shape[0] == 0:
                 target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
                 target["angles"] = torch.empty((0,), dtype=torch.float32)
-                target["class_idxs"] = torch.tensor([5], dtype=torch.long)
+                target["class_idx"] = torch.tensor([5], dtype=torch.long)
             else:
                 target["boxes"] = torch.tensor(
                     valid_boxes, dtype=torch.float32, device=boxes.device
                 )
                 target["angles"] = valid_angles
-                target["class_idxs"] = valid_class_idxs
+                target["class_idx"] = valid_class_idxs
 
         # Updates the target in the sample.
         sample["image"] = transformed_image

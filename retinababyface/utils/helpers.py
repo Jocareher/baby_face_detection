@@ -1,3 +1,4 @@
+import os
 import random
 import numpy as np
 import torch
@@ -13,6 +14,8 @@ def set_seed(seed_value: int = 42) -> None:
     Returns:
         None
     """
+    # Set the seed for Python's built-in random library
+    os.environ["PYTHONHASHSEED"] = str(seed_value)
 
     # Setting the random seed for numpy's random number generator
     np.random.seed(seed_value)
@@ -23,6 +26,11 @@ def set_seed(seed_value: int = 42) -> None:
 
     # Setting the random seed for Python's built-in random library
     random.seed(seed_value)
+
+    # Setting the random seed for PyTorch's random number generator
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def get_default_device() -> torch.device:

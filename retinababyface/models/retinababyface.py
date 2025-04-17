@@ -9,70 +9,56 @@ from .mobilenet import FPN, SSH
 
 class OBBHead(nn.Module):
     """
-    Head module for oriented bounding box (OBB) regression.
+    Head module for predicting the 8 normalized offsets (Δx, Δy) of the 4 vertices
+    of an oriented bounding box (OBB) relative to its anchor.
+
+    The output is constrained to the range [-1, 1] using a tanh activation, so that
+    vertex displacements remain within a reasonable distance from the anchor.
+
+    Output shape:
+        - Input: (B, C, H, W)
+        - Output: (B, N, 8) where N = H × W × num_anchors
     """
 
-    def __init__(self, inchannels: int = 64, num_anchors: int = 2):
-        """
-        Initializes the OBBHead module.
-
-        Args:
-            inchannels (int): Number of input channels. Defaults to 64.
-            num_anchors (int): Number of anchors per location. Defaults to 2.
-        """
+    def __init__(self, in_ch: int, num_anchors: int = 3):
         super().__init__()
-        self.conv = nn.Conv2d(
-            inchannels, num_anchors * 8, kernel_size=1
-        )  # 1x1 convolution to predict OBB coordinates.
+        self.conv = nn.Conv2d(in_ch, num_anchors * 8, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the OBBHead module.
-
-        Args:
-            x (torch.Tensor): Input feature map.
-
-        Returns:
-            torch.Tensor: Predicted OBB coordinates.
-        """
-        # Apply the convolution and rearrange the tensor dimensions.
-        # The output shape is (batch_size, num_anchors * H * W, 8).
-        # The 8 values correspond to the coordinates of the OBB.
-        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
+    def forward(self, x):
+        # Apply 1x1 convolution, reshape and apply tanh to constrain output to [-1, 1]
+        # The output shape is (B, num_anchors * H * W, 8)
+        # The 8 values correspond to the 4 vertices of the OBB.
+        # The vertices are represented as (Δx1, Δy1, Δx2, Δy2, Δx3, Δy3, Δx4, Δy4)
+        # The output is reshaped to (B, N, 8) where N = H × W × num_anchors
+        return torch.tanh(self.conv(x).permute(0, 2, 3, 1).contiguous()).view(
+            x.size(0), -1, 8
+        )
 
 
 class AngleHead(nn.Module):
     """
-    Head module for angle prediction.
+    Head module for predicting the rotation angle (in radians) of each oriented bounding box (OBB).
+
+    The predicted angle is constrained to the range [0, 2π] using a sigmoid activation followed by scaling.
+
+    Output shape:
+        - Input: (B, C, H, W)
+        - Output: (B, N, 1) where N = H × W × num_anchors
     """
 
     def __init__(self, inchannels: int = 64, num_anchors: int = 2):
-        """
-        Initializes the AngleHead module.
-
-        Args:
-            inchannels (int): Number of input channels. Defaults to 64.
-            num_anchors (int): Number of anchors per location. Defaults to 2.
-        """
         super().__init__()
-        self.conv = nn.Conv2d(
-            inchannels, num_anchors * 1, kernel_size=1
-        )  # 1x1 convolution to predict angles.
+        self.conv = nn.Conv2d(inchannels, num_anchors * 1, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the AngleHead module.
-
-        Args:
-            x (torch.Tensor): Input feature map.
-
-        Returns:
-            torch.Tensor: Predicted angles.
-        """
-        # Apply the convolution and rearrange the tensor dimensions.
-        # The output shape is (batch_size, num_anchors * H * W, 1).
-        # The 1 value corresponds to the angle of the OBB.
-        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 1)
+    def forward(self, x):
+        # Apply 1x1 convolution, reshape and scale sigmoid output to [0, 2π]
+        # The output shape is (B, num_anchors * H * W, 1)
+        # The 1 value corresponds to the rotation angle of the OBB.
+        # The output is reshaped to (B, N, 1) where N = H × W × num_anchors
+        # The angle is represented in radians.
+        return (
+            torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous()) * 2 * math.pi
+        ).view(x.size(0), -1, 1)
 
 
 class ClassHead(nn.Module):
@@ -122,7 +108,7 @@ class ClassHead(nn.Module):
 class RetinaBabyFace(nn.Module):
     """
     RetinaBabyFace model with MobileNetV1 backbone and three heads:
-    - Perspective classification
+    - Class classification
     - OBB regression
     - Angle prediction
     """
@@ -131,7 +117,6 @@ class RetinaBabyFace(nn.Module):
         self,
         backbone: nn.Module,
         return_layers: Dict[str, str],
-        in_channel: int,
         out_channel: int,
         pretrain_path: Optional[str] = None,
         freeze_backbone: bool = True,
@@ -185,13 +170,13 @@ class RetinaBabyFace(nn.Module):
 
         # Heads
         self.obb_head = nn.ModuleList(
-            [OBBHead(out_channel, num_anchors=3) for _ in range(3)]
+            [OBBHead(out_channel, num_anchors=9) for _ in range(3)]
         )  # OBB regression heads.
         self.angle_head = nn.ModuleList(
-            [AngleHead(out_channel, num_anchors=3) for _ in range(3)]
+            [AngleHead(out_channel, num_anchors=9) for _ in range(3)]
         )  # Angle prediction heads.
         self.class_head = nn.ModuleList(
-            [ClassHead(out_channel, num_anchors=3, num_classes=6) for _ in range(3)]
+            [ClassHead(out_channel, num_anchors=9, num_classes=5) for _ in range(3)]
         )  # Class prediction heads.
 
     def forward(

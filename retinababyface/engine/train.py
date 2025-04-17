@@ -211,33 +211,29 @@ def build_multitask_targets(
     batch_targets: Dict[str, torch.Tensor], device: torch.device
 ) -> Dict[str, torch.Tensor]:
     """
-    Extracts padded targets and returns them as tensors for the multitask model.
+    Prepares and formats the target dictionary for the multitask model by moving tensors to the desired device
+    and adjusting shapes as needed.
 
     Args:
-        batch_targets (Dict[str, torch.Tensor]): Dictionary with keys:
-            - boxes: (B, N, 8)
-            - angles: (B, N)
-            - class_idx: (B, N)
-            - valid_mask: (B, N)
-        device (torch.device): The device to move tensors to.
+        batch_targets (Dict[str, torch.Tensor]): Dictionary containing:
+            - "boxes"      : (B, N, 8)  -> Oriented bounding boxes (vertices).
+            - "angles"     : (B, N)     -> Rotation angles in radians.
+            - "class_idx"  : (B, N)     -> Class labels per box.
+            - "valid_mask" : (B, N)     -> Mask indicating valid boxes.
+        device (torch.device): Device to move all tensors to (e.g., CUDA or CPU).
 
     Returns:
-        Dict[str, torch.Tensor]: Dictionary of tensors for the multitask model.
-            - class_idx: (B, N)
-            - boxes: (B, N, 8)
-            - angle: (B, N, 1)
-            - valid_mask: (B, N)
+        Dict[str, torch.Tensor]: Dictionary with preprocessed targets for loss computation:
+            - "class_idx"  : (B, N)
+            - "boxes"      : (B, N, 8)
+            - "angle"      : (B, N, 1)
+            - "valid_mask" : (B, N)
     """
-    class_labels = batch_targets["class_idx"].to(device)  # (B, N)
-    obb_targets = batch_targets["boxes"].to(device)  # (B, N, 8)
-    angle_targets = batch_targets["angles"].unsqueeze(-1).to(device)  # (B, N, 1)
-    valid_mask = batch_targets["valid_mask"].to(device)  # (B, N)
-
     return {
-        "class_idx": class_labels,
-        "boxes": obb_targets,
-        "angle": angle_targets,
-        "valid_mask": valid_mask,
+        "class_idx": batch_targets["class_idx"].to(device),  # (B, N)
+        "boxes": batch_targets["boxes"].to(device),  # (B, N, 8)
+        "angle": batch_targets["angles"].unsqueeze(-1).to(device),  # (B, N, 1)
+        "valid_mask": batch_targets["valid_mask"].to(device),  # (B, N)
     }
 
 
@@ -284,15 +280,14 @@ def train_step(
         )  # Process targets for multi-task learning.
 
         optimizer.zero_grad()  # Zero the gradients.
-        batch_anchors = anchors.unsqueeze(0).repeat(
-            images.size(0), 1, 1
-        )  # Create batch anchors.
+        anchors_xy, anchors_xywhr = anchors  #
+        batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
         pred = model(images)  # Forward pass.
         image_sizes = [(images.shape[3], images.shape[2])] * images.size(
             0
         )  # [(W, H), ...]
         loss, loss_class, loss_obb, loss_angle = loss_fn(
-            pred, targets, batch_anchors, image_sizes
+            pred, targets, batch_anchors, anchors_xywhr, image_sizes
         )  # Calculate loss.
 
         loss.backward()  # Backward pass.
@@ -362,15 +357,14 @@ def test_step(
                 targets_raw, device
             )  # Process targets for multi-task learning.
 
-            batch_anchors = anchors.unsqueeze(0).repeat(
-                images.size(0), 1, 1
-            )  # Create batch anchors.
+            anchors_xy, anchors_xywhr = anchors  # ① desempaqueta
+            batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
             pred = model(images)  # Forward pass.
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(
                 0
             )  # [(W, H), ...]
             loss, loss_class, loss_obb, loss_angle = loss_fn(
-                pred, targets, batch_anchors, image_sizes
+                pred, targets, batch_anchors, anchors_xywhr, image_sizes
             )  # Calculate loss.
 
             total_loss += loss.item()
@@ -482,7 +476,15 @@ def train(
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
     )  # Create Anchor Generator.
-    anchors = anchor_gen.generate_anchors(device=device)  # Generate anchors.
+    anchors_xy = anchor_gen.generate_anchors(device=device)  # Generate anchors.
+
+    zeros = torch.zeros(len(anchors_xy), device=device)
+    sample = next(iter(train_dataloader))
+    H_img, W_img = sample["image"].shape[-2:]
+    anchors_xywhr = xyxyxyxy2xywhr(anchors_xy, zeros, (W_img, H_img))  # (N,5)
+
+    # guarda ambos para el resto del entrenamiento
+    anchors_tuple = (anchors_xy, anchors_xywhr)
 
     start_time = time.time()
     if record_metrics:
@@ -511,7 +513,7 @@ def train(
                 grad_clip_mode=grad_clip_mode,
                 scheduler=scheduler,
                 device=device,
-                anchors=anchors,
+                anchors=anchors_tuple,
             )  # Perform a training step.
 
             test_dataloader_tqdm = tqdm(
@@ -527,7 +529,7 @@ def train(
                 test_dataloader=test_dataloader,
                 loss_fn=loss_fn,
                 device=device,
-                anchors=anchors,
+                anchors=anchors_tuple,
             )  # Perform a testing step.
 
             if scheduler is not None and isinstance(
@@ -539,7 +541,7 @@ def train(
 
             epoch_time = time.time() - epoch_start
             print(
-                f"\nEpoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
+                f"Epoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
             )
             print(
                 f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
@@ -548,15 +550,11 @@ def train(
                 f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}"
             )
 
-            if device.type == "cuda":
-                allocated_mem_MB = torch.cuda.memory_allocated(device) / (1024**2)
-                max_allocated_mem_MB = torch.cuda.max_memory_allocated(device) / (
-                    1024**2
-                )
-                print(
-                    f"[GPU] Memory used: {allocated_mem_MB:.2f} MB | Max used this epoch: {max_allocated_mem_MB:.2f} MB"
-                )
-                torch.cuda.reset_peak_memory_stats(device)
+            # if device.type == "cuda":
+            #     allocated_mem_MB = torch.cuda.memory_allocated(device) / (1024 ** 2)
+            #     max_allocated_mem_MB = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+            #     print(f"[GPU] Memory used: {allocated_mem_MB:.2f} MB | Max used this epoch: {max_allocated_mem_MB:.2f} MB")
+            #     torch.cuda.reset_peak_memory_stats(device)
 
             if record_metrics:
                 wandb.log(

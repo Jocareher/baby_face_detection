@@ -1,12 +1,59 @@
-import math
+from typing import List, Tuple, Dict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from shapely.geometry import Polygon
-from shapely.errors import TopologicalError
+from torchvision.ops import sigmoid_focal_loss
 
-from .utils import match_anchors_to_targets
+from .utils import match_anchors_to_targets, decode_vertices, probiou, xyxyxyxy2xywhr
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss implementation for multi-class classification with imbalance handling.
+
+    References:
+        - https://arxiv.org/abs/1708.02002
+    """
+
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
+        """
+        Args:
+            alpha (float): Balancing factor for the rare class. Default is 0.25.
+            gamma (float): Focusing parameter to down-weight easy examples. Default is 2.0.
+        """
+        super().__init__()
+        self.alpha, self.gamma = alpha, gamma
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Computes focal loss between predicted logits and target class indices.
+
+        Args:
+            logits (torch.Tensor): Class logits of shape (B, N, C) or (N, C).
+            targets (torch.Tensor): Integer class labels of shape (B, N) or (N,).
+
+        Returns:
+            torch.Tensor: Scalar loss value.
+        """
+        if logits.dim() == 2:  # Support batched or unbatched input
+            logits = logits.unsqueeze(0)
+            targets = targets.unsqueeze(0)
+
+        # Ensure logits are in the correct shape
+        B, N, C = logits.shape
+        # Ensure targets are in the correct shape
+        onehot = F.one_hot(targets.clamp_max(C - 1), C).float()  # (B, N, C)
+
+        # Compute the focal loss
+        loss = sigmoid_focal_loss(
+            logits.view(-1, C),  # Flatten logits to (B*N, C)
+            onehot.view(-1, C),  # Flatten onehot to (B*N, C)
+            alpha=self.alpha,  # Balancing factor
+            gamma=self.gamma,  # Focusing parameter
+            reduction="none",
+        )
+        return loss.mean()
 
 
 class RotationLoss(nn.Module):
@@ -41,9 +88,8 @@ class RotationLoss(nn.Module):
             torch.Tensor: The mean rotation loss.
         """
         # Both tensors are of shape (B, N, 1)
-        loss = 1 - torch.cos(
-            pred_angles.squeeze(-1) - gt_angles.squeeze(-1)
-        )  # Calculate cosine difference between predicted and ground truth angles.
+        diff = pred_angles - gt_angles  # (…,1)
+        loss = 1 - torch.cos(diff)
         if valid_mask is not None:
             loss = loss[
                 valid_mask
@@ -53,7 +99,12 @@ class RotationLoss(nn.Module):
 
 class OBBLoss(nn.Module):
     """
-    Module for calculating the Oriented Bounding Box (OBB) loss.
+    Computes loss between predicted and ground-truth Oriented Bounding Boxes (OBBs)
+    using probabilistic IoU as a similarity metric.
+
+    Note:
+        - Boxes are expected in vertex format (xyxyxyxy) and angles in radians.
+        - Internally converts boxes to xywhr format.
     """
 
     def __init__(self):
@@ -61,221 +112,177 @@ class OBBLoss(nn.Module):
 
     def forward(
         self,
-        pred_obbs: torch.Tensor,
-        gt_obbs: torch.Tensor,
-        image_size: list,
-        valid_mask: torch.Tensor = None,
+        pred_obbs: torch.Tensor,  # (B, N, 8)
+        gt_obbs: torch.Tensor,  # (B, N, 8)
+        angles_pred: torch.Tensor,  # (B, N, 1)
+        gt_angles: torch.Tensor,  # (B, N, 1)
+        image_size: List[Tuple[int, int]],
+        valid_mask: torch.Tensor = None,  # (B, N) boolean mask for valid anchors
     ) -> torch.Tensor:
         """
-        Calculates the OBB loss.
-
-        The loss function is defined as:
-        L_obb = 1 - IoU(pred_obb, gt_obb)
-
-        Where IoU is the Intersection over Union between the predicted and ground truth OBBs.
-        This loss penalizes the difference in overlap between the predicted and ground truth OBBs.
-
         Args:
-            pred_obbs (torch.Tensor): Predicted OBBs tensor of shape (B, N, 8) in normalized coordinates [0, 1].
-            gt_obbs (torch.Tensor): Ground truth OBBs tensor of shape (B, N, 8) in normalized coordinates [0, 1].
-            image_size (list): List of tuples (width, height) for each image in the batch, i.e., [(W1, H1), (W2, H2), ...].
-            valid_mask (torch.Tensor, optional): Valid mask tensor of shape (B, N) to exclude certain predictions from loss calculation.
+            pred_obbs (torch.Tensor): Predicted vertices, shape (B, N, 8).
+            gt_obbs (torch.Tensor): Ground truth vertices, shape (B, N, 8).
+            angles_pred (torch.Tensor): Predicted angles in radians, shape (B, N, 1).
+            gt_angles (torch.Tensor): Ground truth angles in radians, shape (B, N, 1).
+            image_size (List[Tuple[int, int]]): List of image sizes (W, H) for each sample in batch.
+            valid_mask (torch.Tensor, optional): Boolean mask for valid anchors. Defaults to None.
 
         Returns:
-            torch.Tensor: The mean OBB loss.
+            torch.Tensor: Scalar loss value.
         """
-        B, N, _ = pred_obbs.shape  # Get batch size and number of OBBs.
-        losses = []  # Initialize list to store individual OBB losses.
+        B, N, _ = pred_obbs.shape
+        losses = []
 
-        for b in range(B):  # Iterate through each image in the batch.
-            width, height = image_size[b]  # Get width and height of the current image.
+        for b in range(B):
+            W, H = image_size[b]
 
-            # Denormalize OBB coordinates.
-            pred_boxes = pred_obbs[b] * torch.tensor(
-                [width, height] * 4, device=pred_obbs.device
+            # Convert both boxes to xywhr format
+            pred_xywhr = xyxyxyxy2xywhr(
+                pred_obbs[b], angles_pred[b].squeeze(-1), (W, H)
             )
-            gt_boxes = gt_obbs[b] * torch.tensor(
-                [width, height] * 4, device=gt_obbs.device
-            )
+            gt_xywhr = xyxyxyxy2xywhr(gt_obbs[b], gt_angles[b].squeeze(-1), (W, H))
 
-            for i in range(N):  # Iterate through each OBB.
-                if (
-                    valid_mask is not None and not valid_mask[b, i]
-                ):  # Skip OBB if it's masked out.
-                    continue
+            # Compute the probabilistic IoU
+            # Note: the function is vectorized and computes all pairwise IoUs
+            # between the predicted and ground truth boxes
+            if valid_mask is not None:
+                # Apply the valid mask to filter out invalid predictions
+                mask = valid_mask[b]
+                # Ensure the mask is applied to both pred and gt boxes
+                pred_xywhr = pred_xywhr[mask]
+                gt_xywhr = gt_xywhr[mask]
 
-                try:
-                    pred_poly = Polygon(
-                        pred_boxes[i].view(4, 2).detach().cpu().numpy()
-                    )  # Create Shapely Polygon from predicted OBB.
-                    gt_poly = Polygon(
-                        gt_boxes[i].view(4, 2).detach().cpu().numpy()
-                    )  # Create Shapely Polygon from ground truth OBB.
+            # If there are no valid predictions, skip this batch
+            if pred_xywhr.numel() == 0:
+                continue
+            # Compute the probabilistic IoU
+            # Note: probiou returns a matrix of shape (N, M) where N is the number of gt boxes
+            # and M is the number of pred boxes
+            # We take the mean IoU across all gt boxes for this batch
+            # and all pred boxes
+            iou = probiou(pred_xywhr, gt_xywhr)
+            losses.append((1.0 - iou).mean())
 
-                    if (
-                        not pred_poly.is_valid or not gt_poly.is_valid
-                    ):  # Skip OBB if either polygon is invalid.
-                        continue
+        if len(losses) == 0:
+            return torch.tensor(0.0, requires_grad=True, device=pred_obbs.device)
 
-                    inter = pred_poly.intersection(
-                        gt_poly
-                    ).area  # Calculate intersection area between predicted and ground truth OBBs.
-                    union = pred_poly.union(
-                        gt_poly
-                    ).area  # Calculate union area between predicted and ground truth OBBs.
-
-                    iou = inter / union if union > 0 else 0.0  # Calculate IoU.
-                    loss_i = 1.0 - iou  # Calculate OBB loss as 1 - IoU.
-                    losses.append(loss_i)  # Append OBB loss to the list.
-
-                except (
-                    ValueError,
-                    TopologicalError,
-                ):  # Handle potential errors during Polygon operations.
-                    continue
-
-        if len(losses) == 0:  # Return 0 loss if no valid OBB losses were calculated.
-            return torch.tensor(0.0, requires_grad=True).to(pred_obbs.device)
-
-        return torch.tensor(
-            losses, device=pred_obbs.device
-        ).mean()  # Return the mean OBB loss.
+        return torch.stack(losses).mean()
 
 
 class MultiTaskLoss(nn.Module):
     """
-    Module for calculating the multi-task loss for perspective classification, OBB regression, and rotation prediction.
+    Combines classification, OBB regression, and angle regression into a single multitask loss.
+
+    Total Loss:
+        L_total = lambda_cls * L_focal + lambda_obb * L_iou + lambda_rot * L_angle
+
+    Args:
+        lambda_cls (float): Weight for classification loss.
+        lambda_obb (float): Weight for OBB regression loss.
+        lambda_rot (float): Weight for rotation angle loss.
     """
 
     def __init__(
-        self,
-        lambda_class: float = 1.0,
-        lambda_obb: float = 1.0,
-        lambda_rot: float = 1.0,
+        self, lambda_cls: float = 1.0, lambda_obb: float = 1.0, lambda_rot: float = 0.5
     ):
         super().__init__()
-        self.class_loss_fn = (
-            nn.CrossEntropyLoss()
-        )  # CrossEntropyLoss for perspective classification.
-        self.obb_loss_fn = OBBLoss()  # OBBLoss for OBB regression.
-        self.rotation_loss_fn = RotationLoss()  # RotationLoss for angle prediction.
-        self.lambda_class = lambda_class  # Weight for perspective classification loss.
-        self.lambda_obb = lambda_obb  # Weight for OBB regression loss.
-        self.lambda_rot = lambda_rot  # Weight for angle prediction loss.
+        self.focal_loss = FocalLoss()
+        self.obb_loss = OBBLoss()
+        self.rot_loss = RotationLoss()
+        self.lambda_cls, self.lambda_obb, self.lambda_rot = (
+            lambda_cls,
+            lambda_obb,
+            lambda_rot,
+        )
 
     def forward(
-        self, pred: tuple, targets: dict, anchors: torch.Tensor, image_sizes: list
-    ) -> tuple:
+        self,
+        preds: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+        anchors_xy: torch.Tensor,
+        anchors_xywhr: torch.Tensor,
+        image_sizes: List[Tuple[int, int]],
+    ):
         """
-        Calculates the multi-task loss.
-
-        The total loss is defined as:
-        L_total = lambda_class * L_class + lambda_obb * L_obb + lambda_rot * L_rot
-
-        Where:
-        - L_class is the CrossEntropyLoss for perspective classification.
-        - L_obb is the OBBLoss for OBB regression.
-        - L_rot is the RotationLoss for angle prediction.
-        - lambda_class, lambda_obb, and lambda_rot are weights for each loss component.
-
         Args:
-            pred (tuple): Tuple containing predicted perspective logits, OBBs, and angles.
-            targets (dict): Dictionary containing ground truth boxes, angles, and classes.
-            anchors (torch.Tensor): Tensor of anchor boxes.
-            image_sizes (list): List of tuples (width, height) for each image in the batch.
+            preds (Tuple): Tuple of model outputs: (logits, deltas, angles)
+            targets (Dict): Dictionary with GT boxes, angles and class indices
+            anchors_xy (torch.Tensor): Anchor vertices (B, N, 8)
+            anchors_xywhr (torch.Tensor): Anchor OBBs in xywhr format (N, 5)
+            image_sizes (List[Tuple[int,int]]): Sizes of each image in the batch
 
         Returns:
-            tuple: Total loss, perspective loss, OBB loss, and angle loss.
+            Tuple[torch.Tensor, float, float, float]:
+                - Total loss
+                - Classification loss (float)
+                - OBB loss (float)
+                - Angle regression loss (float)
         """
-        # Unpack the predicted values.
-        persp_logits, obbs_pred, angles_pred = pred  # (B, N, 6), (B, N, 8), (B, N, 1)
-        # Unpack the ground truth values.
-        boxes_gt = targets["boxes"]
-        # Normalize the ground truth angles to be within [0, 2*pi).
-        angles_gt = torch.remainder(
-            targets["angle"], 2 * math.pi
-        )  # Normalize all GT angles
-        classes_gt = targets["class_idx"]
+        logits, deltas, pred_angles = preds  # (B,N,C), (B,N,8), (B,N,1)
+        B, N, _ = logits.shape
 
-        # Match anchors to targets.
-        # The function returns the indices of matched anchors, classes, boxes, and angles.
-        (
-            matched_idx,
-            matched_classes,
-            matched_boxes,
-            matched_angles,
-        ) = match_anchors_to_targets(anchors, boxes_gt, classes_gt, angles_gt)
-        # Normalize the predicted angles to be within [0, 2*pi).
-        angles_pred = torch.remainder(
-            angles_pred, 2 * math.pi
-        )  # Normalize all predicted angles
+        loss_cls = loss_obb = loss_rot = 0.0
+        valid_batches = 0
 
-        losses_class, losses_obb, losses_angle = [], [], []
-
-        for b in range(len(matched_idx)):
-            # Get the indices of matched anchors for the current image.
-            idx = matched_idx[b]
-            if len(idx) == 0:
-                continue
-
-            # Get the predicted values for the matched anchors.
-            pred_logits = persp_logits[b][idx]
-            # Get the predicted OBBs and angles for the matched anchors.
-            pred_obbs = obbs_pred[b][idx]
-            # Get the predicted angles for the matched anchors.
-            pred_angles = angles_pred[b][idx]
-
-            # Get the ground truth values for the matched anchors.
-            gt_classes = matched_classes[b]
-            # Get the ground truth OBBs and angles for the matched anchors.
-            gt_obbs = matched_boxes[b]
-            # Get the ground truth angles for the matched anchors.
-            gt_angles = matched_angles[b]
-
-            if gt_angles.ndim == 1:
-                # Add a dimension to gt_angles to match the predicted angles.
-                gt_angles = gt_angles.unsqueeze(-1)
-
-            # Get the image size for the current image.
-            W, H = image_sizes[b]
-            # Create a valid mask for the ground truth OBBs.
-            # The mask is used to exclude invalid OBBs from the loss calculation.
-            # In this case, all OBBs are considered valid.
-            # valid_mask = torch.ones(gt_obbs.shape[0], dtype=torch.bool, device=gt_obbs.device)
-            valid_mask = torch.ones(
-                gt_obbs.shape[0], dtype=torch.bool, device=gt_obbs.device
+        for b in range(B):
+            # 1 Anchor-to-GT assignment
+            pos_mask, best_gt = match_anchors_to_targets(
+                anchors_xywhr,
+                targets["boxes"][b],
+                targets["angle"][b].squeeze(-1),
+                image_sizes[b],
             )
-            # valid_mask = valid_mask & (gt_obbs[:, 0] > 0) & (gt_obbs[:, 1] > 0) & (gt_obbs[:, 2] > 0) & (gt_obbs[:, 3] > 0)
-            losses_class.append(self.class_loss_fn(pred_logits, gt_classes))
-            losses_obb.append(
-                self.obb_loss_fn(
-                    pred_obbs.unsqueeze(0),
-                    gt_obbs.unsqueeze(0),
-                    image_size=[(W, H)],
-                    valid_mask=valid_mask.unsqueeze(0),
+
+            # 2 Classification loss (all anchors)
+            tgt_cls = torch.full((N,), 5, dtype=torch.long, device=logits.device)
+            tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
+            loss_cls += self.focal_loss(logits[b], tgt_cls)
+
+            # 3 OBB + Angle loss (only positive anchors)
+            if pos_mask.any():
+                # Only consider positive anchors
+                valid_batches += 1
+                # Extract the positive anchors
+                idx = best_gt[pos_mask]
+
+                # Compute the OBB loss
+                # Note: pred_xy is in xywhr format
+                # Convert deltas to absolute vertex coordinates
+                # Note: deltas are in normalized coordinates
+                # Decode the deltas to get the predicted vertices
+                # Note: anchors_xy are in pixel coordinates
+                pred_xy = decode_vertices(
+                    deltas[b][pos_mask], anchors_xy[b][pos_mask], image_sizes[b]
                 )
-            )
-            losses_angle.append(
-                self.rotation_loss_fn(pred_angles, gt_angles, valid_mask)
-            )
 
-        if len(losses_class) == 0:
-            # If no valid losses were calculated, return zero losses.
-            return (
-                torch.tensor(0.0, requires_grad=True).to(persp_logits.device),
-                0.0,
-                0.0,
-                0.0,
-            )
-        # Calculate the mean loss for each component.
-        loss_persp = torch.stack(losses_class).mean()
-        loss_vertex = torch.stack(losses_obb).mean()
-        loss_angle = torch.stack(losses_angle).mean()
-        # Calculate the total loss as a weighted sum of the individual losses.
-        total_loss = (
-            self.lambda_class * loss_persp
-            + self.lambda_obb * loss_vertex
-            + self.lambda_rot * loss_angle
+                loss_obb += self.obb_loss(
+                    pred_xy.unsqueeze(0),
+                    targets["boxes"][b][idx].unsqueeze(0),
+                    pred_angles[b][pos_mask].unsqueeze(0),
+                    targets["angle"][b][idx].unsqueeze(0),
+                    [image_sizes[b]],
+                    valid_mask=torch.ones(
+                        1, idx.numel(), dtype=torch.bool, device=logits.device
+                    ),
+                )
+
+                loss_rot += self.rot_loss(
+                    pred_angles[b][pos_mask], targets["angle"][b][idx]
+                )
+
+        # Final aggregation
+        loss_cls /= B
+        if valid_batches == 0:
+            # No valid batches, return only classification loss
+            total = self.lambda_cls * loss_cls
+            return total, loss_cls.item(), 0.0, 0.0
+
+        loss_obb /= valid_batches
+        loss_rot /= valid_batches
+        total = (
+            self.lambda_cls * loss_cls
+            + self.lambda_obb * loss_obb
+            + self.lambda_rot * loss_rot
         )
-        ## Return the total loss and individual losses.
-        return total_loss, loss_persp.item(), loss_vertex.item(), loss_angle.item()
+        return total, loss_cls.item(), loss_obb.item(), loss_rot.item()

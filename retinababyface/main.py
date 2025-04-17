@@ -103,7 +103,6 @@ def main():
     model = RetinaBabyFace(
         backbone=backbone,
         return_layers=return_layers,
-        in_channel=64,
         out_channel=64,
         pretrain_path=args.pretrain_path,
     ).to(device)

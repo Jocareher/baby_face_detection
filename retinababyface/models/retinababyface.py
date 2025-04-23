@@ -11,7 +11,7 @@ from torchvision.models import (
 )
 from torchvision.models.feature_extraction import create_feature_extractor
 
-from .mobilenet import FPN, SSH
+from .mobilenet import FPN, SSH, MobileNetV1
 
 
 class OBBHead(nn.Module):

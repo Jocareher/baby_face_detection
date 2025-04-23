@@ -20,9 +20,9 @@ STD = (0.2812, 0.2825, 0.3036)
 # =======================
 # Default Hyperparameters
 # =======================
-DEFAULT_EPOCHS = 50
+DEFAULT_EPOCHS = 100
 DEFAULT_LR = 1e-4
-DEFAULT_BATCH_SIZE = 4
+DEFAULT_BATCH_SIZE = 32
 DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_OPTIMIZER = "ADAM"
 DEFAULT_SCHEDULER = None

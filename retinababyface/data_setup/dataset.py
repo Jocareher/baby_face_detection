@@ -5,6 +5,8 @@ from typing import List, Optional, Callable, Dict, Any, Tuple
 import torch
 from torch.utils.data import Dataset
 
+from .augmentations import Resize
+
 
 class BabyFacesDataset(Dataset):
     """
@@ -233,12 +235,13 @@ class BabyFacesDataset(Dataset):
 
         return mean.tolist(), std.tolist()
 
-    def calculate_average_obb_dimensions(dataset: Dataset) -> Dict[str, float]:
+    def calculate_average_obb_dimensions(dataset: Dataset, img_size) -> Dict[str, float]:
         """
         Calculates the average size, width, height, and aspect ratio of oriented bounding boxes (OBBs) in a dataset.
 
         Args:
             dataset (Dataset): A PyTorch dataset where each sample contains OBB annotations in the "target" dictionary.
+            img_size (Tuple[int, int]): The target size to which the images are resized.
 
         Returns:
             Dict[str, float]: A dictionary containing the average OBB size, width, height, and aspect ratio.
@@ -247,6 +250,7 @@ class BabyFacesDataset(Dataset):
                 - "avg_height": The average height of the OBBs.
                 - "avg_ratio": The average height-to-width ratio of the OBBs.
         """
+        resize_only = Resize(size=img_size)
         sizes = []  # List to store the average dimensions of each OBB.
         widths = []  # List to store the widths of each OBB.
         heights = []  # List to store the heights of each OBB.
@@ -254,33 +258,20 @@ class BabyFacesDataset(Dataset):
 
         for i in range(len(dataset)):  # Iterates through each sample in the dataset.
             sample = dataset[i]  # Retrieves the i-th sample.
-            for box in sample["target"][
-                "boxes"
-            ]:  # Iterates through each OBB in the sample.
-                pts = box.view(
-                    4, 2
-                )  # Reshapes the OBB tensor to (4, 2) for easier coordinate access.
-                w = torch.norm(
-                    pts[1] - pts[0]
-                )  # Calculates the width of the OBB (distance between top-right and top-left points).
-                h = torch.norm(
-                    pts[2] - pts[1]
-                )  # Calculates the height of the OBB (distance between bottom-right and top-right points).
+            sample = resize_only(sample)  # Applies the resize transform to the sample.
+            for box in sample["target"]["boxes"]:  # Iterates through each OBB in the sample.
+                pts = box.view(4, 2)  # Reshapes the OBB tensor to (4, 2) for easier coordinate access.
+                w = torch.norm(pts[1] - pts[0])  # Calculates the width of the OBB (distance between top-right and top-left points).
+                h = torch.norm(pts[2] - pts[1])  # Calculates the height of the OBB (distance between bottom-right and top-right points).
                 size = (w + h) / 2  # Calculates the average dimension of the OBB.
-                sizes.append(
-                    size.item()
-                )  # Appends the average dimension to the sizes list.
+                sizes.append(size.item())  # Appends the average dimension to the sizes list.
                 widths.append(w.item())  # Appends the width to the widths list.
                 heights.append(h.item())  # Appends the height to the heights list.
-                ratios.append(
-                    (h / w).item()
-                )  # Appends the aspect ratio to the ratios list.
+                ratios.append((h / w).item())  # Appends the aspect ratio to the ratios list.
 
         return {
             "avg_size": sum(sizes) / len(sizes),  # Calculates the average OBB size.
             "avg_width": sum(widths) / len(widths),  # Calculates the average OBB width.
-            "avg_height": sum(heights)
-            / len(heights),  # Calculates the average OBB height.
-            "avg_ratio": sum(ratios)
-            / len(ratios),  # Calculates the average OBB aspect ratio.
+            "avg_height": sum(heights) / len(heights),  # Calculates the average OBB height.
+            "avg_ratio": sum(ratios) / len(ratios)  # Calculates the average OBB aspect ratio.
         }

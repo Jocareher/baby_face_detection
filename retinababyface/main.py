@@ -36,10 +36,51 @@ def parse_args():
         "--root_dir", type=str, required=True, help="Path to dataset root directory"
     )
     parser.add_argument(
-        "--pretrain_path",
+        "--checkpoint_path",
         type=str,
-        required=True,
-        help="Path to MobileNet pretrained weights",
+        default="checkpoint.pt",
+        help="Path to save model checkpoints",
+    )
+
+    # Image parameters
+    parser.add_argument(
+        "--img_size",
+        type=int,
+        nargs=2,
+        default=[640, 640],
+        help="Image size as width height (default: 640 640)",
+    )
+
+    # Model architecture
+    # Model initialization parameters
+    parser.add_argument(
+        "--use_pretrained",
+        action="store_true",
+        default=True,  # Default changed to True
+        help="Use pretrained weights (default: True)",
+    )
+    parser.add_argument(
+        "--freeze_backbone",
+        action="store_true",
+        default=True,  # Default set to True
+        help="Freeze backbone weights during training (default: True)",
+    )
+    parser.add_argument(
+        "--no_freeze_backbone",
+        action="store_false",
+        dest="freeze_backbone",
+        help="Disable backbone weight freezing",
+    )
+
+    parser.add_argument(
+        "--out_channel", type=int, default=64, help="Number of output channels for FPN"
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="mobilenetv1",
+        choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit"],
+        help="Backbone architecture to use",
     )
 
     # Training hyperparams
@@ -49,18 +90,89 @@ def parse_args():
     parser.add_argument(
         "--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY
     )
-    parser.add_argument("--optimizer", type=str, default=config.DEFAULT_OPTIMIZER)
-    parser.add_argument("--scheduler", type=str, default=config.DEFAULT_SCHEDULER)
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default=config.DEFAULT_OPTIMIZER,
+        choices=["ADAM", "SGD"],
+    )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        default=config.DEFAULT_SCHEDULER,
+        choices=[None, "ReduceLR", "OneCycle", "Cosine"],
+    )
     parser.add_argument("--clip_value", type=float, default=config.DEFAULT_CLIP_VALUE)
     parser.add_argument(
-        "--grad_clip_mode", type=str, default=config.DEFAULT_GRAD_CLIP_MODE
+        "--grad_clip_mode",
+        type=str,
+        default=config.DEFAULT_GRAD_CLIP_MODE,
+        choices=["Norm", "Value"],
     )
     parser.add_argument("--patience", type=int, default=config.DEFAULT_PATIENCE)
 
+    # Loss function parameters
+    parser.add_argument(
+        "--lambda_cls", type=float, default=1.0, help="Weight for classification loss"
+    )
+    parser.add_argument(
+        "--lambda_obb", type=float, default=1.0, help="Weight for OBB regression loss"
+    )
+    parser.add_argument(
+        "--lambda_rot", type=float, default=1.0, help="Weight for rotation angle loss"
+    )
+
+    # Anchor generation parameters
+    parser.add_argument(
+        "--base_size",
+        type=float,
+        default=config.BASE_SIZE,
+        help="Base size for anchor generation",
+    )
+    parser.add_argument(
+        "--base_ratio",
+        type=float,
+        default=config.BASE_RATIO,
+        help="Base ratio for anchor generation",
+    )
+    parser.add_argument(
+        "--scale_factors",
+        type=float,
+        nargs="+",
+        default=config.SCALE_FACTORS,
+        help="Scale factors for anchor generation",
+    )
+    parser.add_argument(
+        "--ratio_factors",
+        type=float,
+        nargs="+",
+        default=config.RATIO_FACTORS,
+        help="Ratio factors for anchor generation",
+    )
+
+    # Data augmentation
+    parser.add_argument(
+        "--use_augmentation",
+        action="store_true",
+        help="Enable data augmentation during training",
+    )
+    parser.add_argument(
+        "--no_augmentation",
+        action="store_false",
+        dest="use_augmentation",
+        help="Disable data augmentation",
+    )
+
     # WandB
-    parser.add_argument("--record_metrics", action="store_true")
-    parser.add_argument("--project", type=str, default=config.PROJECT_NAME)
-    parser.add_argument("--run_name", type=str, default=config.RUN_NAME)
+    parser.add_argument(
+        "--record_metrics", action="store_true", help="Enable WandB logging"
+    )
+    parser.add_argument(
+        "--project", type=str, default=config.PROJECT_NAME, help="WandB project name"
+    )
+    parser.add_argument(
+        "--run_name", type=str, default=config.RUN_NAME, help="WandB run name"
+    )
 
     return parser.parse_args()
 
@@ -74,11 +186,16 @@ def main():
     print(f"[INFO] Using device: {device}")
 
     print("[INFO] Loading datasets...")
+    img_size = tuple(args.img_size)  # Convert to (width, height)
+
+    train_transform = config.get_train_transform(img_size, args.use_augmentation)
+    val_transform = config.get_val_transform(img_size)
+
     train_dataset = BabyFacesDataset(
-        root_dir=args.root_dir, split="train", transform=config.get_train_transform()
+        root_dir=args.root_dir, split="train", transform=train_transform
     )
     val_dataset = BabyFacesDataset(
-        root_dir=args.root_dir, split="val", transform=config.get_val_transform()
+        root_dir=args.root_dir, split="val", transform=val_transform
     )
 
     train_loader = DataLoader(
@@ -99,31 +216,38 @@ def main():
     )
 
     print("[INFO] Building model...")
-    backbone = MobileNetV1()
-    return_layers = {"stage1": "0", "stage2": "1", "stage3": "2"}
     model = RetinaBabyFace(
-        backbone=backbone,
-        return_layers=return_layers,
-        out_channel=64,
-        pretrain_path=args.pretrain_path,
+        backbone_name=args.backbone,
+        out_channel=args.out_channel,
+        pretrained=args.use_pretrained,  # Now using boolean flag with default True
+        freeze_backbone=args.freeze_backbone,  # New argument with default True
     ).to(device)
+
+    if args.pretrain_path:
+        print(f"[INFO] Loading pretrained weights from {args.pretrain_path}")
+        model.load_state_dict(torch.load(args.pretrain_path))
 
     print("[INFO] Model summary:")
     summary(
         model,
-        input_size=(1, 3, 640, 640),
+        input_size=(1, 3, img_size[1], img_size[0]),  # (channels, height, width)
         col_names=["input_size", "output_size", "num_params", "trainable"],
         row_settings=["var_names"],
         col_width=20,
         depth=2,
     )
 
-    multitask_loss = MultiTaskLoss()
+    multitask_loss = MultiTaskLoss(
+        lambda_cls=args.lambda_cls,
+        lambda_obb=args.lambda_obb,
+        lambda_rot=args.lambda_rot,
+    )
+
     earlystopping = EarlyStopping(
         patience=args.patience,
         verbose=True,
         delta=0.001,
-        path="checkpoint.pt",
+        path=args.checkpoint_path,
         use_kfold=False,
     )
 
@@ -145,10 +269,8 @@ def main():
         record_metrics=args.record_metrics,
         project=args.project,
         run_name=args.run_name,
-        base_size=config.BASE_SIZE,
-        base_ratio=config.BASE_RATIO,
-        scale_factors=config.SCALE_FACTORS,
-        ratio_factors=config.RATIO_FACTORS,
+        scale_factors=args.scale_factors,
+        ratio_factors=args.ratio_factors,
     )
 
     print("\n[INFO] Training completed!")

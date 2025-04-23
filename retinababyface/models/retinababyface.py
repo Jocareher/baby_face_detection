@@ -3,7 +3,13 @@ import math
 
 import torch
 import torch.nn as nn
-from torchvision.models._utils import IntermediateLayerGetter
+from torchvision.models import (
+    resnet50, ResNet50_Weights,
+    vgg16, VGG16_Weights,
+    densenet121, DenseNet121_Weights,
+    vit_b_16, ViT_B_16_Weights
+)
+from torchvision.models.feature_extraction import create_feature_extractor
 
 from .mobilenet import FPN, SSH
 
@@ -108,109 +114,206 @@ class ClassHead(nn.Module):
 
 class RetinaBabyFace(nn.Module):
     """
-    RetinaBabyFace model with MobileNetV1 backbone and three heads:
-    - Class classification
-    - OBB regression
-    - Angle prediction
+    RetinaBabyFace model integrating backbone, FPN, SSH blocks,
+    and multiple prediction heads for oriented bounding box detection, angle estimation, and class prediction.
     """
-
     def __init__(
         self,
-        backbone: nn.Module,
-        return_layers: Dict[str, str],
-        out_channel: int,
-        pretrain_path: Optional[str] = None,
-        freeze_backbone: bool = True,
+        backbone_name: str = "mobilenetv1",
+        out_channel: int = 64,
+        pretrained: bool = True,
+        freeze_backbone: bool = True
     ):
         """
         Initializes the RetinaBabyFace model.
 
         Args:
-            backbone (nn.Module): Backbone network (e.g., MobileNetV1).
-            return_layers (Dict[str, str]): Layers to return from the backbone.
-            in_channel (int): Number of input channels to the FPN.
-            out_channel (int): Number of output channels from the FPN.
-            pretrain_path (Optional[str]): Path to pretrained weights. Defaults to None.
-            freeze_backbone (bool): Whether to freeze the backbone weights. Defaults to True.
+            backbone_name (str): Name of the backbone to use (e.g., "mobilenetv1", "resnet50", "vgg16").
+            out_channel (int): Number of output channels for FPN layers.
+            pretrained (bool): Whether to load pretrained weights for the backbone.
+            freeze_backbone (bool): Whether to freeze backbone weights during training.
         """
         super().__init__()
 
-        # Load pretrained weights BEFORE IntermediateLayerGetter
-        if pretrain_path:
-            checkpoint = torch.load(
-                pretrain_path, map_location="cpu"
-            )  # Load the checkpoint.
-            state_dict = checkpoint.get(
-                "state_dict", checkpoint
-            )  # Get the state dictionary.
+        # Build backbone and retrieve feature extractor, return layers, and in_channels_list
+        self.backbone, return_layers, in_channels_list = self.make_backbone(backbone_name, pretrained)
 
-            # Extract only the backbone weights (filter "body.stage")
-            filtered_state_dict = {}
-            for k, v in state_dict.items():
-                if k.startswith("body."):
-                    k_clean = k.replace("body.", "")  # Remove the 'body.' prefix.
-                    filtered_state_dict[k_clean] = v
+        # Feature Pyramid Network
+        self.fpn = FPN(in_channels_list, out_channel)
 
-            backbone.load_state_dict(
-                filtered_state_dict, strict=False
-            )  # Load the filtered weights.
+        # SSH layers applied on each FPN output
+        self.ssh1 = SSH(out_channel, out_channel)
+        self.ssh2 = SSH(out_channel, out_channel)
+        self.ssh3 = SSH(out_channel, out_channel)
 
+        # Prediction heads: Oriented bounding boxes, rotation angles, and class logits
+        self.obb_head = nn.ModuleList([OBBHead(out_channel, num_anchors=9) for _ in range(3)])
+        self.angle_head = nn.ModuleList([AngleHead(out_channel, num_anchors=9) for _ in range(3)])
+        self.class_head = nn.ModuleList([ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)])
+
+        # Optionally freeze backbone parameters
         if freeze_backbone:
-            for param in backbone.parameters():
-                param.requires_grad = False  # Freeze the backbone weights.
+            for p in self.backbone.parameters():
+                p.requires_grad = False
 
-        # Backbone feature extractor
-        self.body = IntermediateLayerGetter(backbone, return_layers)
+    def make_backbone(self, name: str, pretrained: bool) -> tuple[nn.Module, dict, list[int]]:
+        """
+        Creates and returns a feature extractor from a specified backbone.
 
-        # FPN + SSH
-        in_channels_list = [64, 128, 256]  # Input channels for the FPN.
-        self.fpn = FPN(in_channels_list, out_channel)  # Feature Pyramid Network.
-        self.ssh1 = SSH(out_channel, out_channel)  # SSH module 1.
-        self.ssh2 = SSH(out_channel, out_channel)  # SSH module 2.
-        self.ssh3 = SSH(out_channel, out_channel)  # SSH module 3.
+        Args:
+            name (str): Name of the backbone model.
+            pretrained (bool): Whether to use pretrained weights.
 
-        # Heads
-        self.obb_head = nn.ModuleList(
-            [OBBHead(out_channel, num_anchors=9) for _ in range(3)]
-        )  # OBB regression heads.
-        self.angle_head = nn.ModuleList(
-            [AngleHead(out_channel, num_anchors=9) for _ in range(3)]
-        )  # Angle prediction heads.
-        self.class_head = nn.ModuleList(
-            [ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)]
-        )  # Class prediction heads.
+        Returns:
+            Tuple containing:
+                - feature extractor (nn.Module)
+                - return_layers (dict): Mapping of layer names to output names
+                - in_channels_list (list[int]): Channels for each returned feature map
+        """
+        if name == "resnet50":
+            # Using torchvision's ResNet50 as backbone
+            weights = ResNet50_Weights.DEFAULT if pretrained else None
+            # Load the ResNet50 model with pretrained weights
+            model = resnet50(weights=weights)
+            # Extract the feature extractor from the model
+            return_layers = {"layer2": "feat1", "layer3": "feat2", "layer4": "feat3"}
+            # Define the channels for each returned feature map
+            in_channels_list = [512, 1024, 2048]
+            # Create the feature extractor
+            # The return layers are the last layers of each block in ResNet50
+            # The output names are "feat1", "feat2", and "feat3"
+            # corresponding to the output of the last conv layer in each block
+            feat_ext = create_feature_extractor(model, return_layers)
 
-    def forward(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        elif name == "vgg16":
+            # Using torchvision's VGG16 as backbone
+            weights = VGG16_Weights.DEFAULT if pretrained else None
+            # Load the VGG16 model with pretrained weights
+            model = vgg16(weights=weights).features
+            # Extract the feature extractor from the model
+            # The return layers are the convolutional layers of the model
+            # The output names are "feat1", "feat2", and "feat3"
+            # corresponding to the output of the last conv layer in each block
+            return_layers = {"16": "feat1", "23": "feat2", "30": "feat3"}
+            # Define the channels for each returned feature map
+            in_channels_list = [256, 512, 512]
+            # Create the feature extractor
+            feat_ext = create_feature_extractor(model, return_layers)
+
+        elif name == "densenet121":
+            # Using torchvision's DenseNet121 as backbone
+            weights = DenseNet121_Weights.DEFAULT if pretrained else None
+            # Load the DenseNet121 model with pretrained weights
+            model = densenet121(weights=weights).features
+            # Extract the feature extractor from the model
+            # The return layers are the dense blocks of the model
+            # The output names are "feat1", "feat2", and "feat3"
+            # corresponding to the output of the dense blocks
+            # The return_layers dictionary maps the dense block names to output names
+            return_layers = {"denseblock2": "feat1", "denseblock3": "feat2", "denseblock4": "feat3"}
+            # Define the channels for each returned feature map
+            in_channels_list = [512, 1024, 1024]
+            feat_ext = create_feature_extractor(model, return_layers)
+
+        elif name == "vit":
+            # Using torchvision's Vision Transformer (ViT) as backbone
+            weights = ViT_B_16_Weights.DEFAULT if pretrained else None
+            # Load the ViT model with pretrained weights
+            vit = vit_b_16(weights=weights)
+            # Extract the feature extractor from the model
+            # The return layers are the transformer encoder layers of the model
+            # The output names are "feat1", "feat2", and "feat3"
+            # corresponding to the output of the last transformer encoder layers
+            return_layers = {
+                "encoder.layers.encoder_layer_2": "feat1",
+                "encoder.layers.encoder_layer_5": "feat2",
+                "encoder.layers.encoder_layer_8": "feat3",
+            }
+            # Define the channels for each returned feature map
+            in_channels_list = [768, 768, 768]
+            # Create the feature extractor
+            # The return layers are the last layers of each block in ViT
+            feat_seq = create_feature_extractor(vit, return_layers)
+            # Convert the sequence output to 2D feature maps
+            # The output names are "feat1", "feat2", and "feat3"
+            feat_ext = ViTFeature2D(feat_seq, patch_size=16)
+
+        else:
+            # 
+            model = MobileNetV1()
+            # Using MobileNetV1 as backbone
+            # Extract the feature extractor from the model
+            # The return layers are the last layers of each block in MobileNetV1
+            return_layers = {"stage1": "feat1", "stage2": "feat2", "stage3": "feat3"}
+            in_channels_list = [64, 128, 256]
+            feat_ext = create_feature_extractor(model, return_layers)
+
+        return feat_ext, return_layers, in_channels_list
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass of the RetinaBabyFace model.
 
         Args:
-            x (torch.Tensor): Input image tensor.
+            x (torch.Tensor): Input image tensor of shape (B, C, H, W).
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Predicted class logits, OBB coordinates, and angles.
+            Tuple containing:
+                - logits (torch.Tensor): Class logits, shape (B, N, num_classes)
+                - obbs (torch.Tensor): Predicted OBB vertex displacements, shape (B, N, 8)
+                - angs (torch.Tensor): Predicted angles in radians, shape (B, N, 1)
         """
-        out = self.body(x)  # Extract features from the backbone
-        fpn_out = self.fpn(out)  # Apply FPN (returns List[Tensor])
+        # Extract features from the backbone
+        # The input shape is (B, C, H, W)
+        # The output shape is (B, C, H, W) for each feature level
+        feats = self.backbone(x)
+        # Apply the FPN to the extracted features
+        p3, p4, p5 = self.fpn(feats)
+        # Apply the SSH blocks to the FPN outputs
+        f1, f2, f3 = self.ssh1(p3), self.ssh2(p4), self.ssh3(p5)
 
-        # Apply SSH modules
-        features = [self.ssh1(fpn_out[0]), self.ssh2(fpn_out[1]), self.ssh3(fpn_out[2])]
+        # Concatenate the outputs from the SSH blocks
+        logits = torch.cat([h(f) for h, f in zip(self.class_head, (f1, f2, f3))], dim=1)
+        # Concatenate the outputs from the OBB and angle heads
+        obbs = torch.cat([h(f) for h, f in zip(self.obb_head, (f1, f2, f3))], dim=1)
+        # Concatenate the outputs from the angle heads
+        angs = torch.cat([h(f) for h, f in zip(self.angle_head, (f1, f2, f3))], dim=1)
+        return logits, obbs, angs
 
-        # Run heads and concatenate outputs
-        # Each head processes the corresponding feature map.
-        # The outputs are concatenated along the channel dimension.
-        # The final output shapes are:
-        # - persp_logits: (batch_size, num_anchors * H * W, num_classes)
-        # - obbs: (batch_size, num_anchors * H * W, 8)
-        # - angles: (batch_size, num_anchors * H * W, 1)
-        persp_logits = torch.cat(
-            [head(f) for head, f in zip(self.class_head, features)], dim=1
-        )
-        obbs = torch.cat([head(f) for head, f in zip(self.obb_head, features)], dim=1)
-        angles = torch.cat(
-            [head(f) for head, f in zip(self.angle_head, features)], dim=1
-        )
 
-        return persp_logits, obbs, angles
+class ViTFeature2D(nn.Module):
+    """
+    Wrapper around a Vision Transformer (ViT) feature extractor that converts sequence outputs
+    (flattened tokens) into spatial 2D feature maps, excluding the [CLS] token.
+    """
+    def __init__(self, seq_extractor: nn.Module, patch_size: int):
+        """
+        Initializes the ViTFeature2D module.
+
+        Args:
+            seq_extractor (nn.Module): ViT-based sequence feature extractor.
+            patch_size (int): Size of the patch used in ViT (e.g., 16).
+        """
+        super().__init__()
+        self.seq_extractor = seq_extractor
+        self.patch_size = patch_size
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        """
+        Forward pass to convert token sequences into 2D feature maps.
+
+        Args:
+            x (torch.Tensor): Input image tensor of shape (B, C, H, W).
+
+        Returns:
+            dict[str, torch.Tensor]: Dictionary mapping feature names to 2D feature maps.
+        """
+        out = self.seq_extractor(x)
+        maps = {}
+        for name, seq in out.items():
+            seq = seq[:, 1:, :]  # Remove [CLS] token
+            B, L, C = seq.shape
+            H = W = int(L ** 0.5)
+            feat2d = seq.permute(0, 2, 1).reshape(B, C, H, W)
+            maps[name] = feat2d
+        return maps

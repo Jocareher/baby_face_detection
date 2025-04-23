@@ -4,10 +4,14 @@ import math
 import torch
 import torch.nn as nn
 from torchvision.models import (
-    resnet50, ResNet50_Weights,
-    vgg16, VGG16_Weights,
-    densenet121, DenseNet121_Weights,
-    vit_b_16, ViT_B_16_Weights
+    resnet50,
+    ResNet50_Weights,
+    vgg16,
+    VGG16_Weights,
+    densenet121,
+    DenseNet121_Weights,
+    vit_b_16,
+    ViT_B_16_Weights,
 )
 from torchvision.models.feature_extraction import create_feature_extractor
 
@@ -117,12 +121,13 @@ class RetinaBabyFace(nn.Module):
     RetinaBabyFace model integrating backbone, FPN, SSH blocks,
     and multiple prediction heads for oriented bounding box detection, angle estimation, and class prediction.
     """
+
     def __init__(
         self,
         backbone_name: str = "mobilenetv1",
         out_channel: int = 64,
         pretrained: bool = True,
-        freeze_backbone: bool = True
+        freeze_backbone: bool = True,
     ):
         """
         Initializes the RetinaBabyFace model.
@@ -136,7 +141,9 @@ class RetinaBabyFace(nn.Module):
         super().__init__()
 
         # Build backbone and retrieve feature extractor, return layers, and in_channels_list
-        self.backbone, return_layers, in_channels_list = self.make_backbone(backbone_name, pretrained)
+        self.backbone, return_layers, in_channels_list = self.make_backbone(
+            backbone_name, pretrained
+        )
 
         # Feature Pyramid Network
         self.fpn = FPN(in_channels_list, out_channel)
@@ -147,16 +154,24 @@ class RetinaBabyFace(nn.Module):
         self.ssh3 = SSH(out_channel, out_channel)
 
         # Prediction heads: Oriented bounding boxes, rotation angles, and class logits
-        self.obb_head = nn.ModuleList([OBBHead(out_channel, num_anchors=9) for _ in range(3)])
-        self.angle_head = nn.ModuleList([AngleHead(out_channel, num_anchors=9) for _ in range(3)])
-        self.class_head = nn.ModuleList([ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)])
+        self.obb_head = nn.ModuleList(
+            [OBBHead(out_channel, num_anchors=9) for _ in range(3)]
+        )
+        self.angle_head = nn.ModuleList(
+            [AngleHead(out_channel, num_anchors=9) for _ in range(3)]
+        )
+        self.class_head = nn.ModuleList(
+            [ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)]
+        )
 
         # Optionally freeze backbone parameters
         if freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
 
-    def make_backbone(self, name: str, pretrained: bool) -> tuple[nn.Module, dict, list[int]]:
+    def make_backbone(
+        self, name: str, pretrained: bool
+    ) -> tuple[nn.Module, dict, list[int]]:
         """
         Creates and returns a feature extractor from a specified backbone.
 
@@ -210,7 +225,11 @@ class RetinaBabyFace(nn.Module):
             # The output names are "feat1", "feat2", and "feat3"
             # corresponding to the output of the dense blocks
             # The return_layers dictionary maps the dense block names to output names
-            return_layers = {"denseblock2": "feat1", "denseblock3": "feat2", "denseblock4": "feat3"}
+            return_layers = {
+                "denseblock2": "feat1",
+                "denseblock3": "feat2",
+                "denseblock4": "feat3",
+            }
             # Define the channels for each returned feature map
             in_channels_list = [512, 1024, 1024]
             feat_ext = create_feature_extractor(model, return_layers)
@@ -239,7 +258,7 @@ class RetinaBabyFace(nn.Module):
             feat_ext = ViTFeature2D(feat_seq, patch_size=16)
 
         else:
-            # 
+            #
             model = MobileNetV1()
             # Using MobileNetV1 as backbone
             # Extract the feature extractor from the model
@@ -250,7 +269,9 @@ class RetinaBabyFace(nn.Module):
 
         return feat_ext, return_layers, in_channels_list
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass of the RetinaBabyFace model.
 
@@ -286,6 +307,7 @@ class ViTFeature2D(nn.Module):
     Wrapper around a Vision Transformer (ViT) feature extractor that converts sequence outputs
     (flattened tokens) into spatial 2D feature maps, excluding the [CLS] token.
     """
+
     def __init__(self, seq_extractor: nn.Module, patch_size: int):
         """
         Initializes the ViTFeature2D module.
@@ -313,7 +335,7 @@ class ViTFeature2D(nn.Module):
         for name, seq in out.items():
             seq = seq[:, 1:, :]  # Remove [CLS] token
             B, L, C = seq.shape
-            H = W = int(L ** 0.5)
+            H = W = int(L**0.5)
             feat2d = seq.permute(0, 2, 1).reshape(B, C, H, W)
             maps[name] = feat2d
         return maps

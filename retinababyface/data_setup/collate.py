@@ -22,7 +22,9 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
                 - "class_idx": A tensor of padded class indices (B, max_N).
                 - "valid_mask": A boolean mask indicating valid object positions (B, max_N).
     """
-    images = torch.stack([item["image"] for item in batch], dim=0)  # Stack images into a single tensor.
+    images = torch.stack(
+        [item["image"] for item in batch], dim=0
+    )  # Stack images into a single tensor.
 
     # Determine the maximum number of objects per image in the batch.
     max_num_objs = max(item["target"]["boxes"].shape[0] for item in batch)
@@ -45,9 +47,13 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             angles = torch.zeros((0,), dtype=torch.float32)
             classes = torch.full((0,), fill_value=5, dtype=torch.long)  # 5 = no face
 
-        padded_boxes.append(F.pad(boxes, (0, 0, 0, pad_size)))  # Pad the bounding boxes tensor.
+        padded_boxes.append(
+            F.pad(boxes, (0, 0, 0, pad_size))
+        )  # Pad the bounding boxes tensor.
         padded_angles.append(F.pad(angles, (0, pad_size)))  # Pad the angles tensor.
-        padded_classes.append(F.pad(classes, (0, pad_size), value=5))  # Pad the class indices tensor.
+        padded_classes.append(
+            F.pad(classes, (0, pad_size), value=5)
+        )  # Pad the class indices tensor.
 
         mask = torch.zeros(max_num_objs, dtype=torch.bool)  # Create a mask tensor.
         mask[:n] = True  # Set the first 'n' elements to True.
@@ -57,7 +63,10 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "boxes": torch.stack(padded_boxes),  # Stack the padded bounding boxes.
         "angles": torch.stack(padded_angles),  # Stack the padded angles.
         "class_idx": torch.stack(padded_classes),  # Stack the padded class indices.
-        "valid_mask": torch.stack(valid_masks)  # Stack the valid object masks.
+        "valid_mask": torch.stack(valid_masks),  # Stack the valid object masks.
     }
 
-    return {"image": images, "target": targets}  # Return the stacked images and padded targets.
+    return {
+        "image": images,
+        "target": targets,
+    }  # Return the stacked images and padded targets.

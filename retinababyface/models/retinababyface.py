@@ -177,7 +177,7 @@ class RetinaBabyFace(nn.Module):
             [AngleHead(out_channel, num_anchors=9) for _ in range(3)]
         )  # Angle prediction heads.
         self.class_head = nn.ModuleList(
-            [ClassHead(out_channel, num_anchors=9, num_classes=5) for _ in range(3)]
+            [ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)]
         )  # Class prediction heads.
 
     def forward(

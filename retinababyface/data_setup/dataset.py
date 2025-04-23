@@ -176,6 +176,7 @@ class BabyFacesDataset(Dataset):
 
         return sample
 
+
 def compute_dataset_mean_std(
     dataset: Dataset, max_samples: Optional[int] = None
 ) -> Tuple[List[float], List[float]]:
@@ -201,9 +202,7 @@ def compute_dataset_mean_std(
         len(dataset) if max_samples is None else min(len(dataset), max_samples)
     )  # Determines the number of samples to process.
 
-    for i in range(
-        num_samples
-    ):  # Iterates through the specified number of samples.
+    for i in range(num_samples):  # Iterates through the specified number of samples.
         sample = dataset[i]  # Retrieves the i-th sample from the dataset.
         image = sample[
             "image"
@@ -226,7 +225,9 @@ def compute_dataset_mean_std(
         std += (image**2).sum(
             dim=[1, 2]
         )  # Adds the sum of squared pixel values for each channel to the std tensor.
-        n_pixels += n  # Adds the number of pixels per channel to the total number of pixels.
+        n_pixels += (
+            n  # Adds the number of pixels per channel to the total number of pixels.
+        )
 
     mean /= n_pixels  # Calculates the mean pixel value for each channel.
     std = (
@@ -235,9 +236,8 @@ def compute_dataset_mean_std(
 
     return mean.tolist(), std.tolist()
 
-def calculate_average_obb_dimensions(
-    dataset: Dataset, img_size
-) -> Dict[str, float]:
+
+def calculate_average_obb_dimensions(dataset: Dataset, img_size) -> Dict[str, float]:
     """
     Calculates the average size, width, height, and aspect ratio of oriented bounding boxes (OBBs) in a dataset.
 
@@ -286,8 +286,7 @@ def calculate_average_obb_dimensions(
     return {
         "avg_size": sum(sizes) / len(sizes),  # Calculates the average OBB size.
         "avg_width": sum(widths) / len(widths),  # Calculates the average OBB width.
-        "avg_height": sum(heights)
-        / len(heights),  # Calculates the average OBB height.
+        "avg_height": sum(heights) / len(heights),  # Calculates the average OBB height.
         "avg_ratio": sum(ratios)
         / len(ratios),  # Calculates the average OBB aspect ratio.
     }

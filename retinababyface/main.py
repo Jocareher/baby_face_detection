@@ -33,10 +33,7 @@ def parse_args():
 
     # Dataset and paths
     parser.add_argument(
-        "--root_dir", 
-        type=str, 
-        required=True, 
-        help="Path to dataset root directory"
+        "--root_dir", type=str, required=True, help="Path to dataset root directory"
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -74,10 +71,7 @@ def parse_args():
         help="Disable backbone weight freezing",
     )
     parser.add_argument(
-        "--out_channel", 
-        type=int, 
-        default=64, 
-        help="Number of output channels for FPN"
+        "--out_channel", type=int, default=64, help="Number of output channels for FPN"
     )
     parser.add_argument(
         "--backbone",
@@ -91,7 +85,9 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=config.DEFAULT_EPOCHS)
     parser.add_argument("--lr", type=float, default=config.DEFAULT_LR)
     parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
-    parser.add_argument("--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY)
+    parser.add_argument(
+        "--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY
+    )
     parser.add_argument(
         "--optimizer",
         type=str,
@@ -150,6 +146,7 @@ def parse_args():
     )
 
     return parser.parse_args()
+
 
 def main():
     args = parse_args()
@@ -241,10 +238,11 @@ def main():
         run_name=args.run_name,
         scale_factors=config.SCALE_FACTORS,  # From config.py
         ratio_factors=config.RATIO_FACTORS,  # From config.py
-        obb_stats_by_size=config.PRECOMPUTED_OBB_STATS  # From config.py
+        obb_stats_by_size=config.PRECOMPUTED_OBB_STATS,  # From config.py
     )
 
     print("\n[INFO] Training completed!")
+
 
 if __name__ == "__main__":
     main()

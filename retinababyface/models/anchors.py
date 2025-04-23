@@ -21,13 +21,16 @@ class AnchorGeneratorOBB:
         scales (List[float]): Absolute anchor sizes derived from base size and scale factors.
         ratios (List[float]): Aspect ratios derived from base ratio and ratio factors.
     """
-    def __init__(self,
-                 feature_map_shapes: List[Tuple[int, int]],
-                 strides: List[int],
-                 base_size: float,
-                 base_ratio: float,
-                 scale_factors: List[float] = [0.75, 1.0, 1.25],
-                 ratio_factors: List[float] = [0.85, 1.0, 1.15]):
+
+    def __init__(
+        self,
+        feature_map_shapes: List[Tuple[int, int]],
+        strides: List[int],
+        base_size: float,
+        base_ratio: float,
+        scale_factors: List[float] = [0.75, 1.0, 1.25],
+        ratio_factors: List[float] = [0.85, 1.0, 1.15],
+    ):
         """
         Initializes the anchor generator with the given base statistics and FPN configuration.
 
@@ -58,13 +61,15 @@ class AnchorGeneratorOBB:
         anchors_per_image = []
 
         # Iterate over each feature map shape and stride
-        for (fm_shape, stride) in zip(self.fm_shapes, self.strides):
+        for fm_shape, stride in zip(self.fm_shapes, self.strides):
             #   Calculate the grid of centers for the current feature map
             h, w = fm_shape
             #   Create a grid of center points for the anchors
             grid_y, grid_x = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
             #  Convert grid coordinates to pixel space
-            centers = np.stack([(grid_x + 0.5) * stride, (grid_y + 0.5) * stride], axis=-1).reshape(-1, 2)
+            centers = np.stack(
+                [(grid_x + 0.5) * stride, (grid_y + 0.5) * stride], axis=-1
+            ).reshape(-1, 2)
 
             level_anchors = []
             # Iterate over each scale and aspect ratio
@@ -72,7 +77,7 @@ class AnchorGeneratorOBB:
                 # Iterate over each aspect ratio
                 for ratio in self.ratios:
                     # Calculate the width and height of the anchor box
-                    area = scale ** 2
+                    area = scale**2
                     # Calculate the width and height of the anchor box
                     w_anchor = np.sqrt(area / ratio)
                     h_anchor = w_anchor * ratio
@@ -80,25 +85,27 @@ class AnchorGeneratorOBB:
                     dx, dy = w_anchor / 2, h_anchor / 2
 
                     # Create axis-aligned rectangle corners centered at origin
-                    corners = np.array([
-                        [-dx, -dy],
-                        [ dx, -dy],
-                        [ dx,  dy],
-                        [-dx,  dy]
-                    ], dtype=np.float32)  # (4, 2)
+                    corners = np.array(
+                        [[-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]], dtype=np.float32
+                    )  # (4, 2)
 
                     # Translate corners to all grid centers
                     anchors = centers[:, None, :] + corners[None, :, :]  # (N, 4, 2)
-                    level_anchors.append(anchors.reshape(-1, 8))  # Flattened OBBs (N, 8)
+                    level_anchors.append(
+                        anchors.reshape(-1, 8)
+                    )  # Flattened OBBs (N, 8)
             # Concatenate all anchors for this feature map level
             all_level_anchors = np.concatenate(level_anchors, axis=0)
-            anchors_per_image.append(torch.tensor(all_level_anchors, dtype=torch.float32, device=device))
+            anchors_per_image.append(
+                torch.tensor(all_level_anchors, dtype=torch.float32, device=device)
+            )
 
         return torch.cat(anchors_per_image, dim=0)
 
 
-
-def get_feature_map_shapes(model: nn.Module, input_shape: Tuple[int, int, int, int] = (1, 3, 640, 640)) -> List[Tuple[int, int]]:
+def get_feature_map_shapes(
+    model: nn.Module, input_shape: Tuple[int, int, int, int] = (1, 3, 640, 640)
+) -> List[Tuple[int, int]]:
     """
     Calculates the shape of the feature maps produced by the model's FPN.
     """
@@ -106,5 +113,5 @@ def get_feature_map_shapes(model: nn.Module, input_shape: Tuple[int, int, int, i
         dummy_input = torch.zeros(*input_shape).to(next(model.parameters()).device)
         # Extraemos con el backbone (en tu clase es .backbone, no .body)
         feats = model.backbone(dummy_input)  # dict: {'feat1':…, 'feat2':…, 'feat3':…}
-        fpn_outs = model.fpn(feats)          # List[Tensor]
+        fpn_outs = model.fpn(feats)  # List[Tensor]
         return [(f.shape[2], f.shape[3]) for f in fpn_outs]

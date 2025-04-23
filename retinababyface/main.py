@@ -33,7 +33,10 @@ def parse_args():
 
     # Dataset and paths
     parser.add_argument(
-        "--root_dir", type=str, required=True, help="Path to dataset root directory"
+        "--root_dir", 
+        type=str, 
+        required=True, 
+        help="Path to dataset root directory"
     )
     parser.add_argument(
         "--checkpoint_path",
@@ -52,17 +55,16 @@ def parse_args():
     )
 
     # Model architecture
-    # Model initialization parameters
     parser.add_argument(
         "--use_pretrained",
         action="store_true",
-        default=True,  # Default changed to True
+        default=True,
         help="Use pretrained weights (default: True)",
     )
     parser.add_argument(
         "--freeze_backbone",
         action="store_true",
-        default=True,  # Default set to True
+        default=True,
         help="Freeze backbone weights during training (default: True)",
     )
     parser.add_argument(
@@ -71,9 +73,11 @@ def parse_args():
         dest="freeze_backbone",
         help="Disable backbone weight freezing",
     )
-
     parser.add_argument(
-        "--out_channel", type=int, default=64, help="Number of output channels for FPN"
+        "--out_channel", 
+        type=int, 
+        default=64, 
+        help="Number of output channels for FPN"
     )
     parser.add_argument(
         "--backbone",
@@ -83,13 +87,11 @@ def parse_args():
         help="Backbone architecture to use",
     )
 
-    # Training hyperparams
+    # Training hyperparameters (using config defaults)
     parser.add_argument("--epochs", type=int, default=config.DEFAULT_EPOCHS)
     parser.add_argument("--lr", type=float, default=config.DEFAULT_LR)
     parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
-    parser.add_argument(
-        "--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY
-    )
+    parser.add_argument("--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY)
     parser.add_argument(
         "--optimizer",
         type=str,
@@ -122,39 +124,12 @@ def parse_args():
         "--lambda_rot", type=float, default=1.0, help="Weight for rotation angle loss"
     )
 
-    # Anchor generation parameters
-    parser.add_argument(
-        "--base_size",
-        type=float,
-        default=config.BASE_SIZE,
-        help="Base size for anchor generation",
-    )
-    parser.add_argument(
-        "--base_ratio",
-        type=float,
-        default=config.BASE_RATIO,
-        help="Base ratio for anchor generation",
-    )
-    parser.add_argument(
-        "--scale_factors",
-        type=float,
-        nargs="+",
-        default=config.SCALE_FACTORS,
-        help="Scale factors for anchor generation",
-    )
-    parser.add_argument(
-        "--ratio_factors",
-        type=float,
-        nargs="+",
-        default=config.RATIO_FACTORS,
-        help="Ratio factors for anchor generation",
-    )
-
     # Data augmentation
     parser.add_argument(
         "--use_augmentation",
         action="store_true",
-        help="Enable data augmentation during training",
+        default=True,
+        help="Enable data augmentation during training (default: True)",
     )
     parser.add_argument(
         "--no_augmentation",
@@ -175,7 +150,6 @@ def parse_args():
     )
 
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
@@ -219,13 +193,9 @@ def main():
     model = RetinaBabyFace(
         backbone_name=args.backbone,
         out_channel=args.out_channel,
-        pretrained=args.use_pretrained,  # Now using boolean flag with default True
-        freeze_backbone=args.freeze_backbone,  # New argument with default True
+        pretrained=args.use_pretrained,
+        freeze_backbone=args.freeze_backbone,
     ).to(device)
-
-    if args.pretrain_path:
-        print(f"[INFO] Loading pretrained weights from {args.pretrain_path}")
-        model.load_state_dict(torch.load(args.pretrain_path))
 
     print("[INFO] Model summary:")
     summary(
@@ -269,12 +239,12 @@ def main():
         record_metrics=args.record_metrics,
         project=args.project,
         run_name=args.run_name,
-        scale_factors=args.scale_factors,
-        ratio_factors=args.ratio_factors,
+        scale_factors=config.SCALE_FACTORS,  # From config.py
+        ratio_factors=config.RATIO_FACTORS,  # From config.py
+        obb_stats_by_size=config.PRECOMPUTED_OBB_STATS  # From config.py
     )
 
     print("\n[INFO] Training completed!")
-
 
 if __name__ == "__main__":
     main()

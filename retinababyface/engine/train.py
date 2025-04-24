@@ -11,13 +11,14 @@ from torch.optim import Adam, SGD
 from torch.optim import lr_scheduler
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 import tqdm.auto as tqdm_auto
+from torch.nn import functional as F
 
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
 from models.anchors import AnchorGeneratorOBB, get_feature_map_shapes
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
-from loss.utils import xyxyxyxy2xywhr
+from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
 
 
 class EarlyStopping:
@@ -128,6 +129,229 @@ class EarlyStopping:
 
         # Update the minimum validation loss seen so far to the current validation loss
         self.val_loss_min = val_loss
+
+
+def nms_rotated(
+    boxes: torch.Tensor,  # shape: (N, 5), format: (cx, cy, w, h, θ)
+    scores: torch.Tensor,  # shape: (N,), confidence scores for each box
+    threshold: float = 0.45,
+    use_triu: bool = True,
+) -> torch.Tensor:
+    """
+    Performs Non-Maximum Suppression (NMS) for rotated bounding boxes using probabilistic IoU.
+
+    Args:
+        boxes (torch.Tensor): Tensor of shape (N, 5) with boxes in (cx, cy, w, h, θ) format.
+        scores (torch.Tensor): Tensor of shape (N,) with confidence scores for each box.
+        threshold (float): IoU threshold for suppression.
+        use_triu (bool): If True, use upper-triangular mask for efficiency.
+
+    Returns:
+        torch.Tensor: Indices of the selected boxes after NMS, sorted by original score order.
+    """
+    # Sort boxes by descending score
+    sorted_idx = torch.argsort(scores, descending=True)
+    boxes = boxes[sorted_idx]
+
+    # Compute pairwise probabilistic IoU (N, N)
+    ious = batch_probiou(boxes, boxes)
+
+    if use_triu:
+        # Keep only upper-triangular entries (ignore symmetric comparisons)
+        ious = ious.triu_(diagonal=1)
+
+        # Select boxes not suppressed by any other (IoU below threshold)
+        pick = torch.nonzero((ious >= threshold).sum(0) == 0).squeeze(1)
+    else:
+        # Alternative: custom mask to exclude lower triangle
+        n = boxes.shape[0]
+        idxs = torch.arange(n, device=boxes.device)
+        upper = idxs.view(-1, 1) < idxs.view(1, -1)
+        ious = ious * upper
+
+        # Keep only boxes with IoU below threshold with others
+        mask_keep = (ious >= threshold).sum(0) == 0
+
+        # Suppress boxes by zeroing scores
+        scores = scores.clone()
+        scores[~mask_keep] = 0
+
+        # Return top scores (may include suppressed ones as zeros)
+        pick = torch.topk(scores, scores.shape[0]).indices
+
+    return sorted_idx[pick]
+
+
+def infer_with_rotated_nms(
+    model: nn.Module,
+    images: torch.Tensor,  # shape: (B, 3, H, W)
+    anchors_xy: torch.Tensor,  # shape: (N, 8), vertices of base anchor boxes
+    image_size: Tuple[int, int],  # (width, height) of input images
+    conf_thres: float = 0.25,
+    iou_thres: float = 0.5,
+    max_det: int = 300,
+) -> List[Dict[str, torch.Tensor]]:
+    """
+    Runs inference and applies rotated NMS to obtain final predictions.
+
+    Args:
+        model (nn.Module): Trained model to run inference.
+        images (torch.Tensor): Batch of input images (B, 3, H, W).
+        anchors_xy (torch.Tensor): Anchor box vertices (N, 8) for decoding.
+        image_size (Tuple[int, int]): Size of input images as (width, height).
+        conf_thres (float): Confidence threshold for filtering predictions.
+        iou_thres (float): IoU threshold for NMS.
+        max_det (int): Maximum number of detections per image.
+
+    Returns:
+        List[Dict[str, torch.Tensor]]: A list of dictionaries, one per image, with keys:
+            - 'boxes': (M, 5) final rotated boxes in (cx, cy, w, h, θ)
+            - 'scores': (M,) scores for each box
+            - 'labels': (M,) predicted class labels
+    """
+    B = images.shape[0]
+
+    # Run model inference -> logits, bounding box deltas, and rotation angles
+    logits, deltas, pred_angles = model(images)
+
+    # Convert logits to class probabilities
+    prob = F.softmax(logits, dim=-1)
+
+    outputs = []
+
+    for b in range(B):
+        # Get max class score and corresponding label for each box
+        scores_b, labels_b = prob[b].max(-1)
+
+        # Filter out low-confidence and background predictions
+        keep = (labels_b != 5) & (scores_b > conf_thres)
+
+        if not keep.any():
+            # No detections: return empty tensors
+            outputs.append(
+                {
+                    "boxes": torch.zeros((0, 5), device=images.device),
+                    "scores": torch.zeros((0,), device=images.device),
+                    "labels": torch.zeros((0,), device=images.device),
+                }
+            )
+            continue
+
+        # Decode rotated vertices from deltas + anchors
+        verts = decode_vertices(deltas[b][keep], anchors_xy[keep], image_size)
+
+        # Convert from 8-point format to (cx, cy, w, h, θ)
+        xywhr = xyxyxyxy2xywhr(verts, pred_angles[b][keep].squeeze(-1), image_size)
+
+        # Filtered scores and labels
+        scores_k = scores_b[keep]
+        labels_k = labels_b[keep].float()
+
+        # Apply rotated NMS
+        keep_idx = nms_rotated(xywhr, scores_k, threshold=iou_thres)[:max_det]
+
+        outputs.append(
+            {
+                "boxes": xywhr[keep_idx],
+                "scores": scores_k[keep_idx],
+                "labels": labels_k[keep_idx],
+            }
+        )
+
+    return outputs
+
+
+def compute_map_rotated(
+    all_pred_boxes: List[torch.Tensor],  # predicted boxes for each image
+    all_pred_scores: List[torch.Tensor],  # confidence scores for predicted boxes
+    all_pred_labels: List[torch.Tensor],  # predicted class labels
+    all_gt_boxes: List[torch.Tensor],  # ground-truth boxes
+    all_gt_labels: List[torch.Tensor],  # ground-truth labels
+    iou_thr: float = 0.5,
+    num_classes: int = 6,
+) -> float:
+    """
+    Computes rotated mean Average Precision (mAP) using Pascal VOC 11-point interpolation.
+
+    Args:
+        all_pred_boxes (List[Tensor]): List of predicted boxes per image (N_i, 5).
+        all_pred_scores (List[Tensor]): List of confidence scores per image (N_i,).
+        all_pred_labels (List[Tensor]): List of predicted labels per image (N_i,).
+        all_gt_boxes (List[Tensor]): List of ground-truth boxes per image (G_i, 5).
+        all_gt_labels (List[Tensor]): List of ground-truth labels per image (G_i,).
+        iou_thr (float): IoU threshold to consider a prediction as true positive.
+        num_classes (int): Total number of classes.
+
+    Returns:
+        float: Mean Average Precision (mAP) across all classes.
+    """
+    APs = []
+
+    for c in range(num_classes):
+        # Collect all predictions for class c
+        preds = []
+        for img_i in range(len(all_pred_boxes)):
+            mask = all_pred_labels[img_i] == c
+            for box, score in zip(
+                all_pred_boxes[img_i][mask], all_pred_scores[img_i][mask]
+            ):
+                preds.append({"img": img_i, "box": box, "score": score})
+
+        # Sort predictions by score (descending)
+        preds.sort(key=lambda x: x["score"], reverse=True)
+
+        # Collect all ground truth boxes for class c per image
+        gt_per_image = {
+            i: all_gt_boxes[i][all_gt_labels[i] == c].clone()
+            for i in range(len(all_gt_boxes))
+        }
+        npos = sum(len(v) for v in gt_per_image.values())
+
+        # Initialize true/false positive counters
+        tp = torch.zeros(len(preds), device=all_pred_scores[0].device)
+        fp = torch.zeros_like(tp)
+
+        detected = {
+            i: torch.zeros(len(gt_per_image[i]), dtype=torch.bool, device=tp.device)
+            for i in gt_per_image
+        }
+
+        # Match predictions to ground truths
+        for idx, p in enumerate(preds):
+            img_i = p["img"]
+            gt_boxes = gt_per_image[img_i]
+            if len(gt_boxes) == 0:
+                fp[idx] = 1
+                continue
+
+            # Compute IoUs and select best match
+            ious = batch_probiou(p["box"].unsqueeze(0), gt_boxes)
+            best_iou, best_j = ious.max(1)
+            if best_iou >= iou_thr and not detected[img_i][best_j]:
+                tp[idx] = 1
+                detected[img_i][best_j] = True
+            else:
+                fp[idx] = 1
+
+        # Compute cumulative precision and recall
+        tp_cum = torch.cumsum(tp, 0)
+        fp_cum = torch.cumsum(fp, 0)
+        rec = tp_cum / (npos + 1e-6)
+        prec = tp_cum / (tp_cum + fp_cum + 1e-6)
+
+        # 11-point interpolation (Pascal VOC)
+        ap = torch.tensor(0.0, device=tp.device)
+        for t in torch.linspace(0, 1, 11, device=tp.device):
+            if (rec >= t).any():
+                p_max = prec[rec >= t].max()
+            else:
+                p_max = torch.tensor(0.0, device=tp.device)
+            ap = ap + p_max / 11.0
+
+        APs.append(ap)
+
+    # Return mean AP over all classes
+    return float(torch.stack(APs).mean()) if APs else 0.0
 
 
 def get_resize_size(dataloader: DataLoader) -> Tuple[int, int]:
@@ -442,69 +666,126 @@ def train_step(
     return avg_total_loss, avg_class_loss, avg_obb_loss, avg_angular_loss, current_lr
 
 
-def test_step(
+def val_step(
     model: nn.Module,
-    test_dataloader: DataLoader,
+    val_dataloader: DataLoader,
     loss_fn: nn.Module,
     device: torch.device,
-    anchors: torch.Tensor,
-) -> Tuple[float, float, float, float]:
+    anchors: Tuple[torch.Tensor, torch.Tensor],
+) -> Tuple[float, float, float, float, float]:
     """
-    Performs a single testing step for the model.
+    Runs one full evaluation loop on the test dataset, computing predictions, losses, and rotated mAP.
 
     Args:
-        model (nn.Module): The model to test.
-        test_dataloader (DataLoader): DataLoader for the testing dataset.
-        loss_fn (nn.Module): Loss function for the model.
-        device (torch.device): Device to use for testing.
-        anchors (torch.Tensor): Anchor boxes tensor.
+        model (nn.Module): The trained model to evaluate.
+        val_dataloader (DataLoader): DataLoader that provides batches of test data.
+        loss_fn (nn.Module): Multi-task loss function that returns total and sub-losses.
+        device (torch.device): The device (CPU/GPU) on which computation will be performed.
+        anchors (Tuple[Tensor, Tensor]): A tuple containing:
+            - anchors_xy (Tensor): Tensor of base anchor vertices (N, 8).
+            - anchors_xywhr (Tensor): Tensor of anchors in (cx, cy, w, h, θ) format (N, 5).
 
     Returns:
-        Tuple[float, float, float, float]: Average total loss, average class loss, average OBB loss, and average angular loss.
+        Tuple[float, float, float, float, float]: A tuple containing:
+            - avg_loss (float): Average total loss across all test batches.
+            - avg_class_loss (float): Average classification loss.
+            - avg_obb_loss (float): Average oriented bounding box (OBB) loss.
+            - avg_angular_loss (float): Average angular prediction loss.
+            - mAP (float): Rotated mean Average Precision using 11-point interpolation.
     """
-    model.eval()  # Set the model to evaluation mode.
+    model.eval()  # Switch model to evaluation mode (no dropout, batchnorm is fixed).
+
+    # Initialize accumulators for different losses
     total_loss = 0.0
     class_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
     total_batches = 0
 
-    with torch.inference_mode():  # Disable gradient calculation for inference.
-        for batch in test_dataloader:
-            images = batch["image"].to(device)  # Move images to the device.
-            targets_raw = batch["target"]
-            targets = build_multitask_targets(
-                targets_raw, device
-            )  # Process targets for multi-task learning.
+    # Prepare containers to collect predictions and ground truths
+    all_pred_boxes, all_pred_scores, all_pred_labels = [], [], []
+    all_gt_boxes, all_gt_labels = [], []
 
-            anchors_xy, anchors_xywhr = anchors  # ① desempaqueta
+    # Disable gradient computation for faster inference and lower memory usage
+    with torch.inference_mode():
+        for batch in val_dataloader:
+            # Move image tensors to the specified device
+            images = batch["image"].to(device)
+
+            # Extract raw targets and prepare them for multitask loss
+            targets_raw = batch["target"]
+            targets = build_multitask_targets(targets_raw, device)
+
+            # Unpack anchors for decoding and loss computation
+            anchors_xy, anchors_xywhr = anchors
             batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
-            pred = model(images)  # Forward pass.
-            image_sizes = [(images.shape[3], images.shape[2])] * images.size(
-                0
-            )  # [(W, H), ...]
+
+            # Run inference + NMS to get filtered predictions
+            outputs = infer_with_rotated_nms(
+                model,
+                images,
+                anchors_xy,
+                image_size=(images.shape[3], images.shape[2]),  # (W, H)
+            )
+
+            # Accumulate predictions and ground truths for evaluation
+            for b, out in enumerate(outputs):
+                all_pred_boxes.append(out["boxes"])  # Predicted rotated boxes
+                all_pred_scores.append(out["scores"])  # Prediction scores
+                all_pred_labels.append(out["labels"])  # Predicted class labels
+
+                # Select valid targets and convert to (cx, cy, w, h, θ)
+                keep = targets["valid_mask"][b]
+                gt_xywhr = xyxyxyxy2xywhr(
+                    targets["boxes"][b][keep],
+                    targets["angle"][b][keep].squeeze(-1),
+                    (images.shape[3], images.shape[2]),
+                )
+                all_gt_boxes.append(gt_xywhr)
+                all_gt_labels.append(targets["class_idx"][b][keep])
+
+            # Forward pass for raw output (needed for computing loss)
+            pred = model(images)
+
+            # Generate image size tuples (one per image in batch)
+            image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
+
+            # Compute multitask loss and individual components
             loss, loss_class, loss_obb, loss_angle = loss_fn(
                 pred, targets, batch_anchors, anchors_xywhr, image_sizes
-            )  # Calculate loss.
+            )
 
+            # Accumulate loss values
             total_loss += loss.item()
             class_loss_sum += loss_class
             obb_loss_sum += loss_obb
             angular_loss_sum += loss_angle
             total_batches += 1
 
+    # Compute average losses across all batches
     avg_loss = total_loss / total_batches
     avg_class_loss = class_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_angular_loss = angular_loss_sum / total_batches
 
-    return avg_loss, avg_class_loss, avg_obb_loss, avg_angular_loss
+    # Compute rotated mean Average Precision (mAP) using Pascal VOC 11-point interpolation
+    mAP = compute_map_rotated(
+        all_pred_boxes,
+        all_pred_scores,
+        all_pred_labels,
+        all_gt_boxes,
+        all_gt_labels,
+        iou_thr=0.5,
+        num_classes=6,
+    )
+
+    return avg_loss, avg_class_loss, avg_obb_loss, avg_angular_loss, mAP
 
 
 def train(
     model: nn.Module,
     train_dataloader: DataLoader,
-    test_dataloader: DataLoader,
+    val_dataloader: DataLoader,
     loss_fn: nn.Module,
     which_optimizer: str,
     weight_decay: float,
@@ -528,7 +809,7 @@ def train(
     Args:
         model (nn.Module): The model to train.
         train_dataloader (DataLoader): DataLoader for the training dataset.
-        test_dataloader (DataLoader): DataLoader for the testing dataset.
+        val_dataloader (DataLoader): DataLoader for the testing dataset.
         loss_fn (nn.Module): Loss function for the model.
         which_optimizer (str): Optimizer to use ('ADAM' or 'SGD').
         weight_decay (float): Weight decay for the optimizer.
@@ -559,6 +840,7 @@ def train(
         "test_class_loss": [],
         "test_obb_loss": [],
         "test_angular_loss": [],
+        "test_mAP": [],
     }
 
     model.to(device)  # Move model to the specified device.
@@ -628,17 +910,18 @@ def train(
                 anchors=anchors_tuple,
             )  # Perform a training step.
 
-            test_dataloader_tqdm = tqdm(
-                test_dataloader, desc=f"Test {epoch+1}", leave=False
+            val_dataloader_tqdm = tqdm(
+                val_dataloader, desc=f"Test {epoch+1}", leave=False
             )
             (
                 test_total_loss,
                 test_class_loss,
                 test_obb_loss,
                 test_angular_loss,
-            ) = test_step(
+                test_mAP,
+            ) = val_step(
                 model=model,
-                test_dataloader=test_dataloader,
+                val_dataloader=val_dataloader,
                 loss_fn=loss_fn,
                 device=device,
                 anchors=anchors_tuple,
@@ -659,7 +942,7 @@ def train(
                 f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
             )
             print(
-                f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}"
+                f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}  | mAP: {test_mAP:.4f}"
             )
 
             # if device.type == "cuda":
@@ -680,6 +963,7 @@ def train(
                         "test_class_loss": test_class_loss,
                         "test_obb_loss": test_obb_loss,
                         "test_angular_loss": test_angular_loss,
+                        "test_mAP": test_mAP,
                         "learning_rate": current_lr,
                         "epoch_time": epoch_time,
                     }
@@ -693,6 +977,7 @@ def train(
             results["test_class_loss"].append(test_class_loss)
             results["test_obb_loss"].append(test_obb_loss)
             results["test_angular_loss"].append(test_angular_loss)
+            results["test_mAP"].append(test_mAP)
 
             if early_stopping is not None:
                 early_stopping(

@@ -94,65 +94,64 @@ def compute_obb_iou_matrix_xywhr(
                       gt i and anchor j.
     """
 
-    def batch_probiou(
-        obb1: torch.Tensor, obb2: torch.Tensor, eps: float = 1e-7
-    ) -> torch.Tensor:
-        """
-        Vectorized computation of probabilistic IoU between two sets of OBBs.
-
-        Args:
-            obb1 (torch.Tensor): Tensor of shape (N, 5) for GT boxes.
-            obb2 (torch.Tensor): Tensor of shape (M, 5) for predicted boxes.
-            eps (float): Small value for numerical stability.
-
-        Returns:
-            torch.Tensor: Tensor of shape (N, M) with probabilistic IoU values.
-        """
-        # Ensure input tensors are on the same device
-        obb1 = torch.from_numpy(obb1) if isinstance(obb1, np.ndarray) else obb1
-        obb2 = torch.from_numpy(obb2) if isinstance(obb2, np.ndarray) else obb2
-
-        # Extract x, y, width, height, and angle from the OBBs
-        x1, y1 = obb1[..., :2].split(1, dim=-1)
-        x2, y2 = (x.squeeze(-1)[None] for x in obb2[..., :2].split(1, dim=-1))
-
-        # Compute covariance components for both sets of OBBs
-        a1, b1, c1 = get_covariance_matrix(obb1)
-        a2, b2, c2 = (x.squeeze(-1)[None] for x in get_covariance_matrix(obb2))
-
-        # Mahalanobis-like distance between centers
-        t1 = (
-            ((a1 + a2) * (y1 - y2).pow(2) + (b1 + b2) * (x1 - x2).pow(2))
-            / ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2) + eps)
-            * 0.25
-        )
-
-        # Cross-correlation term
-        t2 = (
-            ((c1 + c2) * (x2 - x1) * (y1 - y2))
-            / ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2) + eps)
-            * 0.5
-        )
-
-        # Log-determinant divergence between covariances
-        det1 = (a1 * b1 - c1.pow(2)).clamp(min=0)
-        det2 = (a2 * b2 - c2.pow(2)).clamp(min=0)
-        # Compute the log-determinant divergence
-        # Note: det1 and det2 are positive, so we can safely take the square root
-        # and add eps for numerical stability
-        t3 = ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2)) / (
-            4 * (det1 * det2).sqrt() + eps
-        )
-        t3 = (t3 + eps).log() * 0.5
-
-        # Bhattacharyya distance (bounded)
-        bd = (t1 + t2 + t3).clamp(min=eps, max=100.0)
-
-        # Convert to similarity
-        hd = (1.0 - (-bd).exp() + eps).sqrt()
-        return 1 - hd
-
     return batch_probiou(anchors_xywhr, gt_xywhr)
+
+
+def batch_probiou(
+    obb1: torch.Tensor, obb2: torch.Tensor, eps: float = 1e-7
+) -> torch.Tensor:
+    """
+    Vectorized computation of probabilistic IoU between two sets of OBBs.
+
+    Args:
+        obb1 (torch.Tensor): Tensor of shape (N, 5) for GT boxes.
+        obb2 (torch.Tensor): Tensor of shape (M, 5) for predicted boxes.
+        eps (float): Small value for numerical stability.
+
+    Returns:
+        torch.Tensor: Tensor of shape (N, M) with probabilistic IoU values.
+    """
+    # Ensure input tensors are on the same device
+    obb1 = torch.from_numpy(obb1) if isinstance(obb1, np.ndarray) else obb1
+    obb2 = torch.from_numpy(obb2) if isinstance(obb2, np.ndarray) else obb2
+
+    # Extract x, y, width, height, and angle from the OBBs
+    x1, y1 = obb1[..., :2].split(1, dim=-1)
+    x2, y2 = (x.squeeze(-1)[None] for x in obb2[..., :2].split(1, dim=-1))
+
+    # Compute covariance components for both sets of OBBs
+    a1, b1, c1 = get_covariance_matrix(obb1)
+    a2, b2, c2 = (x.squeeze(-1)[None] for x in get_covariance_matrix(obb2))
+
+    # Mahalanobis-like distance between centers
+    t1 = (
+        ((a1 + a2) * (y1 - y2).pow(2) + (b1 + b2) * (x1 - x2).pow(2))
+        / ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2) + eps)
+        * 0.25
+    )
+
+    # Cross-correlation term
+    t2 = (
+        ((c1 + c2) * (x2 - x1) * (y1 - y2))
+        / ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2) + eps)
+        * 0.5
+    )
+
+    # Log-determinant divergence between covariances
+    det1 = (a1 * b1 - c1.pow(2)).clamp(min=0)
+    det2 = (a2 * b2 - c2.pow(2)).clamp(min=0)
+    # Compute the log-determinant divergence
+    # Note: det1 and det2 are positive, so we can safely take the square root
+    # and add eps for numerical stability
+    t3 = ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2)) / (4 * (det1 * det2).sqrt() + eps)
+    t3 = (t3 + eps).log() * 0.5
+
+    # Bhattacharyya distance (bounded)
+    bd = (t1 + t2 + t3).clamp(min=eps, max=100.0)
+
+    # Convert to similarity
+    hd = (1.0 - (-bd).exp() + eps).sqrt()
+    return 1 - hd
 
 
 def match_anchors_to_targets(

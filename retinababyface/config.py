@@ -17,6 +17,9 @@ from data_setup.augmentations import (
 MEAN = (0.6427, 0.5918, 0.5525)
 STD = (0.2812, 0.2825, 0.3036)
 
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
 # =======================
 # Default Hyperparameters
 # =======================
@@ -70,14 +73,14 @@ def get_train_transform(img_size=(640, 640), use_augmentation=True):
                 RandomBlurOBB(ksize=(5, 5), prob=0.3),
                 RandomOcclusionOBB(max_size_ratio=0.3, prob=0.3),
                 Resize(img_size),
-                ToTensorNormalize(mean=MEAN, std=STD),
+                ToTensorNormalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ]
         )
     else:
         return transforms.Compose(
             [
                 Resize(img_size),
-                ToTensorNormalize(mean=MEAN, std=STD),
+                ToTensorNormalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ]
         )
 
@@ -86,6 +89,6 @@ def get_val_transform(img_size=(640, 640)):
     return transforms.Compose(
         [
             Resize(img_size),
-            ToTensorNormalize(mean=MEAN, std=STD),
+            ToTensorNormalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
     )

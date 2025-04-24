@@ -169,6 +169,11 @@ class RetinaBabyFace(nn.Module):
             for p in self.backbone.parameters():
                 p.requires_grad = False
 
+            # Set the backbone to evaluation mode
+            for m in self.backbone.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.eval()
+
     def make_backbone(
         self, name: str, pretrained: bool
     ) -> tuple[nn.Module, dict, list[int]]:

@@ -305,7 +305,10 @@ def compute_map_rotated(
             i: all_gt_boxes[i][all_gt_labels[i] == c].clone()
             for i in range(len(all_gt_boxes))
         }
+        # Remove empty tensors
         npos = sum(len(v) for v in gt_per_image.values())
+        if npos == 0:
+            continue  # No ground truth boxes for this class
 
         # Initialize true/false positive counters
         tp = torch.zeros(len(preds), device=all_pred_scores[0].device)

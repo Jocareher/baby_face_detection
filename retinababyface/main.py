@@ -222,7 +222,7 @@ def main():
     results = train(
         model=model,
         train_dataloader=train_loader,
-        test_dataloader=val_loader,
+        val_dataloader=val_loader,
         loss_fn=multitask_loss,
         which_optimizer=args.optimizer,
         weight_decay=args.weight_decay,

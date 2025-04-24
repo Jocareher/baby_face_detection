@@ -25,6 +25,11 @@ def xyxyxyxy2xywhr(
         torch.Tensor: Tensor of shape (N, 5) in the format (x_center, y_center, width, height, angle),
                       all in pixel units.
     """
+    # Check if obb is empty
+    if obb.numel() == 0:
+        return obb.new_empty((0, 5))
+
+    # Ensure obb is a 2D tensor
     if obb.ndim == 1:
         obb = obb.unsqueeze(0)
     N = obb.shape[0]
@@ -33,7 +38,11 @@ def xyxyxyxy2xywhr(
 
     # Automatically scale if coordinates are normalized
     if obb.max() <= 1.0:
-        obb_pix = obb * torch.tensor([W, H] * 4, device=device).float()
+        # Scale the coordinates to pixel space
+        # The scale is applied to each coordinate (x, y) of the 4 corners
+        # The scale is repeated for each corner (4 times)
+        scale = torch.tensor([W, H] * 4, device=device, dtype=obb.dtype)
+        obb_pix = obb * scale
     else:
         obb_pix = obb
 

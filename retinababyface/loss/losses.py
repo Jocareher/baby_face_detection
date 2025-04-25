@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 
 import torch
 import torch.nn as nn
@@ -24,7 +24,7 @@ class FocalLoss(nn.Module):
 
     def __init__(
         self,
-        alpha: float | list[float] = 1.0,
+        alpha: Union[float, List[float]] = 1.0,
         gamma: float = 2.0,
         ignore_index: int = -100,
         reduction: str = "mean",

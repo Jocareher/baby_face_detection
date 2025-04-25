@@ -139,7 +139,6 @@ def nms_rotated(
     boxes: torch.Tensor,  # shape: (N, 5), format: (cx, cy, w, h, θ)
     scores: torch.Tensor,  # shape: (N,), confidence scores for each box
     threshold: float = 0.45,
-    use_triu: bool = True,
 ) -> torch.Tensor:
     """
     Performs Non-Maximum Suppression (NMS) for rotated bounding boxes using probabilistic IoU.
@@ -148,42 +147,36 @@ def nms_rotated(
         boxes (torch.Tensor): Tensor of shape (N, 5) with boxes in (cx, cy, w, h, θ) format.
         scores (torch.Tensor): Tensor of shape (N,) with confidence scores for each box.
         threshold (float): IoU threshold for suppression.
-        use_triu (bool): If True, use upper-triangular mask for efficiency.
 
     Returns:
-        torch.Tensor: Indices of the selected boxes after NMS, sorted by original score order.
+        torch.Tensor: Indices of the selected boxes after NMS, in the original order.
     """
-    # Sort boxes by descending score
+
+    # Sort boxes by scores in descending order
     sorted_idx = torch.argsort(scores, descending=True)
-    boxes = boxes[sorted_idx]
+    # Reorder boxes and scores based on sorted indices
+    boxes_sorted = boxes[sorted_idx]
+    # Reorder scores based on sorted indices
+    scores_sorted = scores[sorted_idx]
 
-    # Compute pairwise probabilistic IoU (N, N)
-    ious = batch_probiou(boxes, boxes)
+    # Compute pairwise IoU using batch_probiou function
+    ious = batch_probiou(boxes_sorted, boxes_sorted)
 
-    if use_triu:
-        # Keep only upper-triangular entries (ignore symmetric comparisons)
-        ious = ious.triu_(diagonal=1)
+    # Create a mask for IoUs greater than the threshold
+    mask = ious >= threshold
+    # Set the diagonal to False to avoid self-comparison
+    mask.fill_diagonal_(False)
 
-        # Select boxes not suppressed by any other (IoU below threshold)
-        pick = torch.nonzero((ious >= threshold).sum(0) == 0).squeeze(1)
-    else:
-        # Alternative: custom mask to exclude lower triangle
-        n = boxes.shape[0]
-        idxs = torch.arange(n, device=boxes.device)
-        upper = idxs.view(-1, 1) < idxs.view(1, -1)
-        ious = ious * upper
+    # Initialize a suppression mask
+    suppress = torch.zeros_like(scores_sorted, dtype=torch.bool)
+    for i in range(scores_sorted.size(0)):
+        if not suppress[i]:
+            # Suppress boxes that have IoU greater than the threshold
+            suppress |= mask[i] & (scores_sorted < scores_sorted[i])
 
-        # Keep only boxes with IoU below threshold with others
-        mask_keep = (ious >= threshold).sum(0) == 0
-
-        # Suppress boxes by zeroing scores
-        scores = scores.clone()
-        scores[~mask_keep] = 0
-
-        # Return top scores (may include suppressed ones as zeros)
-        pick = torch.topk(scores, scores.shape[0]).indices
-
-    return sorted_idx[pick]
+    # Get the indices of boxes to keep
+    keep = ~suppress
+    return sorted_idx[keep]
 
 
 def infer_with_rotated_nms(
@@ -229,6 +222,9 @@ def infer_with_rotated_nms(
 
         # Filter out low-confidence and background predictions
         keep = (labels_b != 5) & (scores_b > conf_thres)
+
+        # Clamp labels to 0-4 range (5 is background)
+        labels_k = labels_b[keep].clamp_max(4).long()
 
         if not keep.any():
             # No detections: return empty tensors
@@ -312,6 +308,12 @@ def compute_map_rotated(
         # Remove empty tensors
         npos = sum(len(v) for v in gt_per_image.values())
         if npos == 0:
+            # No ground truth boxes for this class
+            # If no predictions, AP is 0.0
+            # If predictions exist, AP is 1.0 (all false positives)
+            # This is a special case where we assume that the model is not able to detect any objects
+            ap = torch.tensor(0.0) if len(preds) > 0 else torch.tensor(1.0)
+            APs.append(ap)
             continue  # No ground truth boxes for this class
 
         # Initialize true/false positive counters

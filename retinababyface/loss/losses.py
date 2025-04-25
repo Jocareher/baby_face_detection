@@ -3,57 +3,89 @@ from typing import List, Tuple, Dict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.ops import sigmoid_focal_loss
 
 from .utils import match_anchors_to_targets, decode_vertices, probiou, xyxyxyxy2xywhr
 
 
 class FocalLoss(nn.Module):
     """
-    Focal Loss implementation for multi-class classification with imbalance handling.
+    Focal Loss for single-label multi-class classification (softmax).
 
-    References:
-        - https://arxiv.org/abs/1708.02002
+    L = - α_t * (1 - p_t)^γ * log(p_t)
+    where p_t is the probability assigned to the correct class.
+
+    Args:
+        alpha (float or list[float]): Balancing factor α. If float, same for all classes.
+                                        If list, must have length = num_classes.
+        gamma (float): Focusing parameter γ ≥ 0.
+        ignore_index (int): Target label to be ignored (does not contribute to the loss).
+        reduction (str): 'none' | 'mean' | 'sum'.
     """
-
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
-        """
-        Args:
-            alpha (float): Balancing factor for the rare class. Default is 0.25.
-            gamma (float): Focusing parameter to down-weight easy examples. Default is 2.0.
-        """
+    def __init__(
+        self,
+        alpha: float | list[float] = 1.0,
+        gamma: float = 2.0,
+        ignore_index: int = -100,
+        reduction: str = "mean",
+    ):
         super().__init__()
-        self.alpha, self.gamma = alpha, gamma
+        if isinstance(alpha, (list, tuple)):
+            self.alpha = torch.tensor(alpha, dtype=torch.float32)
+        else:
+            self.alpha = torch.tensor([alpha], dtype=torch.float32)
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+        self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
-        Computes focal loss between predicted logits and target class indices.
-
         Args:
-            logits (torch.Tensor): Class logits of shape (B, N, C) or (N, C).
-            targets (torch.Tensor): Integer class labels of shape (B, N) or (N,).
-
-        Returns:
-            torch.Tensor: Scalar loss value.
+            logits: Tensor of shape (..., C) with unnormalized scores.
+            targets: Tensor of shape (...) with integers in [0, C-1] or = ignore_index.
         """
-        if logits.dim() == 2:  # Support batched or unbatched input
-            logits = logits.unsqueeze(0)
-            targets = targets.unsqueeze(0)
+        # flatten all dimensions except the classes dimension
+        orig_shape = logits.shape
+        C = logits.shape[-1]
+        logits = logits.view(-1, C)                 # (N, C)
+        targets = targets.view(-1)                  # (N,)
 
-        # Ensure logits are in the correct shape
-        B, N, C = logits.shape
-        # Ensure targets are in the correct shape
-        onehot = F.one_hot(targets.clamp_max(C - 1), C).float()  # (B, N, C)
+        # mask of valid elements
+        valid = targets != self.ignore_index         # (N,)
+        logits = logits[valid]
+        targets = targets[valid]
 
-        # Compute the focal loss
-        loss = sigmoid_focal_loss(
-            logits.view(-1, C),  # Flatten logits to (B*N, C)
-            onehot.view(-1, C),  # Flatten onehot to (B*N, C)
-            alpha=self.alpha,  # Balancing factor
-            gamma=self.gamma,  # Focusing parameter
-            reduction="none",
-        )
-        return loss.mean()
+        if logits.numel() == 0:
+            # nothing to compute
+            return torch.tensor(0., device=logits.device)
+
+        # softmax + log
+        log_probs = F.log_softmax(logits, dim=-1)    # (M, C)
+        probs     = log_probs.exp()                 # (M, C)
+
+        # gather log_prob and prob of the correct class
+        targets_unsq = targets.unsqueeze(1)         # (M,1)
+        log_pt = log_probs.gather(1, targets_unsq).squeeze(1) # (M,)
+        pt     = probs.gather(1, targets_unsq).squeeze(1)     # (M,)
+
+        # α_t: weight per example based on its class
+        if self.alpha.numel() == 1:
+            at = self.alpha.to(logits.device)
+        else:
+            at = self.alpha.to(logits.device).gather(0, targets) # (M,)
+
+        # focal calculation
+        loss = - at * (1 - pt).pow(self.gamma) * log_pt # (M,)
+
+        # reduction
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:  # "none"
+            # reconstruct original shape with zeros where ignore_index
+            out = torch.zeros(valid.shape, device=loss.device)
+            out[valid] = loss
+            return out.view(*orig_shape[:-1])
 
 
 class RotationLoss(nn.Module):

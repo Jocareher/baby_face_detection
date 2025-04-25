@@ -21,6 +21,7 @@ class FocalLoss(nn.Module):
         ignore_index (int): Target label to be ignored (does not contribute to the loss).
         reduction (str): 'none' | 'mean' | 'sum'.
     """
+
     def __init__(
         self,
         alpha: float | list[float] = 1.0,
@@ -46,35 +47,35 @@ class FocalLoss(nn.Module):
         # flatten all dimensions except the classes dimension
         orig_shape = logits.shape
         C = logits.shape[-1]
-        logits = logits.view(-1, C)                 # (N, C)
-        targets = targets.view(-1)                  # (N,)
+        logits = logits.view(-1, C)  # (N, C)
+        targets = targets.view(-1)  # (N,)
 
         # mask of valid elements
-        valid = targets != self.ignore_index         # (N,)
+        valid = targets != self.ignore_index  # (N,)
         logits = logits[valid]
         targets = targets[valid]
 
         if logits.numel() == 0:
             # nothing to compute
-            return torch.tensor(0., device=logits.device)
+            return torch.tensor(0.0, device=logits.device)
 
         # softmax + log
-        log_probs = F.log_softmax(logits, dim=-1)    # (M, C)
-        probs     = log_probs.exp()                 # (M, C)
+        log_probs = F.log_softmax(logits, dim=-1)  # (M, C)
+        probs = log_probs.exp()  # (M, C)
 
         # gather log_prob and prob of the correct class
-        targets_unsq = targets.unsqueeze(1)         # (M,1)
-        log_pt = log_probs.gather(1, targets_unsq).squeeze(1) # (M,)
-        pt     = probs.gather(1, targets_unsq).squeeze(1)     # (M,)
+        targets_unsq = targets.unsqueeze(1)  # (M,1)
+        log_pt = log_probs.gather(1, targets_unsq).squeeze(1)  # (M,)
+        pt = probs.gather(1, targets_unsq).squeeze(1)  # (M,)
 
         # α_t: weight per example based on its class
         if self.alpha.numel() == 1:
             at = self.alpha.to(logits.device)
         else:
-            at = self.alpha.to(logits.device).gather(0, targets) # (M,)
+            at = self.alpha.to(logits.device).gather(0, targets)  # (M,)
 
         # focal calculation
-        loss = - at * (1 - pt).pow(self.gamma) * log_pt # (M,)
+        loss = -at * (1 - pt).pow(self.gamma) * log_pt  # (M,)
 
         # reduction
         if self.reduction == "mean":

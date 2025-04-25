@@ -74,7 +74,7 @@ class EarlyStopping:
         if np.isnan(val_loss):
             self.trace_func("EarlyStopping: val_loss is NaN, skipping...")
             return
-        
+
         if self.use_kfold:
             assert fold is not None, "Fold must be provided when use_kfold is True"
 

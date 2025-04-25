@@ -192,7 +192,7 @@ def main():
         out_channel=args.out_channel,
         pretrained=args.use_pretrained,
     ).to(device)
-    
+
     if args.freeze_backbone:
         print("[INFO] Freezing backbone weights...")
         for p in model.backbone.parameters():
@@ -203,7 +203,7 @@ def main():
             if isinstance(m, nn.BatchNorm2d):
                 m.eval()
                 m.weight.requires_grad = False
-                m.bias.requires_grad   = False
+                m.bias.requires_grad = False
 
     print("[INFO] Model summary:")
     summary(

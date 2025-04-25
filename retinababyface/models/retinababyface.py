@@ -161,7 +161,6 @@ class RetinaBabyFace(nn.Module):
         self.class_head = nn.ModuleList(
             [ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)]
         )
-        
 
     def make_backbone(
         self, name: str, pretrained: bool

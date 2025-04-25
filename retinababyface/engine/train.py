@@ -262,11 +262,11 @@ def infer_with_rotated_nms(
 
 
 def compute_map_rotated(
-    all_pred_boxes: List[torch.Tensor],  # predicted boxes for each image
-    all_pred_scores: List[torch.Tensor],  # confidence scores for predicted boxes
-    all_pred_labels: List[torch.Tensor],  # predicted class labels
-    all_gt_boxes: List[torch.Tensor],  # ground-truth boxes
-    all_gt_labels: List[torch.Tensor],  # ground-truth labels
+    all_pred_boxes: List[torch.Tensor],  # predicted boxes for each image (N_i, 5)
+    all_pred_scores: List[torch.Tensor],  # confidence scores for predicted boxes (N_i,)
+    all_pred_labels: List[torch.Tensor],  # predicted class labels for boxes (N_i,)
+    all_gt_boxes: List[torch.Tensor],  # ground-truth boxes for each image (G_i, 5)
+    all_gt_labels: List[torch.Tensor],  # ground-truth labels for each image (G_i,)
     iou_thr: float = 0.5,
     num_classes: int = 6,
 ) -> float:
@@ -274,93 +274,101 @@ def compute_map_rotated(
     Computes rotated mean Average Precision (mAP) using Pascal VOC 11-point interpolation.
 
     Args:
-        all_pred_boxes (List[Tensor]): List of predicted boxes per image (N_i, 5).
-        all_pred_scores (List[Tensor]): List of confidence scores per image (N_i,).
-        all_pred_labels (List[Tensor]): List of predicted labels per image (N_i,).
-        all_gt_boxes (List[Tensor]): List of ground-truth boxes per image (G_i, 5).
-        all_gt_labels (List[Tensor]): List of ground-truth labels per image (G_i,).
-        iou_thr (float): IoU threshold to consider a prediction as true positive.
-        num_classes (int): Total number of classes.
+        all_pred_boxes (List[Tensor]): List of predicted boxes per image, each of shape (N_i, 5).
+        all_pred_scores (List[Tensor]): List of confidence scores per image, each of shape (N_i,).
+        all_pred_labels (List[Tensor]): List of predicted labels per image, each of shape (N_i,).
+        all_gt_boxes (List[Tensor]): List of ground-truth boxes per image, each of shape (G_i, 5).
+        all_gt_labels (List[Tensor]): List of ground-truth labels per image, each of shape (G_i,).
+        iou_thr (float): IoU threshold to count a detection as true positive.
+        num_classes (int): Number of classes including background.
 
     Returns:
         float: Mean Average Precision (mAP) across all classes.
     """
-    APs = []
+    # If there are no predictions at all, return 0.0 immediately
+    if not all_pred_scores:
+        return 0.0
+
+    # Use the device of the first score tensor for all computations
+    device = all_pred_scores[0].device
+    APs: List[torch.Tensor] = []
 
     for c in range(num_classes):
-        # Collect all predictions for class c
+        # 1) Gather all predictions belonging to class c
         preds = []
-        for img_i in range(len(all_pred_boxes)):
-            mask = all_pred_labels[img_i] == c
+        for img_idx in range(len(all_pred_boxes)):
+            mask = all_pred_labels[img_idx] == c
             for box, score in zip(
-                all_pred_boxes[img_i][mask], all_pred_scores[img_i][mask]
+                all_pred_boxes[img_idx][mask], all_pred_scores[img_idx][mask]
             ):
-                preds.append({"img": img_i, "box": box, "score": score})
-
-        # Sort predictions by score (descending)
+                preds.append({"img": img_idx, "box": box, "score": score})
+        # Sort by descending confidence
         preds.sort(key=lambda x: x["score"], reverse=True)
 
-        # Collect all ground truth boxes for class c per image
+        # 2) Gather all ground-truth boxes for class c
         gt_per_image = {
             i: all_gt_boxes[i][all_gt_labels[i] == c].clone()
             for i in range(len(all_gt_boxes))
         }
-        # Remove empty tensors
+        # Total number of positive examples
         npos = sum(len(v) for v in gt_per_image.values())
+
+        # Special case: no ground-truth boxes for this class
         if npos == 0:
-            # No ground truth boxes for this class
-            # If no predictions, AP is 0.0
-            # If predictions exist, AP is 1.0 (all false positives)
-            # This is a special case where we assume that the model is not able to detect any objects
-            ap = torch.tensor(0.0) if len(preds) > 0 else torch.tensor(1.0)
+            # If there were predictions, AP = 0.0; if none, AP = 1.0
+            ap = (
+                torch.tensor(0.0, device=device)
+                if preds
+                else torch.tensor(1.0, device=device)
+            )
             APs.append(ap)
-            continue  # No ground truth boxes for this class
+            continue
 
-        # Initialize true/false positive counters
-        tp = torch.zeros(len(preds), device=all_pred_scores[0].device)
-        fp = torch.zeros_like(tp)
-
+        # 3) Initialize true positive and false positive counters
+        tp = torch.zeros(len(preds), device=device)
+        fp = torch.zeros(len(preds), device=device)
         detected = {
-            i: torch.zeros(len(gt_per_image[i]), dtype=torch.bool, device=tp.device)
+            i: torch.zeros(len(gt_per_image[i]), dtype=torch.bool, device=device)
             for i in gt_per_image
         }
 
-        # Match predictions to ground truths
+        # Match each prediction to the best ground-truth
         for idx, p in enumerate(preds):
             img_i = p["img"]
             gt_boxes = gt_per_image[img_i]
-            if len(gt_boxes) == 0:
+            if gt_boxes.numel() == 0:
                 fp[idx] = 1
                 continue
 
-            # Compute IoUs and select best match
+            # Compute IoU between this prediction and all GT boxes
             ious = batch_probiou(p["box"].unsqueeze(0), gt_boxes)
             best_iou, best_j = ious.max(1)
+            # True positive if IoU >= threshold and GT not yet detected
             if best_iou >= iou_thr and not detected[img_i][best_j]:
                 tp[idx] = 1
                 detected[img_i][best_j] = True
             else:
                 fp[idx] = 1
 
-        # Compute cumulative precision and recall
-        tp_cum = torch.cumsum(tp, 0)
-        fp_cum = torch.cumsum(fp, 0)
-        rec = tp_cum / (npos + 1e-6)
-        prec = tp_cum / (tp_cum + fp_cum + 1e-6)
+        # 4) Compute cumulative precision and recall
+        tp_cum = torch.cumsum(tp, dim=0)
+        fp_cum = torch.cumsum(fp, dim=0)
+        recall = tp_cum / (npos + 1e-6)
+        precision = tp_cum / (tp_cum + fp_cum + 1e-6)
 
-        # 11-point interpolation (Pascal VOC)
-        ap = torch.tensor(0.0, device=tp.device)
-        for t in torch.linspace(0, 1, 11, device=tp.device):
-            if (rec >= t).any():
-                p_max = prec[rec >= t].max()
-            else:
-                p_max = torch.tensor(0.0, device=tp.device)
-            ap = ap + p_max / 11.0
-
+        # 5) 11-point interpolation for AP
+        ap = torch.tensor(0.0, device=device)
+        for t in torch.linspace(0, 1, 11, device=device):
+            if (recall >= t).any():
+                ap += precision[recall >= t].max() / 11.0
         APs.append(ap)
 
-    # Return mean AP over all classes
-    return float(torch.stack(APs).mean()) if APs else 0.0
+    # If no AP was computed (unlikely), return 0.0
+    if not APs:
+        return 0.0
+
+    # Mean over all class APs and return as Python float
+    return torch.stack(APs).mean().item()
 
 
 def get_resize_size(dataloader: DataLoader) -> Tuple[int, int]:

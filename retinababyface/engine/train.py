@@ -71,6 +71,10 @@ class EarlyStopping:
             model: The PyTorch model being trained.
             fold: The current fold of the KFold cross-validation. Required if use_kfold is True.
         """
+        if np.isnan(val_loss):
+            self.trace_func("EarlyStopping: val_loss is NaN, skipping...")
+            return
+        
         if self.use_kfold:
             assert fold is not None, "Fold must be provided when use_kfold is True"
 
@@ -109,7 +113,7 @@ class EarlyStopping:
 
     def save_checkpoint(self, val_loss: float, model: nn.Module):
         """
-        Saves the model when validation loss decreases.
+        Saves the model when validation loss decreases and it's a numerical value.
 
         Args:
             val_loss: The current validation loss.

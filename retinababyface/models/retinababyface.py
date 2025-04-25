@@ -127,7 +127,6 @@ class RetinaBabyFace(nn.Module):
         backbone_name: str = "mobilenetv1",
         out_channel: int = 64,
         pretrained: bool = True,
-        freeze_backbone: bool = True,
     ):
         """
         Initializes the RetinaBabyFace model.
@@ -136,7 +135,6 @@ class RetinaBabyFace(nn.Module):
             backbone_name (str): Name of the backbone to use (e.g., "mobilenetv1", "resnet50", "vgg16").
             out_channel (int): Number of output channels for FPN layers.
             pretrained (bool): Whether to load pretrained weights for the backbone.
-            freeze_backbone (bool): Whether to freeze backbone weights during training.
         """
         super().__init__()
 
@@ -163,16 +161,7 @@ class RetinaBabyFace(nn.Module):
         self.class_head = nn.ModuleList(
             [ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)]
         )
-
-        # Optionally freeze backbone parameters
-        if freeze_backbone:
-            for p in self.backbone.parameters():
-                p.requires_grad = False
-
-            # Set the backbone to evaluation mode
-            for m in self.backbone.modules():
-                if isinstance(m, nn.BatchNorm2d):
-                    m.eval()
+        
 
     def make_backbone(
         self, name: str, pretrained: bool

@@ -14,7 +14,7 @@ if ROOT_DIR not in sys.path:
     print(f"[INFO] Adding {ROOT_DIR} to sys.path")
 
 
-import torch
+from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
@@ -193,6 +193,18 @@ def main():
         pretrained=args.use_pretrained,
         freeze_backbone=args.freeze_backbone,
     ).to(device)
+    
+    if args.freeze_backbone:
+        print("[INFO] Freezing backbone weights...")
+        for p in model.backbone.parameters():
+            p.requires_grad = False
+
+        # Set the backbone to evaluation mode
+        for m in model.backbone.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                m.eval()
+                m.weight.requires_grad = False
+                m.bias.requires_grad   = False
 
     print("[INFO] Model summary:")
     summary(

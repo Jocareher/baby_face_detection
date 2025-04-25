@@ -65,9 +65,9 @@ def get_train_transform(img_size=(640, 640), use_augmentation=True):
             [
                 RandomHorizontalFlipOBB(prob=0.5),
                 RandomRotateOBB(max_angle=30, prob=0.3),
-                RandomScaleTranslateOBB(
-                    scale_range=(0.8, 1.1), translate_range=(-0.2, 0.2), prob=0.3
-                ),
+                # RandomScaleTranslateOBB(
+                #     scale_range=(0.8, 1.1), translate_range=(-0.2, 0.2), prob=0.3
+                # ),
                 ColorJitterOBB(brightness=0.2, contrast=0.2, saturation=0.2, prob=0.5),
                 RandomNoiseOBB(std=10, prob=0.5),
                 RandomBlurOBB(ksize=(5, 5), prob=0.3),

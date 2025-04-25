@@ -191,7 +191,6 @@ def main():
         backbone_name=args.backbone,
         out_channel=args.out_channel,
         pretrained=args.use_pretrained,
-        freeze_backbone=args.freeze_backbone,
     ).to(device)
     
     if args.freeze_backbone:

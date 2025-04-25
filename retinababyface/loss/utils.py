@@ -147,13 +147,15 @@ def batch_probiou(
     )
 
     # Log-determinant divergence between covariances
-    det1 = (a1 * b1 - c1.pow(2)).clamp(min=0)
-    det2 = (a2 * b2 - c2.pow(2)).clamp(min=0)
+    det1 = (a1 * b1 - c1.pow(2)).clamp(min=eps)
+    det2 = (a2 * b2 - c2.pow(2)).clamp(min=eps)
     # Compute the log-determinant divergence
     # Note: det1 and det2 are positive, so we can safely take the square root
     # and add eps for numerical stability
-    t3 = ((a1 + a2) * (b1 + b2) - (c1 + c2).pow(2)) / (4 * (det1 * det2).sqrt() + eps)
-    t3 = (t3 + eps).log() * 0.5
+    # Compute the log-determinant divergence
+    num = (a1 + a2) * (b1 + b2) - (c1 + c2).pow(2) + eps
+    den = 4 * (det1 * det2).sqrt() + eps
+    t3 = torch.log((num / den).clamp(min=eps)) * 0.5
 
     # Bhattacharyya distance (bounded)
     bd = (t1 + t2 + t3).clamp(min=eps, max=100.0)

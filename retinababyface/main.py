@@ -13,7 +13,7 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
     print(f"[INFO] Adding {ROOT_DIR} to sys.path")
 
-
+import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
@@ -152,6 +152,12 @@ def main():
     args = parse_args()
     print("[INFO] Starting training script with args:", vars(args))
 
+    # Save configuration to YAML
+    config_path = f"{args.run_name}.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(vars(args), f)
+    print(f"[INFO] Configuration saved to {config_path}")
+
     set_seed(42)
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
@@ -160,9 +166,11 @@ def main():
     if args.freeze_backbone:
         norm_mean = config.IMAGENET_MEAN
         norm_std = config.IMAGENET_STD
+        print(f"[INFO] Using ImageNet normalization stats: {norm_mean}, {norm_std}")
     else:
         norm_mean = config.MEAN
         norm_std = config.STD
+        print(f"[INFO] Using Dataset normalization stats: {norm_mean}, {norm_std}")
 
     print("[INFO] Loading datasets...")
     img_size = tuple(args.img_size)  # Convert to (width, height)

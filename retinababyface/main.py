@@ -156,11 +156,21 @@ def main():
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
 
+    # Decide normalization stats based on whether backbone is frozen
+    if args.freeze_backbone:
+        norm_mean = config.IMAGENET_MEAN
+        norm_std = config.IMAGENET_STD
+    else:
+        norm_mean = config.MEAN
+        norm_std = config.STD
+
     print("[INFO] Loading datasets...")
     img_size = tuple(args.img_size)  # Convert to (width, height)
 
-    train_transform = config.get_train_transform(img_size, args.use_augmentation)
-    val_transform = config.get_val_transform(img_size)
+    train_transform = config.get_train_transform(
+        img_size, args.use_augmentation, mean=norm_mean, std=norm_std
+    )
+    val_transform = config.get_val_transform(img_size, mean=norm_mean, std=norm_std)
 
     train_dataset = BabyFacesDataset(
         root_dir=args.root_dir, split="train", transform=train_transform

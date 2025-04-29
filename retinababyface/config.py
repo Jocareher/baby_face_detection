@@ -59,36 +59,47 @@ RUN_NAME = "run_1"
 # =======================
 # Data Transforms
 # =======================
-def get_train_transform(img_size=(640, 640), use_augmentation=True):
+def get_train_transform(
+    img_size=(640, 640), use_augmentation=True, mean=IMAGENET_MEAN, std=IMAGENET_STD
+):
+    """
+    Returns a composition of training transforms. Normalization stats can be overridden.
+    """
+    norm = ToTensorNormalize(mean=mean, std=std)
     if use_augmentation:
         return transforms.Compose(
             [
                 RandomHorizontalFlipOBB(prob=0.5),
                 RandomRotateOBB(max_angle=30, prob=0.3),
-                # RandomScaleTranslateOBB(
-                #     scale_range=(0.8, 1.1), translate_range=(-0.2, 0.2), prob=0.3
-                # ),
                 ColorJitterOBB(brightness=0.2, contrast=0.2, saturation=0.2, prob=0.5),
                 RandomNoiseOBB(std=10, prob=0.5),
                 RandomBlurOBB(ksize=(5, 5), prob=0.3),
                 RandomOcclusionOBB(max_size_ratio=0.3, prob=0.3),
                 Resize(img_size),
-                ToTensorNormalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                norm,
             ]
         )
     else:
         return transforms.Compose(
             [
                 Resize(img_size),
-                ToTensorNormalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                norm,
             ]
         )
 
 
-def get_val_transform(img_size=(640, 640)):
+def get_val_transform(img_size=(640, 640), mean=IMAGENET_MEAN, std=IMAGENET_STD):
+    """
+    Returns a composition of validation transforms. Normalization stats can be overridden.
+    """
     return transforms.Compose(
         [
             Resize(img_size),
-            ToTensorNormalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            ToTensorNormalize(mean=mean, std=std),
         ]
     )
+
+
+# RandomScaleTranslateOBB(
+#     scale_range=(0.8, 1.1), translate_range=(-0.2, 0.2), prob=0.3
+# ),

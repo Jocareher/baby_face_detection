@@ -217,17 +217,30 @@ class MultiTaskLoss(nn.Module):
     """
 
     def __init__(
-        self, lambda_cls: float = 1.0, lambda_obb: float = 1.0, lambda_rot: float = 0.5
+        self,
+        lambda_cls: float = 1.0,
+        lambda_obb: float = 1.0,
+        lambda_rot: float = 0.5,
+        pos_iou_thresh: float = 0.5,
+        neg_iou_thresh: float = 0.4,
+        neg_pos_ratio: float = 3.0,
+        alpha: List[float] = [1.0, 1.0, 1.0, 1.5, 1.5, 0.5],
+        gamma: float = 2.0,
     ):
         super().__init__()
-        self.focal_loss = FocalLoss()
+        # FocalLoss now takes a per-class alpha
+        self.focal_loss = FocalLoss(
+            alpha=alpha, gamma=gamma, ignore_index=-100, reduction="mean"
+        )
         self.obb_loss = OBBLoss()
         self.rot_loss = RotationLoss()
-        self.lambda_cls, self.lambda_obb, self.lambda_rot = (
-            lambda_cls,
-            lambda_obb,
-            lambda_rot,
-        )
+        self.lambda_cls = lambda_cls
+        self.lambda_obb = lambda_obb
+        self.lambda_rot = lambda_rot
+        # thresholds for anchor matching (if los necesitas)
+        self.pos_iou_thr = pos_iou_thresh
+        self.neg_iou_thr = neg_iou_thresh
+        self.neg_pos_ratio = neg_pos_ratio
 
     def forward(
         self,
@@ -239,57 +252,46 @@ class MultiTaskLoss(nn.Module):
     ):
         """
         Args:
-            preds (Tuple): Tuple of model outputs: (logits, deltas, angles)
-            targets (Dict): Dictionary with GT boxes, angles and class indices
-            anchors_xy (torch.Tensor): Anchor vertices (B, N, 8)
-            anchors_xywhr (torch.Tensor): Anchor OBBs in xywhr format (N, 5)
-            image_sizes (List[Tuple[int,int]]): Sizes of each image in the batch
+            preds: Tuple of model outputs (logits, deltas, angles).
+            targets: Dict with keys "boxes", "angle", "class_idx", "valid_mask".
+            anchors_xy: (B, N, 8) anchor vertices.
+            anchors_xywhr: (N, 5) anchors in xywhr.
+            image_sizes: list of (W, H) per image in batch.
 
         Returns:
-            Tuple[torch.Tensor, float, float, float]:
-                - Total loss
-                - Classification loss (float)
-                - OBB loss (float)
-                - Angle regression loss (float)
+            total_loss, cls_loss, obb_loss, rot_loss
         """
-        logits, deltas, pred_angles = preds  # (B,N,C), (B,N,8), (B,N,1)
-        B, N, _ = logits.shape
+        logits, deltas, pred_angles = preds
+        B, N, C = logits.shape
 
-        loss_cls = loss_obb = loss_rot = 0.0
+        cls_loss = 0.0
+        obb_loss = 0.0
+        rot_loss = 0.0
         valid_batches = 0
 
         for b in range(B):
-            # 1 Anchor-to-GT assignment
+            # 1) match anchors ↔ GT using probabilistic IoU
             pos_mask, best_gt = match_anchors_to_targets(
                 anchors_xywhr,
                 targets["boxes"][b],
                 targets["angle"][b].squeeze(-1),
                 image_sizes[b],
+                iou_thr=self.pos_iou_thr,
             )
 
-            # 2 Classification loss (all anchors)
+            # 2) classification: build target vector with background=5
             tgt_cls = torch.full((N,), 5, dtype=torch.long, device=logits.device)
             tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
-            loss_cls += self.focal_loss(logits[b], tgt_cls)
+            cls_loss += self.focal_loss(logits[b], tgt_cls)
 
-            # 3 OBB + Angle loss (only positive anchors)
+            # 3) regression (only positives)
             if pos_mask.any():
-                # Only consider positive anchors
                 valid_batches += 1
-                # Extract the positive anchors
                 idx = best_gt[pos_mask]
-
-                # Compute the OBB loss
-                # Note: pred_xy is in xywhr format
-                # Convert deltas to absolute vertex coordinates
-                # Note: deltas are in normalized coordinates
-                # Decode the deltas to get the predicted vertices
-                # Note: anchors_xy are in pixel coordinates
                 pred_xy = decode_vertices(
                     deltas[b][pos_mask], anchors_xy[b][pos_mask], image_sizes[b]
                 )
-
-                loss_obb += self.obb_loss(
+                obb_loss += self.obb_loss(
                     pred_xy.unsqueeze(0),
                     targets["boxes"][b][idx].unsqueeze(0),
                     pred_angles[b][pos_mask].unsqueeze(0),
@@ -299,23 +301,22 @@ class MultiTaskLoss(nn.Module):
                         1, idx.numel(), dtype=torch.bool, device=logits.device
                     ),
                 )
-
-                loss_rot += self.rot_loss(
+                rot_loss += self.rot_loss(
                     pred_angles[b][pos_mask], targets["angle"][b][idx]
                 )
 
-        # Final aggregation
-        loss_cls /= B
+        cls_loss /= B
         if valid_batches == 0:
-            # No valid batches, return only classification loss
-            total = self.lambda_cls * loss_cls
-            return total, loss_cls.item(), 0.0, 0.0
+            # no positives → only classification term
+            total_loss = self.lambda_cls * cls_loss
+            return total_loss, cls_loss.item(), 0.0, 0.0
 
-        loss_obb /= valid_batches
-        loss_rot /= valid_batches
-        total = (
-            self.lambda_cls * loss_cls
-            + self.lambda_obb * loss_obb
-            + self.lambda_rot * loss_rot
+        obb_loss /= valid_batches
+        rot_loss /= valid_batches
+
+        total_loss = (
+            self.lambda_cls * cls_loss
+            + self.lambda_obb * obb_loss
+            + self.lambda_rot * rot_loss
         )
-        return total, loss_cls.item(), loss_obb.item(), loss_rot.item()
+        return total_loss, cls_loss.item(), obb_loss.item(), rot_loss.item()

@@ -16,6 +16,7 @@ from torch.nn import functional as F
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
 from models.anchors import AnchorGeneratorOBB, get_feature_map_shapes
+from models.retinababyface import ViTFeature2D
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
 from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
@@ -463,6 +464,21 @@ def generate_anchors_for_training(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The generated anchors in xyxy format and xywhr format.
     """
+    
+    # Get the strides for the model
+    # Note: The strides are based on the feature map shapes of the model
+    # and the type of backbone used.
+    # For example, ViTFeature2D uses 16, 32, 64 strides
+    if isinstance(model.backbone, ViTFeature2D):
+        strides = [16, 32, 64]
+    # For other backbones, we can check the type of modules in the backbone
+    # and set the strides accordingly.
+    elif any("dense" in m.__class__.__name__.lower() for m in model.backbone.modules()):
+        strides = [16, 32, 64]            # denseblock2/3/4
+    else:
+        # MobileNet‑V1, ResNet‑50, VGG‑16 … (layer2/3/4 o stage1/2/3)
+        strides = [8, 16, 32]
+    
     # Get the input shape for the model
     H, W = resize_size[1], resize_size[0]
     # Get the feature map shapes from the model
@@ -470,7 +486,7 @@ def generate_anchors_for_training(
     # Generate anchors for the model
     anchor_gen = AnchorGeneratorOBB(
         feature_map_shapes=feature_shapes,
-        strides=[8, 16, 32],
+        strides=strides,
         base_size=base_size,
         base_ratio=base_ratio,
         scale_factors=scale_factors,

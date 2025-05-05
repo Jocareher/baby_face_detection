@@ -195,7 +195,12 @@ class OBBLoss(nn.Module):
             # We take the mean IoU across all gt boxes for this batch
             # and all pred boxes
             iou = probiou(pred_xywhr, gt_xywhr)
-            losses.append((1.0 - iou).mean())
+            # iou is of shape (N, M) where N is the number of gt boxes
+            # and M is the number of pred boxes
+            # We want to compute the mean IoU for each gt box
+            # and take the mean across all gt boxes
+            match_iou = iou.diag()
+            losses.append((1.0 - match_iou).mean())
 
         if len(losses) == 0:
             return torch.tensor(0.0, requires_grad=True, device=pred_obbs.device)

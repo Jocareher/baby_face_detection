@@ -304,8 +304,11 @@ def decode_vertices(
     W, H = image_size
 
     if use_diag:
-        # Use average diagonal length as a scale factor (per box)
-        diag = anchors.view(-1, 4, 2).std(dim=1).mean(dim=1, keepdim=True)  # (N, 1)
+        # Compute the diagonal of the anchor box
+        # Reshape anchors to (N, 4, 2) for easier manipulation
+        p0, p2 = anchors.view(-1,4,2)[:,0], anchors.view(-1,4,2)[:,2]
+        # Compute the diagonal length
+        diag = ((p0[:,0]-p2[:,0]).pow(2) + (p0[:,1]-p2[:,1]).pow(2)).sqrt().unsqueeze(1)
         verts = anchors + deltas * diag  # Displace each vertex up to ±diag pixels
     else:
         # Direct displacement in pixel space

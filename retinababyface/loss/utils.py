@@ -306,9 +306,13 @@ def decode_vertices(
     if use_diag:
         # Compute the diagonal of the anchor box
         # Reshape anchors to (N, 4, 2) for easier manipulation
-        p0, p2 = anchors.view(-1,4,2)[:,0], anchors.view(-1,4,2)[:,2]
+        p0, p2 = anchors.view(-1, 4, 2)[:, 0], anchors.view(-1, 4, 2)[:, 2]
         # Compute the diagonal length
-        diag = ((p0[:,0]-p2[:,0]).pow(2) + (p0[:,1]-p2[:,1]).pow(2)).sqrt().unsqueeze(1)
+        diag = (
+            ((p0[:, 0] - p2[:, 0]).pow(2) + (p0[:, 1] - p2[:, 1]).pow(2))
+            .sqrt()
+            .unsqueeze(1)
+        )
         verts = anchors + deltas * diag  # Displace each vertex up to ±diag pixels
     else:
         # Direct displacement in pixel space

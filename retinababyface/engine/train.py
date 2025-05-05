@@ -464,7 +464,7 @@ def generate_anchors_for_training(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: The generated anchors in xyxy format and xywhr format.
     """
-    
+
     # Get the strides for the model
     # Note: The strides are based on the feature map shapes of the model
     # and the type of backbone used.
@@ -474,11 +474,11 @@ def generate_anchors_for_training(
     # For other backbones, we can check the type of modules in the backbone
     # and set the strides accordingly.
     elif any("dense" in m.__class__.__name__.lower() for m in model.backbone.modules()):
-        strides = [16, 32, 64]            # denseblock2/3/4
+        strides = [16, 32, 64]  # denseblock2/3/4
     else:
         # MobileNet‑V1, ResNet‑50, VGG‑16 … (layer2/3/4 o stage1/2/3)
         strides = [8, 16, 32]
-    
+
     # Get the input shape for the model
     H, W = resize_size[1], resize_size[0]
     # Get the feature map shapes from the model

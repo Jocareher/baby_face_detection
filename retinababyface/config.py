@@ -1,3 +1,5 @@
+import math
+
 from torchvision import transforms
 from data_setup.augmentations import (
     RandomHorizontalFlipOBB,
@@ -48,6 +50,8 @@ PRECOMPUTED_OBB_STATS = {
 # =======================
 SCALE_FACTORS = [0.75, 1.0, 1.25]
 RATIO_FACTORS = [0.85, 1.0, 1.15]
+ANGLES = [-math.pi / 4, -math.pi / 8, 0.0, math.pi / 8]
+NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 
 # =======================
 # WandB Configuration

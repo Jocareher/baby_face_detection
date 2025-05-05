@@ -16,6 +16,7 @@ from torchvision.models import (
 from torchvision.models.feature_extraction import create_feature_extractor
 
 from .mobilenet import FPN, SSH, MobileNetV1
+import config
 
 
 class OBBHead(nn.Module):
@@ -31,9 +32,9 @@ class OBBHead(nn.Module):
         - Output: (B, N, 8) where N = H × W × num_anchors
     """
 
-    def __init__(self, in_ch: int, num_anchors: int = 3):
+    def __init__(self, in_ch: int):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, num_anchors * 8, kernel_size=1)
+        self.conv = nn.Conv2d(in_ch, config.NUM_ANCHORS * 8, kernel_size=1)
 
     def forward(self, x):
         # Apply 1x1 convolution, reshape and apply tanh to constrain output to [-1, 1]
@@ -57,9 +58,9 @@ class AngleHead(nn.Module):
         - Output: (B, N, 1) where N = H × W × num_anchors
     """
 
-    def __init__(self, inchannels: int = 64, num_anchors: int = 2):
+    def __init__(self, inchannels: int = 64):
         super().__init__()
-        self.conv = nn.Conv2d(inchannels, num_anchors * 1, kernel_size=1)
+        self.conv = nn.Conv2d(inchannels, config.NUM_ANCHORS, kernel_size=1)
 
     def forward(self, x):
         # Apply 1x1 convolution, reshape and scale sigmoid output to [0, 2π]
@@ -77,9 +78,7 @@ class ClassHead(nn.Module):
     Head module for class prediction.
     """
 
-    def __init__(
-        self, inchannels: int = 64, num_classes: int = 6, num_anchors: int = 2
-    ):
+    def __init__(self, inchannels: int = 64, num_classes: int = 6):
         """
         Initializes the ClassHead module.
 
@@ -90,7 +89,7 @@ class ClassHead(nn.Module):
         """
         super().__init__()
         self.conv = nn.Conv2d(
-            inchannels, num_anchors * num_classes, kernel_size=1
+            inchannels, config.NUM_ANCHORS * num_classes, kernel_size=1
         )  # 1x1 convolution for class prediction.
         self.num_classes = num_classes  # Store the number of classes.
 
@@ -152,14 +151,10 @@ class RetinaBabyFace(nn.Module):
         self.ssh3 = SSH(out_channel, out_channel)
 
         # Prediction heads: Oriented bounding boxes, rotation angles, and class logits
-        self.obb_head = nn.ModuleList(
-            [OBBHead(out_channel, num_anchors=9) for _ in range(3)]
-        )
-        self.angle_head = nn.ModuleList(
-            [AngleHead(out_channel, num_anchors=9) for _ in range(3)]
-        )
+        self.obb_head = nn.ModuleList([OBBHead(out_channel) for _ in range(3)])
+        self.angle_head = nn.ModuleList([AngleHead(out_channel) for _ in range(3)])
         self.class_head = nn.ModuleList(
-            [ClassHead(out_channel, num_anchors=9, num_classes=6) for _ in range(3)]
+            [ClassHead(out_channel, num_classes=6) for _ in range(3)]
         )
 
     def make_backbone(
@@ -332,3 +327,18 @@ class ViTFeature2D(nn.Module):
             feat2d = seq.permute(0, 2, 1).reshape(B, C, H, W)
             maps[name] = feat2d
         return maps
+
+
+def reset_heads(model: nn.Module) -> None:
+    """
+    Kaiming‑He para pesos conv y bias a 0 en OBBHead, AngleHead y ClassHead.
+    """
+    for head in [model.obb_head, model.angle_head, model.class_head]:
+        for layer in head.modules():
+            if isinstance(layer, nn.Conv2d):
+                print(f"Initializing {layer} with Kaiming-He")
+                nn.init.kaiming_normal_(
+                    layer.weight, mode="fan_out", nonlinearity="relu"
+                )
+                if layer.bias is not None:
+                    nn.init.constant_(layer.bias, 0)

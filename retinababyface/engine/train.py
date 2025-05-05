@@ -1,4 +1,5 @@
 import time
+import math
 from typing import List, Optional, Dict, Tuple
 
 import numpy as np
@@ -20,6 +21,7 @@ from models.retinababyface import ViTFeature2D
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
 from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
+import config
 
 
 class EarlyStopping:
@@ -468,21 +470,16 @@ def generate_anchors_for_training(
     # Get the strides for the model
     # Note: The strides are based on the feature map shapes of the model
     # and the type of backbone used.
-    # For example, ViTFeature2D uses 16, 32, 64 strides
-    if isinstance(model.backbone, ViTFeature2D):
-        strides = [16, 32, 64]
-    # For other backbones, we can check the type of modules in the backbone
-    # and set the strides accordingly.
-    elif any("dense" in m.__class__.__name__.lower() for m in model.backbone.modules()):
-        strides = [16, 32, 64]  # denseblock2/3/4
-    else:
-        # MobileNet‑V1, ResNet‑50, VGG‑16 … (layer2/3/4 o stage1/2/3)
-        strides = [8, 16, 32]
 
     # Get the input shape for the model
     H, W = resize_size[1], resize_size[0]
     # Get the feature map shapes from the model
     feature_shapes = get_feature_map_shapes(model, input_shape=(1, 3, H, W))
+
+    strides = [int(round(H / h)) for (h, _w) in feature_shapes]
+
+    print(f"[INFO] Feature shapes: {feature_shapes}  →  strides = {strides}")
+
     # Generate anchors for the model
     anchor_gen = AnchorGeneratorOBB(
         feature_map_shapes=feature_shapes,
@@ -491,6 +488,7 @@ def generate_anchors_for_training(
         base_ratio=base_ratio,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
+        angles=config.ANGLES,
     )
     # Generate anchors in xyxy format
     # Note: anchors_xy are in shape (N, 8) where N is the number of anchors
@@ -832,7 +830,7 @@ def train(
     record_metrics: bool = False,
     project: str = "My_WandB_Project",
     run_name: str = "My_Run",
-    scale_factors: List[float] = [0.75, 1.0, 1.25],
+    scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
     obb_stats_by_size: Optional[Dict[Tuple[int, int], Dict[str, float]]] = None,
 ) -> Dict[str, List[float]]:

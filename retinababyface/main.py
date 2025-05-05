@@ -21,7 +21,7 @@ from torchinfo import summary
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
 from models.mobilenet import MobileNetV1
-from models.retinababyface import RetinaBabyFace
+from models.retinababyface import RetinaBabyFace, reset_heads
 from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping
 from loss.losses import MultiTaskLoss
@@ -222,6 +222,7 @@ def main():
                 m.eval()
                 m.weight.requires_grad = False
                 m.bias.requires_grad = False
+    reset_heads(model)
 
     print("[INFO] Model summary:")
     summary(

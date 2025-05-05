@@ -278,6 +278,8 @@ class MultiTaskLoss(nn.Module):
                 image_sizes[b],
                 iou_thr=self.pos_iou_thr,
             )
+            
+            print(f"batch {b}: pos={pos_mask.sum().item()} / {pos_mask.numel()}")
 
             # 2) classification: build target vector with background=5
             tgt_cls = torch.full((N,), 5, dtype=torch.long, device=logits.device)

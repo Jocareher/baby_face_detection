@@ -48,7 +48,7 @@ PRECOMPUTED_OBB_STATS = {
 # =======================
 # Anchor Generation Params
 # =======================
-SCALE_FACTORS = [0.75, 1.0, 1.25]
+SCALE_FACTORS = [0.5, 0.75, 1.0, 1.5]
 RATIO_FACTORS = [0.85, 1.0, 1.15]
 ANGLES = [-math.pi / 4, -math.pi / 8, 0.0, math.pi / 8]
 NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)

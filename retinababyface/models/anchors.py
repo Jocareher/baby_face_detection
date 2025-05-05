@@ -28,7 +28,7 @@ class AnchorGeneratorOBB:
         strides: List[int],
         base_size: float,
         base_ratio: float,
-        scale_factors: List[float] = [0.75, 1.0, 1.25],
+        scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
         ratio_factors: List[float] = [0.85, 1.0, 1.15],
     ):
         """

@@ -60,6 +60,9 @@ NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 ALPHA = [1.5, 1.5, 1.5, 2.0, 2.0, 0.5]
 GAMMA = 2.0
 POS_IOU_THRESH = 0.3
+LAMBDA_CLS = 1.0
+LAMBDA_OBB = 1.0
+LAMBDA_ROT = 1.0
 
 
 # =======================

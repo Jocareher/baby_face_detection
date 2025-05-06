@@ -1,5 +1,5 @@
 import time
-import math
+import csv
 from typing import List, Optional, Dict, Tuple
 
 import numpy as np
@@ -469,7 +469,7 @@ def generate_anchors_for_training(
 
     # Get the input shape for the model
     H, W = resize_size[1], resize_size[0]
-    
+
     # Get the feature map shapes from the model
     feature_shapes = get_feature_map_shapes(model, input_shape=(1, 3, H, W))
 
@@ -478,7 +478,7 @@ def generate_anchors_for_training(
     # and rounded to the nearest integer.
     strides = [int(round(H / h)) for (h, _w) in feature_shapes]
 
-    #print(f"[INFO] Feature shapes: {feature_shapes}  →  strides = {strides}")
+    # print(f"[INFO] Feature shapes: {feature_shapes}  →  strides = {strides}")
 
     # Generate anchors for the model
     anchor_gen = AnchorGeneratorOBB(
@@ -862,6 +862,27 @@ def train(
         Dict[str, List[float]]: Dictionary containing lists of training and testing losses.
     """
 
+    # CSV file name for logging metrics
+    csv_filename = f"{run_name}.csv"
+    header = [
+        "epoch",
+        "train_total_loss",
+        "train_class_loss",
+        "train_obb_loss",
+        "train_angular_loss",
+        "test_total_loss",
+        "test_class_loss",
+        "test_obb_loss",
+        "test_angular_loss",
+        "test_mAP",
+        "learning_rate",
+        "epoch_time",
+    ]
+    # Create CSV file and write header
+    with open(csv_filename, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+
     results = {
         "train_total_loss": [],
         "train_class_loss": [],
@@ -895,11 +916,11 @@ def train(
             "Norm",
             "Value",
         ], "grad_clip_mode must be 'Norm' or 'Value'"  # Check valid gradient clip mode
-        
+
     ## Get the resize size from the dataloader
     resize_size = get_resize_size(train_dataloader)
     base_size, base_ratio = get_base_obb_stats(resize_size, obb_stats_by_size)
-    
+
     # Generate anchors for training
     anchors_xy, anchors_xywhr = generate_anchors_for_training(
         model=model,
@@ -1011,6 +1032,28 @@ def train(
             results["test_obb_loss"].append(test_obb_loss)
             results["test_angular_loss"].append(test_angular_loss)
             results["test_mAP"].append(test_mAP)
+
+            # Write metrics to CSV file
+            # Open the CSV file in append mode
+            # and write the metrics for the current epoch
+            with open(csv_filename, mode="a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        epoch + 1,
+                        f"{train_total_loss:.4f}",
+                        f"{train_class_loss:.4f}",
+                        f"{train_obb_loss:.4f}",
+                        f"{train_angular_loss:.4f}",
+                        f"{test_total_loss:.4f}",
+                        f"{test_class_loss:.4f}",
+                        f"{test_obb_loss:.4f}",
+                        f"{test_angular_loss:.4f}",
+                        f"{test_mAP:.4f}",
+                        f"{current_lr:.5f}",
+                        f"{epoch_time:.4f}",
+                    ]
+                )
 
             if early_stopping is not None:
                 early_stopping(

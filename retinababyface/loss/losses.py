@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import match_anchors_to_targets, decode_vertices, probiou, xyxyxyxy2xywhr
+import config
 
 
 class FocalLoss(nn.Module):
@@ -226,9 +227,9 @@ class MultiTaskLoss(nn.Module):
         lambda_cls: float = 1.0,
         lambda_obb: float = 1.0,
         lambda_rot: float = 0.5,
-        pos_iou_thresh: float = 0.3,
-        alpha: List[float] = [1.0, 1.0, 1.0, 1.5, 1.5, 0.5],
-        gamma: float = 2.0,
+        pos_iou_thresh: float = config.POS_IOU_THRESH,
+        alpha: List[float] = config.ALPHA,
+        gamma: float = config.GAMMA,
     ):
         super().__init__()
         # FocalLoss now takes a per-class alpha
@@ -280,7 +281,7 @@ class MultiTaskLoss(nn.Module):
                 iou_thr=self.pos_iou_thr,
             )
 
-            print(f"batch {b}: pos={pos_mask.sum().item()} / {pos_mask.numel()}")
+            #print(f"batch {b}: pos={pos_mask.sum().item()} / {pos_mask.numel()}")
 
             # 2) classification: build target vector with background=5
             tgt_cls = torch.full((N,), 5, dtype=torch.long, device=logits.device)

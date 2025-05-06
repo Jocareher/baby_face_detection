@@ -111,13 +111,13 @@ def parse_args():
 
     # Loss function parameters
     parser.add_argument(
-        "--lambda_cls", type=float, default=1.0, help="Weight for classification loss"
+        "--lambda_cls", type=float, default=config.LAMBDA_CLS, help="Weight for classification loss"
     )
     parser.add_argument(
-        "--lambda_obb", type=float, default=1.0, help="Weight for OBB regression loss"
+        "--lambda_obb", type=float, default=config.LAMBDA_OBB, help="Weight for OBB regression loss"
     )
     parser.add_argument(
-        "--lambda_rot", type=float, default=1.0, help="Weight for rotation angle loss"
+        "--lambda_rot", type=float, default=config.LAMBDA_ROT, help="Weight for rotation angle loss"
     )
 
     # Data augmentation
@@ -222,6 +222,8 @@ def main():
                 m.eval()
                 m.weight.requires_grad = False
                 m.bias.requires_grad = False
+
+    # Initialize the model with Kaiming-He weights
     reset_heads(model)
 
     print("[INFO] Model summary:")

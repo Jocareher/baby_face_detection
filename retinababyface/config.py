@@ -53,6 +53,15 @@ RATIO_FACTORS = [0.85, 1.0, 1.15]
 ANGLES = [-math.pi / 4, -math.pi / 8, 0.0, math.pi / 8]
 NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 
+
+# =======================
+# Loss Function Weights
+# =======================
+ALPHA = [1.5, 1.5, 1.5, 2.0, 2.0, 0.5]
+GAMMA = 2.0
+POS_IOU_THRESH = 0.3
+
+
 # =======================
 # WandB Configuration
 # =======================

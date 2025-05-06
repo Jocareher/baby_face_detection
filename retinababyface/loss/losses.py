@@ -227,8 +227,6 @@ class MultiTaskLoss(nn.Module):
         lambda_obb: float = 1.0,
         lambda_rot: float = 0.5,
         pos_iou_thresh: float = 0.3,
-        neg_iou_thresh: float = 0.15,
-        neg_pos_ratio: float = 3.0,
         alpha: List[float] = [1.0, 1.0, 1.0, 1.5, 1.5, 0.5],
         gamma: float = 2.0,
     ):
@@ -244,8 +242,6 @@ class MultiTaskLoss(nn.Module):
         self.lambda_rot = lambda_rot
         # thresholds for anchor matching (if los necesitas)
         self.pos_iou_thr = pos_iou_thresh
-        self.neg_iou_thr = neg_iou_thresh
-        self.neg_pos_ratio = neg_pos_ratio
 
     def forward(
         self,

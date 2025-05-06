@@ -467,18 +467,18 @@ def generate_anchors_for_training(
         Tuple[torch.Tensor, torch.Tensor]: The generated anchors in xyxy format and xywhr format.
     """
 
-    # Get the strides for the model
-    # Note: The strides are based on the feature map shapes of the model
-    # and the type of backbone used.
-
     # Get the input shape for the model
     H, W = resize_size[1], resize_size[0]
+    
     # Get the feature map shapes from the model
     feature_shapes = get_feature_map_shapes(model, input_shape=(1, 3, H, W))
 
+    # Calculate the strides based on the feature map shapes
+    # Note: The strides are calculated as the ratio of the input size to the feature map size
+    # and rounded to the nearest integer.
     strides = [int(round(H / h)) for (h, _w) in feature_shapes]
 
-    print(f"[INFO] Feature shapes: {feature_shapes}  →  strides = {strides}")
+    #print(f"[INFO] Feature shapes: {feature_shapes}  →  strides = {strides}")
 
     # Generate anchors for the model
     anchor_gen = AnchorGeneratorOBB(
@@ -895,9 +895,11 @@ def train(
             "Norm",
             "Value",
         ], "grad_clip_mode must be 'Norm' or 'Value'"  # Check valid gradient clip mode
+        
     ## Get the resize size from the dataloader
     resize_size = get_resize_size(train_dataloader)
     base_size, base_ratio = get_base_obb_stats(resize_size, obb_stats_by_size)
+    
     # Generate anchors for training
     anchors_xy, anchors_xywhr = generate_anchors_for_training(
         model=model,

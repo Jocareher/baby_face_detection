@@ -4,7 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import match_anchors_to_targets, decode_vertices, probiou, xyxyxyxy2xywhr
+from .utils import (
+    match_anchors_to_targets,
+    decode_vertices,
+    probiou,
+    xyxyxyxy2xywhr,
+    encode_vertices,
+)
 import config
 
 
@@ -209,17 +215,70 @@ class OBBLoss(nn.Module):
         return torch.stack(losses).mean()
 
 
+class SmoothL1OBBLoss(nn.Module):
+    """
+    Computes Smooth L1 loss between predicted OBB deltas and encoded ground truth deltas.
+
+    The loss is applied directly on the 8-point vertex offsets, normalized with respect
+    to the anchor box diagonal, as defined in the encode_vertices() function.
+    """
+
+    def __init__(self, beta: float = 1.0, reduction: str = "mean"):
+        """
+        Args:
+            beta (float): Transition point between L1 and L2 loss in Smooth L1.
+            reduction (str): Reduction method ('mean', 'sum', or 'none').
+        """
+        super().__init__()
+        self.beta = beta
+        self.reduction = reduction
+
+    def forward(
+        self,
+        pred_deltas: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
+        gt_xy: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
+        anchors: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
+    ) -> torch.Tensor:
+        """
+        Args:
+            pred_deltas (Tensor): Predicted normalized deltas from the OBB head.
+            gt_xy (Tensor): Ground truth boxes in absolute vertex coordinates.
+            anchors (Tensor): Anchor boxes in absolute vertex coordinates.
+
+        Returns:
+            torch.Tensor: Smooth L1 loss between predicted and encoded deltas.
+        """
+        # Remove batch dimension if present
+        if pred_deltas.dim() == 3 and pred_deltas.size(0) == 1:
+            pred = pred_deltas.squeeze(0)
+            gt = gt_xy.squeeze(0)
+            anc = anchors.squeeze(0)
+        else:
+            pred, gt, anc = pred_deltas, gt_xy, anchors
+
+        # Encode ground truth to normalized delta space
+        gt_deltas = encode_vertices(gt, anc)
+
+        # Compute Smooth L1 loss
+        return F.smooth_l1_loss(
+            pred, gt_deltas, beta=self.beta, reduction=self.reduction
+        )
+
+
 class MultiTaskLoss(nn.Module):
     """
-    Combines classification, OBB regression, and angle regression into a single multitask loss.
+    Multi-task loss combining classification, OBB regression, and angle regression.
 
-    Total Loss:
-        L_total = lambda_cls * L_focal + lambda_obb * L_iou + lambda_rot * L_angle
+    The total loss is defined as:
+        L_total = λ_cls * L_focal + λ_obb * L_smoothL1 + λ_rot * L_angle
 
     Args:
-        lambda_cls (float): Weight for classification loss.
-        lambda_obb (float): Weight for OBB regression loss.
-        lambda_rot (float): Weight for rotation angle loss.
+        lambda_cls (float): Weight for the classification loss.
+        lambda_obb (float): Weight for the oriented bounding box regression loss.
+        lambda_rot (float): Weight for the angle regression loss.
+        pos_iou_thresh (float): IoU threshold to consider an anchor as positive.
+        alpha (List[float]): Class-balancing weights for focal loss.
+        gamma (float): Focusing parameter for focal loss.
     """
 
     def __init__(
@@ -232,36 +291,44 @@ class MultiTaskLoss(nn.Module):
         gamma: float = config.GAMMA,
     ):
         super().__init__()
-        # FocalLoss now takes a per-class alpha
         self.focal_loss = FocalLoss(
             alpha=alpha, gamma=gamma, ignore_index=-100, reduction="mean"
         )
-        self.obb_loss = OBBLoss()
+        self.obb_loss = SmoothL1OBBLoss()
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb
         self.lambda_rot = lambda_rot
-        # thresholds for anchor matching (if los necesitas)
         self.pos_iou_thr = pos_iou_thresh
 
     def forward(
         self,
-        preds: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        targets: Dict[str, torch.Tensor],
-        anchors_xy: torch.Tensor,
-        anchors_xywhr: torch.Tensor,
-        image_sizes: List[Tuple[int, int]],
-    ):
+        preds: Tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor
+        ],  # (logits, deltas, angles)
+        targets: Dict[
+            str, torch.Tensor
+        ],  # GT dict: boxes, angle, class_idx, valid_mask
+        anchors_xy: torch.Tensor,  # (B, N, 8) anchor vertices
+        anchors_xywhr: torch.Tensor,  # (N, 5) anchors in xywhr
+        image_sizes: List[Tuple[int, int]],  # (W, H) for each image
+    ) -> Tuple[torch.Tensor, float, float, float]:
         """
+        Computes the total multi-task loss and returns all components.
+
         Args:
-            preds: Tuple of model outputs (logits, deltas, angles).
-            targets: Dict with keys "boxes", "angle", "class_idx", "valid_mask".
-            anchors_xy: (B, N, 8) anchor vertices.
-            anchors_xywhr: (N, 5) anchors in xywhr.
-            image_sizes: list of (W, H) per image in batch.
+            preds (Tuple[Tensor]): Output tuple (logits, deltas, angles) from the model.
+            targets (Dict[str, Tensor]): Ground-truth information per image.
+            anchors_xy (Tensor): Anchor boxes in xyxyxyxy format (B, N, 8).
+            anchors_xywhr (Tensor): Anchor boxes in (cx, cy, w, h, θ) format (N, 5).
+            image_sizes (List[Tuple[int, int]]): Image sizes in (width, height) format.
 
         Returns:
-            total_loss, cls_loss, obb_loss, rot_loss
+            Tuple[Tensor, float, float, float]:
+                - total_loss: Combined loss tensor.
+                - cls_loss (float): Classification loss.
+                - obb_loss (float): Oriented bounding box regression loss.
+                - rot_loss (float): Rotation angle regression loss.
         """
         logits, deltas, pred_angles = preds
         B, N, C = logits.shape
@@ -272,7 +339,7 @@ class MultiTaskLoss(nn.Module):
         valid_batches = 0
 
         for b in range(B):
-            # 1) match anchors ↔ GT using probabilistic IoU
+            # Step 1: Match anchors to GT using IoU
             pos_mask, best_gt = match_anchors_to_targets(
                 anchors_xywhr,
                 targets["boxes"][b],
@@ -280,38 +347,33 @@ class MultiTaskLoss(nn.Module):
                 image_sizes[b],
                 iou_thr=self.pos_iou_thr,
             )
-
             # print(f"batch {b}: pos={pos_mask.sum().item()} / {pos_mask.numel()}")
 
-            # 2) classification: build target vector with background=5
+            # Step 2: Classification loss using focal loss
             tgt_cls = torch.full((N,), 5, dtype=torch.long, device=logits.device)
             tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
             cls_loss += self.focal_loss(logits[b], tgt_cls)
 
-            # 3) regression (only positives)
+            # Step 3: OBB regression loss (only for positives)
             if pos_mask.any():
                 valid_batches += 1
                 idx = best_gt[pos_mask]
-                pred_xy = decode_vertices(
-                    deltas[b][pos_mask], anchors_xy[b][pos_mask], image_sizes[b]
-                )
+                pred_deltas = deltas[b][pos_mask]
+                gt_xy = targets["boxes"][b][idx]
+                anc_xy = anchors_xy[b][pos_mask]
+
                 obb_loss += self.obb_loss(
-                    pred_xy.unsqueeze(0),
-                    targets["boxes"][b][idx].unsqueeze(0),
-                    pred_angles[b][pos_mask].unsqueeze(0),
-                    targets["angle"][b][idx].unsqueeze(0),
-                    [image_sizes[b]],
-                    valid_mask=torch.ones(
-                        1, idx.numel(), dtype=torch.bool, device=logits.device
-                    ),
+                    pred_deltas.unsqueeze(0), gt_xy.unsqueeze(0), anc_xy.unsqueeze(0)
                 )
+
+                # Step 4: Angle regression loss
                 rot_loss += self.rot_loss(
                     pred_angles[b][pos_mask], targets["angle"][b][idx]
                 )
 
+        # Normalize losses over batch
         cls_loss /= B
         if valid_batches == 0:
-            # no positives → only classification term
             total_loss = self.lambda_cls * cls_loss
             return total_loss, cls_loss.item(), 0.0, 0.0
 
@@ -323,4 +385,5 @@ class MultiTaskLoss(nn.Module):
             + self.lambda_obb * obb_loss
             + self.lambda_rot * rot_loss
         )
+
         return total_loss, cls_loss.item(), obb_loss.item(), rot_loss.item()

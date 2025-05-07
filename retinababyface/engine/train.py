@@ -1,10 +1,11 @@
 import time
 import csv
+import os
+import random
 from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 import torch
-import torch.cuda
 import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader
@@ -13,6 +14,8 @@ from torch.optim import lr_scheduler
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 import tqdm.auto as tqdm_auto
 from torch.nn import functional as F
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon as MplPolygon
 
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
@@ -21,6 +24,7 @@ from models.retinababyface import ViTFeature2D
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
 from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
+from utils.visualize import denormalize_image, xywhr2xyxyxyxy
 import config
 
 
@@ -441,8 +445,6 @@ def get_base_obb_stats(
         "root_dir not provided for dataset calculation"
     )
 
-    return base_size, base_ratio
-
 
 def generate_anchors_for_training(
     model: nn.Module,
@@ -454,51 +456,87 @@ def generate_anchors_for_training(
     ratio_factors: List[float],
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Generates anchors for the training process.
+    Generates oriented anchor boxes (OBBs) for the training stage of the model, based on the
+    feature map resolutions and the anchor generation configuration.
+
+    This function infers the feature map sizes from the model's architecture given a specified input
+    resolution. It then uses an OBB anchor generator to create rotated anchor boxes in both
+    vertex-based (xyxyxyxy) and parameterized (xywhr) formats. A visual preview of the anchors
+    is optionally saved as an image.
+
     Args:
-        model (nn.Module): The model to generate anchors for.
-        resize_size (Tuple[int, int]): The size to resize the images to.
-        device (torch.device): The device to generate the anchors on.
-        base_size (float): The base size for the OBB generator.
-        base_ratio (float): The base ratio for the OBB generator.
-        scale_factors (List[float]): Scale factors for the OBB generator.
-        ratio_factors (List[float]): Ratio factors for the OBB generator.
+        model (nn.Module): The model from which to extract the feature map shapes.
+        resize_size (Tuple[int, int]): The target input image size as (width, height).
+        device (torch.device): Device on which tensors are created (CPU or GPU).
+        base_size (float): Base size of the anchor generator (scales the default anchors).
+        base_ratio (float): Base aspect ratio of the anchors.
+        scale_factors (List[float]): List of scale multipliers to generate anchors of various sizes.
+        ratio_factors (List[float]): List of aspect ratio multipliers to create anchors of different shapes.
+
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: The generated anchors in xyxy format and xywhr format.
+        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+            - anchors_xy (torch.Tensor): Anchor boxes in vertex format (N, 8).
+            - anchors_xywhr (torch.Tensor): Anchor boxes in (cx, cy, w, h, angle) format (N, 5).
     """
 
-    # Get the input shape for the model
+    # Unpack target input size (W, H)
     H, W = resize_size[1], resize_size[0]
 
-    # Get the feature map shapes from the model
+    # Get the output feature map shapes for each FPN level from the model
     feature_shapes = get_feature_map_shapes(model, input_shape=(1, 3, H, W))
 
-    # Calculate the strides based on the feature map shapes
-    # Note: The strides are calculated as the ratio of the input size to the feature map size
-    # and rounded to the nearest integer.
+    # Compute the stride (downsampling factor) for each feature map
     strides = [int(round(H / h)) for (h, _w) in feature_shapes]
 
-    # print(f"[INFO] Feature shapes: {feature_shapes}  →  strides = {strides}")
-
-    # Generate anchors for the model
+    # Initialize the oriented bounding box anchor generator
     anchor_gen = AnchorGeneratorOBB(
-        feature_map_shapes=feature_shapes,
-        strides=strides,
         base_size=base_size,
         base_ratio=base_ratio,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
-        angles=config.ANGLES,
+        angles=config.ANGLES,  # List of fixed rotation angles
     )
-    # Generate anchors in xyxy format
-    # Note: anchors_xy are in shape (N, 8) where N is the number of anchors
-    # and each anchor is represented by 8 vertices
-    anchors_xy = anchor_gen.generate_anchors(device=device)
-    # Convert anchors to xywhr format
-    # Note: anchors_xywhr are in shape (N, 5) where N is the number of anchors
-    # and each anchor is represented by 5 values: [cx, cy, w, h, angle]
-    zeros = torch.zeros(len(anchors_xy), device=device)
+
+    # Generate anchor boxes in xyxyxyxy format (8 points per box)
+    anchors_xy = anchor_gen.generate_anchors(
+        feature_map_shapes=feature_shapes,
+        strides=strides,
+        device=device,
+    )
+
+    # Convert the anchors to parameterized (cx, cy, w, h, angle) format
+    zeros = torch.zeros(len(anchors_xy), device=device)  # No angle during generation
     anchors_xywhr = xyxyxyxy2xywhr(anchors_xy, zeros, (W, H))
+
+    # Optionally save a preview of a sample of anchors
+    preview_path = "anchors_preview.jpg"
+    if not os.path.exists(preview_path):
+        all_anc = anchors_xy.cpu().numpy()  # (N, 8)
+        K = min(200, all_anc.shape[0])  # Sample K anchors for visualization
+        idxs = random.sample(range(all_anc.shape[0]), K)
+
+        # Use HSV colormap for diverse colors
+        cmap = plt.cm.get_cmap("hsv", K)
+        fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+        ax.set_xlim(0, W)
+        ax.set_ylim(H, 0)
+        ax.set_title("Anchor preview")
+        ax.axis("off")
+
+        # Draw each anchor as a colored polygon
+        for j, i in enumerate(idxs):
+            pts = all_anc[i].reshape(4, 2)
+            color = cmap(j)
+            poly = MplPolygon(
+                pts, closed=True, fill=False, edgecolor=color, linewidth=0.8
+            )
+            ax.add_patch(poly)
+
+        plt.tight_layout()
+        plt.savefig(preview_path, dpi=150)
+        plt.close(fig)
+        print(f"[INFO] Anchor preview saved to {preview_path}")
+
     return anchors_xy, anchors_xywhr
 
 
@@ -833,6 +871,7 @@ def train(
     scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
     obb_stats_by_size: Optional[Dict[Tuple[int, int], Dict[str, float]]] = None,
+    grid_shape: Tuple[int, int] = (3, 3),
 ) -> Dict[str, List[float]]:
     """
     Trains the model and optionally records metrics.
@@ -1055,6 +1094,18 @@ def train(
                     ]
                 )
 
+            # # every 5 epochs, save grid.jpg
+            # if (epoch+1) % 2 == 0:
+            #     in_training_inference(
+            #         model, val_dataloader,
+            #         anchors_xy, anchors_xywhr,
+            #         device, resize_size,
+            #         scale_factors, ratio_factors,
+            #         obb_stats_by_size,
+            #         run_name, epoch+1,
+            #         grid_shape
+            #     )
+
             if early_stopping is not None:
                 early_stopping(
                     test_total_loss, model
@@ -1071,3 +1122,86 @@ def train(
         f"[INFO] Total training time: {elapsed_time//60:.0f} minutes, {elapsed_time%60:.2f} seconds"
     )
     return results
+
+
+def in_training_inference(
+    model: torch.nn.Module,
+    val_loader: torch.utils.data.DataLoader,
+    anchors_xy: torch.Tensor,
+    anchors_xywhr: torch.Tensor,
+    device: torch.device,
+    resize_size: Tuple[int, int],
+    scale_factors: List[float],
+    ratio_factors: List[float],
+    obb_stats_by_size: Dict[Tuple[int, int], Dict[str, float]],
+    run_name: str,
+    epoch: int,
+    grid_shape: Tuple[int, int] = (3, 3),
+):
+    """
+    Run a quick inference on val_loader, collect up to rows*cols samples,
+    draw GT vs pred OBBs in a grid, and save as {run_name}_{epoch}.jpg.
+    """
+    model.eval()
+    rows, cols = grid_shape
+    max_samples = rows * cols
+    samples = []
+    # iterate until we have enough examples
+    with torch.inference_mode():
+        for batch in val_loader:
+            imgs = batch["image"].to(device)
+            outs = infer_with_rotated_nms(model, imgs, anchors_xy, resize_size)
+            B = imgs.size(0)
+            for b in range(B):
+                if len(samples) >= max_samples:
+                    break
+                # GT
+                valid = batch["target"]["valid_mask"][b]
+                gt_lbls = batch["target"]["class_idx"][b][valid].cpu().numpy()
+                gt_xywhr = (
+                    xyxyxyxy2xywhr(
+                        batch["target"]["boxes"][b][valid],
+                        batch["target"]["angles"][b][valid].unsqueeze(-1),
+                        resize_size,
+                    )
+                    .cpu()
+                    .numpy()
+                )
+                samples.append((imgs[b].cpu(), outs[b], gt_xywhr, gt_lbls))
+            if len(samples) >= max_samples:
+                break
+
+    # plot grid
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+    axes = axes.flatten()
+    for ax, (img_t, pred, gt_xywhr, gt_lbls) in zip(axes, samples):
+        ax.imshow(denormalize_image(img_t))
+        ax.axis("off")
+        # draw GT in blue
+        for (cx, cy, w, h, ang), lbl in zip(gt_xywhr, gt_lbls):
+            raw = xywhr2xyxyxyxy(torch.tensor([cx, cy, w, h, ang]))
+            corners = raw.squeeze(0) if raw.ndim == 3 else raw
+            ax.add_patch(
+                MplPolygon(corners, closed=True, fill=False, edgecolor="blue", lw=2)
+            )
+        # draw predictions in green
+        p_boxes = pred["boxes"].cpu().numpy()
+        p_lbls = pred["labels"].cpu().numpy().astype(int)
+        p_scores = pred["scores"].cpu().numpy()
+        for (cx, cy, w, h, ang), lbl, sc in zip(p_boxes, p_lbls, p_scores):
+            corners = xywhr2xyxyxyxy(torch.tensor([cx, cy, w, h, ang]))
+            ax.add_patch(
+                MplPolygon(
+                    corners,
+                    closed=True,
+                    fill=False,
+                    edgecolor="green",
+                    lw=1.5,
+                    linestyle="--",
+                )
+            )
+    plt.tight_layout()
+    out_path = f"{run_name}_{epoch}.jpg"
+    fig.savefig(out_path)
+    plt.close(fig)
+    model.train()

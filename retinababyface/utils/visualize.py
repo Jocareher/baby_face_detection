@@ -8,7 +8,7 @@ import torch
 from matplotlib.patches import Polygon as MplPolygon
 
 
-from ..loss.utils import xyxyxyxy2xywhr, xywhr2xyxyxyxy, decode_vertices
+from loss.utils import xyxyxyxy2xywhr, xywhr2xyxyxyxy, decode_vertices
 
 
 def denormalize_image(

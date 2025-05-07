@@ -6,117 +6,135 @@ import torch.nn as nn
 import numpy as np
 
 
-class AnchorGeneratorOBB:
+import torch
+import torch.nn as nn
+import math
+
+
+class AnchorGeneratorOBB(nn.Module):
     """
-    Generate a dense set of oriented anchor boxes (OBBs) for several FPN levels.
+    Generates a dense set of oriented bounding box (OBB) anchors for multiple feature levels
+    (e.g., FPN stages), using predefined width-height ratios, scales, and rotation angles.
 
-    Each anchor is stored as *absolute* pixel corner coordinates
-    (x1, y1, x2, y2, x3, y3, x4, y4).
+    Each anchor is represented by its 4 corners in absolute pixel coordinates, flattened as:
+        [x1, y1, x2, y2, x3, y3, x4, y4]
 
-    ── Parameters ─────────────────────────────────────────────────────────────
-    feature_map_shapes : list[(h, w)]
-        Spatial size produced by the FPN at every level.
-    strides            : list[int]
-        Down‑sampling factor of each level (image_px / feature_px).
-    base_size          : float
-        Average square‑root area of objects in the dataset (≈ sqrt(w*h)).
-    base_ratio         : float
-        Average aspect ratio (height / width) in the dataset.
-    scale_factors      : list[float], default (0.5, 0.75, 1.0, 1.5)
-        Multipliers applied to *base_size* (controls absolute scale).
-    ratio_factors      : list[float], default (0.85, 1.0, 1.15)
-        Multipliers applied to *base_ratio* (controls width‑to‑height).
-    angles             : list[float], default (-π/4, -π/8, 0, π/8)
-        In‑plane rotations **in radians** that will be added for *every*
-        scale×ratio combination.  Extend this list if your task needs
-        more orientations (e.g. 8 or 12 angles evenly spaced in 180°).
+    This generator:
+    - Vectorizes the creation of anchors over all combinations of (scale, ratio, angle).
+    - Precomputes anchor corner offsets centered at the origin and caches them as a buffer.
+    - Efficiently shifts these anchors to every grid cell center on each feature map level.
+
+    Args:
+        base_size (float): Base size (area) used to compute anchor width and height.
+        base_ratio (float): Base aspect ratio (height/width).
+        scale_factors (list[float]): Multipliers for scaling the base size.
+        ratio_factors (list[float]): Multipliers for adjusting the base aspect ratio.
+        angles (list[float]): Rotation angles (in radians) applied to each anchor.
+
+    Attributes:
+        corner_offsets (torch.Tensor): Cached (A, 8) tensor of pre-rotated anchor templates.
+        A (int): Total number of anchor templates per spatial location (len(scale_ratio × angles)).
     """
 
     def __init__(
         self,
-        feature_map_shapes: List[Tuple[int, int]],
-        strides: List[int],
         base_size: float,
         base_ratio: float,
-        scale_factors: List[float] = None,
-        ratio_factors: List[float] = None,
-        angles: List[float] = None,
-    ) -> None:
-        self.fm_shapes = feature_map_shapes
-        self.strides = strides
+        scale_factors: list[float] = None,
+        ratio_factors: list[float] = None,
+        angles: list[float] = None,
+    ):
+        super().__init__()
+        # Compute (w, h) pairs for each scale and ratio combination
+        wh_list = []
+        for s in scale_factors:
+            # Compute width and height for each scale and ratio
+            # The base size is the area of the anchor, so we need to compute width and height
+            # based on the base size and the aspect ratio.
+            # The area of the anchor is given by base_size, and the aspect ratio is given by base_ratio.
+            # The width and height are computed as follows:
+            size = base_size * s
+            for rf in ratio_factors:
+                ratio = base_ratio * rf
+                w = math.sqrt(size**2 / ratio)
+                h = w * ratio
+                wh_list.append((w, h))
+        wh = torch.tensor(wh_list, dtype=torch.float32)
 
-        scale_factors = scale_factors or [0.5, 0.75, 1.0, 1.5]
-        ratio_factors = ratio_factors or [0.85, 1.0, 1.15]
-        angles = angles or [-math.pi / 4, -math.pi / 8, 0.0, math.pi / 8]
+        # For each (w, h) and rotation angle, compute the rotated anchor corners
+        offsets = []
+        for w, h in wh:
+            # Compute the 4 corners of the anchor rectangle
+            # The rectangle is centered at the origin, so we need to compute the offsets
+            # based on the width and height of the rectangle.
+            # The corners are computed as follows:
+            # (x1, y1) = (-w/2, -h/2)
+            # (x2, y2) = (w/2, -h/2)
+            # (x3, y3) = (w/2, h/2)
+            # (x4, y4) = (-w/2, h/2)
+            # The corners are stored in a tensor of shape (4, 2), where each row is a corner
+            # and each column is the x and y coordinate of the corner.
+            # The corners are then reshaped to a tensor of shape (8,) by flattening the 4x2 tensor.
+            # The offsets are computed as follows:
+            # (x1, y1, x2, y2, x3, y3, x4, y4) = (-w/2, -h/2, w/2, -h/2, w/2, h/2, -w/2, h/2)
+            # The offsets are stored in a tensor of shape (8,) for each (w, h) pair.
+            # The offsets are then rotated by the angles specified in the angles list.
+            dx, dy = w / 2, h / 2
+            rect = torch.tensor(
+                [[-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]], dtype=torch.float32
+            )  # (4, 2)
+            for theta in angles:
+                c, s = math.cos(theta), math.sin(theta)
+                R = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)  # (2, 2)
+                rot = rect @ R.T
+                offsets.append(rot.reshape(-1))  # (8,)
+        offsets = torch.stack(offsets, dim=0)  # (A, 8)
 
-        # Pre‑compute absolute scales, aspect ratios and rotations
-        self.scales = [base_size * s for s in scale_factors]
-        self.ratios = [base_ratio * r for r in ratio_factors]
-        self.angles = angles
+        self.register_buffer(
+            "corner_offsets", offsets
+        )  # Will be moved with model.to(...)
+        self.A = offsets.size(0)
 
-    # --------------------------------------------------------------------- #
-    #                             Public method                              #
-    # --------------------------------------------------------------------- #
-    def generate_anchors(self, device: torch.device) -> torch.Tensor:
+    def generate_anchors(
+        self,
+        feature_map_shapes: list[tuple[int, int]],
+        strides: list[int],
+        device: torch.device,
+    ) -> torch.Tensor:
         """
-        Return
-        ------
-        anchors_xy : torch.Tensor, shape (N_total, 8), dtype=float32
-            Flattened 4‑point representation in the *same device*
-            requested by the caller.
+        Generates anchors for all FPN levels given their shapes and strides.
+
+        For each feature map, anchors are placed densely at every location (grid center)
+        and replicated across all precomputed anchor templates (A per location).
+
+        Args:
+            feature_map_shapes (list[tuple[int, int]]): Feature map shapes as (H, W) for each level.
+            strides (list[int]): Downsampling stride of each feature map relative to the input.
+            device (torch.device): Target device to allocate the anchors.
+
+        Returns:
+            torch.Tensor: Tensor of shape (N_total, 8), where N_total = sum(H_i * W_i * A),
+                          with each row being a rotated anchor in (x1, y1, ..., x4, y4) format.
         """
-        all_anchors: list[torch.Tensor] = []
+        all_anc = []
+        offs = self.corner_offsets.to(device).view(1, self.A, 4, 2)  # (1, A, 4, 2)
 
-        for (h, w), stride in zip(self.fm_shapes, self.strides):
-            # 1)  Grid of centres in image coordinates (pixel domain)
-            grid_y, grid_x = np.meshgrid(
-                np.arange(h, dtype=np.float32),
-                np.arange(w, dtype=np.float32),
-                indexing="ij",
-            )
-            centres = np.stack(
-                [(grid_x + 0.5) * stride, (grid_y + 0.5) * stride], axis=-1
-            ).reshape(
-                -1, 2
-            )  # (H*W, 2)
+        for (h, w), stride in zip(feature_map_shapes, strides):
+            # Compute center coordinates of each grid cell
+            xs = (torch.arange(w, device=device, dtype=torch.float32) + 0.5) * stride
+            ys = (torch.arange(h, device=device, dtype=torch.float32) + 0.5) * stride
+            xv, yv = torch.meshgrid(xs, ys, indexing="xy")
+            centres = torch.stack([xv.reshape(-1), yv.reshape(-1)], dim=1)  # (H*W, 2)
 
-            level_anchors: list[np.ndarray] = []
+            # Add the precomputed corner offsets to each center
+            C = centres.size(0)
+            ctr = centres.view(C, 1, 1, 2)  # (C, 1, 1, 2)
+            corners = ctr + offs  # (C, A, 4, 2)
+            anchors = corners.view(-1, 8)  # (C * A, 8)
 
-            # 2)  Enumerate scale × ratio × angle
-            for scale in self.scales:
-                for ratio in self.ratios:
-                    area = scale**2
-                    width = math.sqrt(area / ratio)
-                    height = width * ratio
+            all_anc.append(anchors)
 
-                    # axis‑aligned rectangle centred at the origin
-                    dx, dy = width / 2, height / 2
-                    rect = np.array(
-                        [[-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]],
-                        dtype=np.float32,
-                    )  # (4, 2)
-
-                    for theta in self.angles:
-                        c, s = math.cos(theta), math.sin(theta)
-                        rot = np.array([[c, -s], [s, c]], dtype=np.float32)
-
-                        rotated = rect @ rot.T  # (4, 2)
-                        anchors_xy = (
-                            centres[:, None, :] + rotated[None, :, :]
-                        ).reshape(
-                            -1, 8
-                        )  # (num_centres, 8)
-
-                        level_anchors.append(anchors_xy)
-
-            # 3)  Concatenate all combinations for this level
-            all_level = np.concatenate(level_anchors, axis=0)
-            all_anchors.append(
-                torch.as_tensor(all_level, dtype=torch.float32, device=device)
-            )
-
-        # 4)  Merge all levels
-        return torch.cat(all_anchors, dim=0)
+        return torch.cat(all_anc, dim=0)  # (N_total, 8)
 
 
 def get_feature_map_shapes(

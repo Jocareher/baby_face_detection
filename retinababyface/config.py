@@ -48,9 +48,17 @@ PRECOMPUTED_OBB_STATS = {
 # =======================
 # Anchor Generation Params
 # =======================
-SCALE_FACTORS = [0.5, 0.75, 1.0, 1.5]
-RATIO_FACTORS = [0.85, 1.0, 1.15]
-ANGLES = [-math.pi / 4, -math.pi / 8, 0.0, math.pi / 8]
+SCALE_FACTORS = [0.75, 1.0, 1.2]
+RATIO_FACTORS = [1.1851]
+ANGLES = [
+    -math.pi / 2,
+    -math.pi / 3,
+    -math.pi / 6,
+    0.0,
+    math.pi / 6,
+    math.pi / 3,
+    math.pi / 2,
+]
 NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 
 
@@ -59,7 +67,7 @@ NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 # =======================
 ALPHA = [1.5, 1.5, 1.5, 2.0, 2.0, 0.5]
 GAMMA = 2.0
-POS_IOU_THRESH = 0.3
+POS_IOU_THRESH = 0.2
 LAMBDA_CLS = 1.0
 LAMBDA_OBB = 1.0
 LAMBDA_ROT = 1.0

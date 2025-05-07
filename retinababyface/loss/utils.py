@@ -340,35 +340,75 @@ def xywhr2xyxyxyxy(xywhr: torch.Tensor) -> np.ndarray:
     Returns:
         np.ndarray: Array of shape (N, 4, 2) with corner coordinates.
     """
-    #
-    cx, cy, w, h, angle = xywhr.T
-    dx, dy = w / 2, h / 2
+    # If you get a single box tensor of shape (5,), make it (1,5)
+    if xywhr.ndim == 1:
+        xywhr = xywhr.unsqueeze(0)
 
-    # Initial corners before rotation
-    corners = torch.stack(
+    # Now xywhr is (N,5); unpack along dim=1
+    cx, cy, w, h, angle = xywhr.unbind(dim=1)  # each is shape (N,)
+
+    # Half-dimensions
+    dx = w * 0.5  # (N,)
+    dy = h * 0.5  # (N,)
+
+    # Build the 4 corners relative to center before rotation:
+    # shape (N,4,2)
+    offsets = torch.stack(
         [
-            torch.stack([-dx, -dy], dim=1),
-            torch.stack([dx, -dy], dim=1),
-            torch.stack([dx, dy], dim=1),
-            torch.stack([-dx, dy], dim=1),
+            torch.stack([-dx, -dy], dim=1),  # top-left
+            torch.stack([dx, -dy], dim=1),  # top-right
+            torch.stack([dx, dy], dim=1),  # bottom-right
+            torch.stack([-dx, dy], dim=1),  # bottom-left
         ],
         dim=1,
     )
 
-    # Rotation matrix
-    cos_a, sin_a = torch.cos(angle), torch.sin(angle)
-    # Construct the rotation matrix
-    rot_matrix = torch.stack(
-        [torch.stack([cos_a, -sin_a], dim=1), torch.stack([sin_a, cos_a], dim=1)], dim=2
+    # Rotation matrices for each box: shape (N,2,2)
+    cos_a = angle.cos()
+    sin_a = angle.sin()
+    rot_mats = torch.stack(
+        [
+            torch.stack([cos_a, -sin_a], dim=1),
+            torch.stack([sin_a, cos_a], dim=1),
+        ],
+        dim=1,
     )
 
-    # Rotate the corners
-    # corners: (N, 4, 2)
-    # rot_matrix: (N, 2, 2)
-    # Perform batch matrix multiplication
-    # Note: corners are in shape (N, 4, 2) and rot_matrix is in shape (N, 2, 2)
-    # The result is (N, 4, 2) after rotation
-    # and translation
-    rotated = torch.bmm(corners, rot_matrix)
-    centers = torch.stack([cx, cy], dim=1)[:, None, :]
-    return (rotated + centers).detach().cpu().numpy()
+    # Apply rotation: (N,4,2) @ (N,2,2) -> (N,4,2)
+    rotated = torch.bmm(offsets, rot_mats)
+
+    # Translate to the true centers
+    centers = torch.stack([cx, cy], dim=1).unsqueeze(1)  # (N,1,2)
+    corners_abs = rotated + centers  # (N,4,2)
+
+    return corners_abs.detach().cpu().numpy()
+
+
+def encode_vertices(
+    gt_boxes: torch.Tensor,  # (N, 8) absolute vertex coordinates of ground truth OBBs
+    anchors: torch.Tensor,  # (N, 8) absolute vertex coordinates of anchor OBBs
+) -> torch.Tensor:
+    """
+    Encodes ground truth oriented bounding boxes as normalized deltas
+    relative to the anchor boxes.
+
+    The deltas are computed as:
+        Δx = (x_gt - x_anchor) / diag(anchor)
+        Δy = (y_gt - y_anchor) / diag(anchor)
+    where diag(anchor) is the Euclidean distance between the first and third
+    vertices of the anchor box (used for normalization).
+
+    This representation aligns with the regression space used by the OBB head.
+
+    Args:
+        gt_boxes (torch.Tensor): Ground truth boxes in absolute vertex format (N, 8).
+        anchors (torch.Tensor): Anchor boxes in absolute vertex format (N, 8).
+
+    Returns:
+        torch.Tensor: Normalized deltas of shape (N, 8), where each value is in Δx/Δy space.
+    """
+    pts = anchors.view(-1, 4, 2)  # Reshape anchors to (N, 4, 2)
+    p0, p2 = pts[:, 0], pts[:, 2]  # Get opposite corners (top-left and bottom-right)
+    diag = ((p0 - p2).pow(2).sum(dim=1).sqrt()).unsqueeze(1)  # Diagonal length (N, 1)
+    deltas = (gt_boxes - anchors) / diag  # Normalize vertex differences
+    return deltas  # (N, 8)

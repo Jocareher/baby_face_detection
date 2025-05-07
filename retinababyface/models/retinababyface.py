@@ -331,14 +331,28 @@ class ViTFeature2D(nn.Module):
 
 def reset_heads(model: nn.Module) -> None:
     """
-    Kaiming‑He para pesos conv y bias a 0 en OBBHead, AngleHead y ClassHead.
+    Reinitializes the weights and biases of the model's prediction heads.
+
+    This function applies Kaiming-He (He normal) initialization to the convolutional layers
+    of the OBB regression head (`obb_head`), angle regression head (`angle_head`), and
+    classification head (`class_head`). Biases are reset to zero.
+
+    This is typically used to reinitialize the heads before fine-tuning or after structural changes
+    to the model.
+
+    Args:
+        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, and `class_head`.
+
+    Returns:
+        None
     """
     for head in [model.obb_head, model.angle_head, model.class_head]:
         for layer in head.modules():
             if isinstance(layer, nn.Conv2d):
-                print(f"Initializing {layer} with Kaiming-He")
+                # Apply Kaiming-He initialization for convolution weights
                 nn.init.kaiming_normal_(
                     layer.weight, mode="fan_out", nonlinearity="relu"
                 )
+                # Initialize bias to zero if present
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0)

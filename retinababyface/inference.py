@@ -167,6 +167,15 @@ def main():
     figures["grid_figure"].savefig(
         os.path.join(args.out_dir, "grid_examples.png"), dpi=150
     )
+    figures["iou_boxplot_figure"].savefig(
+        os.path.join(args.out_dir, "iou_boxplot_figure.png"), dpi=150
+    )
+    figures["angle_boxplot_figure"].savefig(
+        os.path.join(args.out_dir, "angle_boxplot_figure.png"), dpi=150
+    )
+    figures["f1_threshold_figure"].savefig(
+        os.path.join(args.out_dir, "f1_threshold_figure.png"), dpi=150
+    )
 
     print(f"[INFO] Inference results saved to '{args.out_dir}/'")
 

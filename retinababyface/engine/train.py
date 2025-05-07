@@ -188,71 +188,71 @@ def nms_rotated(
 
 def infer_with_rotated_nms(
     model: nn.Module,
-    images: torch.Tensor,  # shape: (B, 3, H, W)
-    anchors_xy: torch.Tensor,  # shape: (N, 8), vertices of base anchor boxes
-    image_size: Tuple[int, int],  # (width, height) of input images
+    images: torch.Tensor,
+    anchors_xy: torch.Tensor,
+    image_size: Tuple[int, int],
     conf_thres: float = 0.25,
-    iou_thres: float = 0.5,
+    iou_thres: float = 0.45,
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Runs inference and applies rotated NMS to obtain final predictions.
+    Runs forward inference on a batch of images and applies rotated NMS to filter predictions.
+
+    This function processes the raw predictions of the model (classification logits, OBB deltas,
+    and angles), decodes the OBBs from deltas and anchors, filters low-confidence and background
+    predictions, applies rotated NMS, and returns both the (cx,cy,w,h,θ) boxes and their
+    corresponding polygon vertices.
 
     Args:
-        model (nn.Module): Trained model to run inference.
-        images (torch.Tensor): Batch of input images (B, 3, H, W).
-        anchors_xy (torch.Tensor): Anchor box vertices (N, 8) for decoding.
-        image_size (Tuple[int, int]): Size of input images as (width, height).
-        conf_thres (float): Confidence threshold for filtering predictions.
-        iou_thres (float): IoU threshold for NMS.
+        model (nn.Module): Trained model with multi-head outputs.
+        images (torch.Tensor): Input image batch of shape (B, 3, H, W).
+        anchors_xy (torch.Tensor): Anchor vertices in shape (N, 8).
+        image_size (Tuple[int, int]): Image size as (width, height).
+        conf_thres (float): Confidence threshold to keep predictions.
+        iou_thres (float): IoU threshold for rotated NMS.
         max_det (int): Maximum number of detections per image.
 
     Returns:
-        List[Dict[str, torch.Tensor]]: A list of dictionaries, one per image, with keys:
-            - 'boxes': (M, 5) final rotated boxes in (cx, cy, w, h, θ)
-            - 'scores': (M,) scores for each box
-            - 'labels': (M,) predicted class labels
+        List[Dict[str, torch.Tensor]]: List (length B) of dictionaries with:
+            - "boxes": (M, 5) predicted boxes in (cx, cy, w, h, θ) format
+            - "scores": (M,) confidence scores
+            - "labels": (M,) class labels
+            - "polygons": (M, 8) predicted polygon coordinates
     """
-    B = images.shape[0]
-
-    # Run model inference -> logits, bounding box deltas, and rotation angles
-    logits, deltas, pred_angles = model(images)
-
-    # Convert logits to class probabilities
-    prob = F.softmax(logits, dim=-1)
-
+    B = images.size(0)
+    logits, deltas, pred_angles = model(images)  # Raw model outputs
+    prob = F.softmax(logits, dim=-1)  # Convert logits to probabilities
     outputs = []
 
     for b in range(B):
-        # Get max class score and corresponding label for each box
-        scores_b, labels_b = prob[b].max(-1)
-
-        # Filter out low-confidence and background predictions
-        keep = (labels_b != 5) & (scores_b > conf_thres)
-
-        # Clamp labels to 0-4 range (5 is background)
-        labels_k = labels_b[keep].clamp_max(4).long()
+        scores_b, labels_b = prob[b].max(-1)  # Get highest class score and label
+        keep = (labels_b != 5) & (
+            scores_b > conf_thres
+        )  # Filter out background & low scores
 
         if not keep.any():
-            # No detections: return empty tensors
             outputs.append(
                 {
                     "boxes": torch.zeros((0, 5), device=images.device),
                     "scores": torch.zeros((0,), device=images.device),
                     "labels": torch.zeros((0,), device=images.device),
+                    "polygons": torch.zeros((0, 8), device=images.device),
                 }
             )
             continue
 
-        # Decode rotated vertices from deltas + anchors
-        verts = decode_vertices(deltas[b][keep], anchors_xy[keep], image_size)
+        # Decode 8-vertex polygons from deltas + anchors
+        verts_all = decode_vertices(
+            deltas[b][keep], anchors_xy[keep], image_size, use_diag=True
+        )  # (n, 8)
 
-        # Convert from 8-point format to (cx, cy, w, h, θ)
-        xywhr = xyxyxyxy2xywhr(verts, pred_angles[b][keep].squeeze(-1), image_size)
+        # Convert to (cx, cy, w, h, θ) format for NMS
+        xywhr = xyxyxyxy2xywhr(verts_all, pred_angles[b][keep].squeeze(-1), image_size)
 
-        # Filtered scores and labels
         scores_k = scores_b[keep]
-        labels_k = labels_b[keep].float()
+        labels_k = (
+            labels_b[keep].clamp_max(4).long().float()
+        )  # Clamp label to known classes
 
         # Apply rotated NMS
         keep_idx = nms_rotated(xywhr, scores_k, threshold=iou_thres)[:max_det]
@@ -262,6 +262,7 @@ def infer_with_rotated_nms(
                 "boxes": xywhr[keep_idx],
                 "scores": scores_k[keep_idx],
                 "labels": labels_k[keep_idx],
+                "polygons": verts_all[keep_idx],  # Final decoded vertices
             }
         )
 
@@ -1094,17 +1095,22 @@ def train(
                     ]
                 )
 
-            # # every 5 epochs, save grid.jpg
-            # if (epoch+1) % 2 == 0:
-            #     in_training_inference(
-            #         model, val_dataloader,
-            #         anchors_xy, anchors_xywhr,
-            #         device, resize_size,
-            #         scale_factors, ratio_factors,
-            #         obb_stats_by_size,
-            #         run_name, epoch+1,
-            #         grid_shape
-            #     )
+            # every 5 epochs, save grid.jpg
+            if (epoch + 1) % 2 == 0:
+                in_training_inference(
+                    model,
+                    val_dataloader,
+                    anchors_xy,
+                    anchors_xywhr,
+                    device,
+                    resize_size,
+                    scale_factors,
+                    ratio_factors,
+                    obb_stats_by_size,
+                    run_name,
+                    epoch + 1,
+                    grid_shape,
+                )
 
             if early_stopping is not None:
                 early_stopping(
@@ -1125,83 +1131,104 @@ def train(
 
 
 def in_training_inference(
-    model: torch.nn.Module,
+    model: nn.Module,
     val_loader: torch.utils.data.DataLoader,
     anchors_xy: torch.Tensor,
-    anchors_xywhr: torch.Tensor,
     device: torch.device,
     resize_size: Tuple[int, int],
-    scale_factors: List[float],
-    ratio_factors: List[float],
-    obb_stats_by_size: Dict[Tuple[int, int], Dict[str, float]],
     run_name: str,
     epoch: int,
-    grid_shape: Tuple[int, int] = (3, 3),
+    grid_shape=(3, 3),
 ):
     """
-    Run a quick inference on val_loader, collect up to rows*cols samples,
-    draw GT vs pred OBBs in a grid, and save as {run_name}_{epoch}.jpg.
+    Performs in-training qualitative inference and saves a visualization of predictions vs. ground truth.
+
+    This function samples a grid of images from the validation loader, performs forward inference,
+    decodes and filters predictions, and overlays the predicted and ground-truth oriented bounding
+    boxes on the images for visual inspection.
+
+    Ground-truth boxes are drawn in blue (with edge 0→1 in red), and predictions in green (with edge 0→1 in orange).
+
+    Args:
+        model (nn.Module): The model to evaluate.
+        val_loader (DataLoader): Validation dataloader.
+        anchors_xy (Tensor): Anchor boxes in vertex format (N, 8).
+        device (torch.device): Target device for inference.
+        resize_size (Tuple[int, int]): Size used to resize input images (W, H).
+        run_name (str): Prefix name used to save the output visualization.
+        epoch (int): Current training epoch (used in filename).
+        grid_shape (Tuple[int, int]): Grid shape for visual output (rows, cols).
+
+    Returns:
+        None. Saves a .jpg image showing model predictions vs ground truth.
     """
     model.eval()
     rows, cols = grid_shape
     max_samples = rows * cols
     samples = []
-    # iterate until we have enough examples
+
     with torch.inference_mode():
         for batch in val_loader:
             imgs = batch["image"].to(device)
             outs = infer_with_rotated_nms(model, imgs, anchors_xy, resize_size)
-            B = imgs.size(0)
-            for b in range(B):
+
+            for b in range(imgs.size(0)):
                 if len(samples) >= max_samples:
                     break
-                # GT
+
+                # Get valid GT polygons and labels
                 valid = batch["target"]["valid_mask"][b]
-                gt_lbls = batch["target"]["class_idx"][b][valid].cpu().numpy()
-                gt_xywhr = (
-                    xyxyxyxy2xywhr(
-                        batch["target"]["boxes"][b][valid],
-                        batch["target"]["angles"][b][valid].unsqueeze(-1),
-                        resize_size,
-                    )
-                    .cpu()
-                    .numpy()
-                )
-                samples.append((imgs[b].cpu(), outs[b], gt_xywhr, gt_lbls))
+                gt_poly = batch["target"]["boxes"][b][valid].cpu()
+                gt_lbl = batch["target"]["class_idx"][b][valid].cpu().numpy()
+                samples.append((imgs[b].cpu(), outs[b], gt_poly, gt_lbl))
+
             if len(samples) >= max_samples:
                 break
 
-    # plot grid
+    # Set up subplot grid
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
     axes = axes.flatten()
-    for ax, (img_t, pred, gt_xywhr, gt_lbls) in zip(axes, samples):
-        ax.imshow(denormalize_image(img_t))
+
+    for ax, (img_t, pred, gt_poly, gt_lbl) in zip(axes, samples):
+        ax.imshow(denormalize_image(img_t))  # Restore pixel values to [0,1] range
         ax.axis("off")
-        # draw GT in blue
-        for (cx, cy, w, h, ang), lbl in zip(gt_xywhr, gt_lbls):
-            raw = xywhr2xyxyxyxy(torch.tensor([cx, cy, w, h, ang]))
-            corners = raw.squeeze(0) if raw.ndim == 3 else raw
+
+        # Plot ground truth polygons in blue, with edge 0→1 in red
+        for poly, lbl in zip(gt_poly, gt_lbl):
+            pts = poly.view(4, 2).numpy()
             ax.add_patch(
-                MplPolygon(corners, closed=True, fill=False, edgecolor="blue", lw=2)
+                MplPolygon(pts, closed=True, fill=False, edgecolor="blue", linewidth=2)
             )
-        # draw predictions in green
-        p_boxes = pred["boxes"].cpu().numpy()
-        p_lbls = pred["labels"].cpu().numpy().astype(int)
+            ax.plot(
+                [pts[0, 0], pts[1, 0]], [pts[0, 1], pts[1, 1]], color="red", linewidth=2
+            )
+
+        # Plot predicted polygons in green, with edge 0→1 in orange
+        p_polys = pred["polygons"].cpu()
         p_scores = pred["scores"].cpu().numpy()
-        for (cx, cy, w, h, ang), lbl, sc in zip(p_boxes, p_lbls, p_scores):
-            corners = xywhr2xyxyxyxy(torch.tensor([cx, cy, w, h, ang]))
+        p_lbls = pred["labels"].cpu().numpy().astype(int)
+        for poly, lbl, sc in zip(p_polys, p_lbls, p_scores):
+            pts = poly.view(4, 2).numpy()
             ax.add_patch(
                 MplPolygon(
-                    corners,
+                    pts,
                     closed=True,
                     fill=False,
                     edgecolor="green",
-                    lw=1.5,
+                    linewidth=1.5,
                     linestyle="--",
                 )
             )
+            ax.plot(
+                [pts[0, 0], pts[1, 0]],
+                [pts[0, 1], pts[1, 1]],
+                color="orange",
+                linewidth=2,
+            )
+
     plt.tight_layout()
     out_path = f"{run_name}_{epoch}.jpg"
-    fig.savefig(out_path)
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
     model.train()
+    print(f"[INFO] In-training inference saved to {out_path}")

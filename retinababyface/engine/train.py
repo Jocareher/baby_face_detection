@@ -24,7 +24,7 @@ from models.retinababyface import ViTFeature2D
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
 from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
-from utils.visualize import denormalize_image, xywhr2xyxyxyxy
+from utils.visualize import denormalize_image
 import config
 
 
@@ -270,112 +270,121 @@ def infer_with_rotated_nms(
 
 
 def compute_map_rotated(
-    all_pred_boxes: List[torch.Tensor],  # predicted boxes for each image (N_i, 5)
-    all_pred_scores: List[torch.Tensor],  # confidence scores for predicted boxes (N_i,)
-    all_pred_labels: List[torch.Tensor],  # predicted class labels for boxes (N_i,)
-    all_gt_boxes: List[torch.Tensor],  # ground-truth boxes for each image (G_i, 5)
-    all_gt_labels: List[torch.Tensor],  # ground-truth labels for each image (G_i,)
+    all_pred_boxes: List[torch.Tensor],
+    all_pred_scores: List[torch.Tensor],
+    all_pred_labels: List[torch.Tensor],
+    all_gt_boxes: List[torch.Tensor],
+    all_gt_labels: List[torch.Tensor],
     iou_thr: float = 0.5,
     num_classes: int = 6,
 ) -> float:
     """
-    Computes rotated mean Average Precision (mAP) using Pascal VOC 11-point interpolation.
+    Computes the mean Average Precision (mAP) for rotated bounding boxes across all non-background classes.
+
+    This implementation uses a Pascal VOC-style 11-point interpolation method and supports
+    rotated bounding boxes in (cx, cy, w, h, θ) format. IoU is computed using a probabilistic
+    IoU function (batch_probiou), and background class is excluded from mAP computation.
 
     Args:
-        all_pred_boxes (List[Tensor]): List of predicted boxes per image, each of shape (N_i, 5).
-        all_pred_scores (List[Tensor]): List of confidence scores per image, each of shape (N_i,).
-        all_pred_labels (List[Tensor]): List of predicted labels per image, each of shape (N_i,).
-        all_gt_boxes (List[Tensor]): List of ground-truth boxes per image, each of shape (G_i, 5).
-        all_gt_labels (List[Tensor]): List of ground-truth labels per image, each of shape (G_i,).
-        iou_thr (float): IoU threshold to count a detection as true positive.
-        num_classes (int): Number of classes including background.
+        all_pred_boxes (List[Tensor]): List of (N_i, 5) tensors with predicted boxes for each image.
+        all_pred_scores (List[Tensor]): List of (N_i,) tensors with confidence scores per prediction.
+        all_pred_labels (List[Tensor]): List of (N_i,) tensors with predicted class indices.
+        all_gt_boxes (List[Tensor]): List of (M_i, 5) tensors with ground truth boxes for each image.
+        all_gt_labels (List[Tensor]): List of (M_i,) tensors with ground truth class indices.
+        iou_thr (float): IoU threshold to consider a prediction a true positive.
+        num_classes (int): Total number of classes including background.
 
     Returns:
-        float: Mean Average Precision (mAP) across all classes.
+        float: The computed mean Average Precision (mAP) over all foreground classes.
     """
-    # If there are no predictions at all, return 0.0 immediately
-    if not all_pred_scores:
+    # 0) If there are no predictions at all, return mAP = 0.0
+    if len(all_pred_scores) == 0:
         return 0.0
 
-    # Use the device of the first score tensor for all computations
     device = all_pred_scores[0].device
     APs: List[torch.Tensor] = []
 
+    # Define which class is the background class
+    bg_idx = num_classes - 1
+
+    # Compute AP for each class (excluding background)
     for c in range(num_classes):
-        # 1) Gather all predictions belonging to class c
-        preds = []
-        for img_idx in range(len(all_pred_boxes)):
-            mask = all_pred_labels[img_idx] == c
-            for box, score in zip(
-                all_pred_boxes[img_idx][mask], all_pred_scores[img_idx][mask]
-            ):
-                preds.append({"img": img_idx, "box": box, "score": score})
-        # Sort by descending confidence
-        preds.sort(key=lambda x: x["score"], reverse=True)
-
-        # 2) Gather all ground-truth boxes for class c
-        gt_per_image = {
-            i: all_gt_boxes[i][all_gt_labels[i] == c].clone()
-            for i in range(len(all_gt_boxes))
-        }
-        # Total number of positive examples
-        npos = sum(len(v) for v in gt_per_image.values())
-
-        # Special case: no ground-truth boxes for this class
-        if npos == 0:
-            # If there were predictions, AP = 0.0; if none, AP = 1.0
-            ap = (
-                torch.tensor(0.0, device=device)
-                if preds
-                else torch.tensor(1.0, device=device)
-            )
-            APs.append(ap)
+        if c == bg_idx:
             continue
 
-        # 3) Initialize true positive and false positive counters
+        # 1) Collect all predictions for class `c` across all images
+        preds = []
+        for img_i in range(len(all_pred_boxes)):
+            mask = all_pred_labels[img_i] == c
+            for box, score in zip(
+                all_pred_boxes[img_i][mask], all_pred_scores[img_i][mask]
+            ):
+                preds.append({"img": img_i, "box": box, "score": score})
+        preds.sort(
+            key=lambda x: x["score"].item(), reverse=True
+        )  # Sort descending by score
+
+        # 2) Collect ground truth boxes for class `c` per image
+        gt_per_img = {
+            i: all_gt_boxes[i][all_gt_labels[i] == c].clone().to(device)
+            for i in range(len(all_gt_boxes))
+        }
+        npos = sum(
+            len(v) for v in gt_per_img.values()
+        )  # Total number of GT boxes for this class
+
+        # If no GT boxes exist for this class
+        if npos == 0:
+            APs.append(torch.tensor(1.0 if not preds else 0.0, device=device))
+            continue
+
+        # 3) Initialize true positive (TP) and false positive (FP) vectors
         tp = torch.zeros(len(preds), device=device)
         fp = torch.zeros(len(preds), device=device)
         detected = {
-            i: torch.zeros(len(gt_per_image[i]), dtype=torch.bool, device=device)
-            for i in gt_per_image
+            i: torch.zeros(len(gt_per_img[i]), dtype=torch.bool, device=device)
+            for i in gt_per_img
         }
 
-        # Match each prediction to the best ground-truth
+        # 4) Match predictions to GT using probabilistic IoU
         for idx, p in enumerate(preds):
             img_i = p["img"]
-            gt_boxes = gt_per_image[img_i]
+            gt_boxes = gt_per_img[img_i]
+
+            # No GTs in this image for this class → count as FP
             if gt_boxes.numel() == 0:
                 fp[idx] = 1
                 continue
 
-            # Compute IoU between this prediction and all GT boxes
-            ious = batch_probiou(p["box"].unsqueeze(0), gt_boxes)
-            best_iou, best_j = ious.max(1)
-            # True positive if IoU >= threshold and GT not yet detected
+            # Compute IoUs between prediction and all GTs for this image
+            ious = batch_probiou(p["box"].unsqueeze(0), gt_boxes)  # shape: (1, M)
+            best_iou, best_j = ious[0].max(dim=0)
+
             if best_iou >= iou_thr and not detected[img_i][best_j]:
                 tp[idx] = 1
-                detected[img_i][best_j] = True
+                detected[img_i][best_j] = True  # Mark GT as matched
             else:
                 fp[idx] = 1
 
-        # 4) Compute cumulative precision and recall
+        # 5) Compute precision and recall curves
         tp_cum = torch.cumsum(tp, dim=0)
         fp_cum = torch.cumsum(fp, dim=0)
         recall = tp_cum / (npos + 1e-6)
         precision = tp_cum / (tp_cum + fp_cum + 1e-6)
 
-        # 5) 11-point interpolation for AP
+        # 6) Compute 11-point interpolated average precision
         ap = torch.tensor(0.0, device=device)
         for t in torch.linspace(0, 1, 11, device=device):
-            if (recall >= t).any():
-                ap += precision[recall >= t].max() / 11.0
+            mask = recall >= t
+            if mask.any():
+                ap += precision[mask].max() / 11.0
         APs.append(ap)
 
-    # If no AP was computed (unlikely), return 0.0
-    if not APs:
+    # If no classes were processed (edge case), return 0
+    if len(APs) == 0:
         return 0.0
 
-    # Mean over all class APs and return as Python float
+    # Return the mean of all per-class APs
     return torch.stack(APs).mean().item()
 
 
@@ -1101,12 +1110,8 @@ def train(
                     model,
                     val_dataloader,
                     anchors_xy,
-                    anchors_xywhr,
                     device,
                     resize_size,
-                    scale_factors,
-                    ratio_factors,
-                    obb_stats_by_size,
                     run_name,
                     epoch + 1,
                     grid_shape,

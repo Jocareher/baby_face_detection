@@ -89,89 +89,93 @@ class BabyFacesDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
-        Retrieves an image and its corresponding target (bounding boxes, angles, class indices) given an index.
+        Loads a single image and its corresponding OBB annotation (if available).
+
+        This method:
+        - Loads the image in RGB format.
+        - Parses its label file (.txt) if it exists.
+        - Denormalizes the polygon coordinates from [0,1] to absolute pixels.
+        - Constructs the target dictionary with 'boxes', 'angles', 'class_idx', and 'valid_mask'.
+        - Applies optional transform.
 
         Args:
-            idx (int): Index of the image to retrieve.
+            idx (int): Index of the image in the dataset.
 
         Returns:
-            Dict[str, Any]: A dictionary containing the image and its target.
-                - "image": The image as a NumPy array (H, W, C).
-                - "target": A dictionary containing the target information:
-                    - "boxes": A torch tensor of shape (N, 8) representing the oriented bounding box coordinates in pixel space.
-                    - "angles": A torch tensor of shape (N,) representing the rotation angles in radians.
-                    - "class_idx": A torch tensor of shape (N,) or (1,) if background, representing the class indices.
+            Dict[str, Any]: A dictionary with:
+                - "image" (np.ndarray): The image in H×W×3 RGB format.
+                - "target" (dict): A dictionary with:
+                    - "boxes" (Tensor): (N, 8) absolute polygon vertex coordinates.
+                    - "angles" (Tensor): (N,) rotation angles in radians.
+                    - "class_idx" (Tensor): (N,) class indices (0 to 4), or 5 if background.
+                    - "valid_mask" (Tensor): (N,) boolean mask indicating valid entries.
         """
-        base_name = self.file_list[
-            idx
-        ]  # Gets the base name of the image from the file list.
-        img_path = os.path.join(
-            self.images_dir, base_name + ".jpg"
-        )  # Constructs the path to the image.
-        label_path = os.path.join(
-            self.labels_dir, base_name + ".txt"
-        )  # Constructs the path to the label file.
+        base = self.file_list[idx]
+        img_path = os.path.join(self.images_dir, base + ".jpg")
+        lbl_path = os.path.join(self.labels_dir, base + ".txt")
 
-        # Load image in RGB format
-        image = cv2.imread(img_path)  # Reads the image using OpenCV.
-        if image is None:  # Checks if the image was loaded successfully.
-            raise FileNotFoundError(
-                f"Could not read image file: {img_path}"
-            )  # Raises an error if the image could not be read.
-        image = cv2.cvtColor(
-            image, cv2.COLOR_BGR2RGB
-        )  # Converts the image from BGR to RGB.
-        height, width = image.shape[:2]  # Gets the height and width of the image.
+        # 1) Load RGB image
+        img = cv2.imread(img_path)
+        if img is None:
+            raise FileNotFoundError(f"Image not found: {img_path}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        H, W = img.shape[:2]
 
-        boxes = []  # List of flattened (x1, y1, ..., x4, y4) in pixel coordinates
-        angles = []  # Rotation angles in radians
-        class_idxs = []  # Class indices
+        boxes: List[List[float]] = []
+        angles: List[float] = []
+        class_idxs: List[int] = []
 
-        if os.path.exists(label_path):  # Checks if the label file exists.
-            with open(label_path, "r") as f:  # Opens the label file for reading.
-                for line in f:  # Iterates over each line in the label file.
-                    parts = line.strip().split()  # Splits the line into parts.
-                    if (
-                        len(parts) != 10
-                    ):  # Checks if the line has the correct number of parts.
-                        continue  # Skips malformed lines.
+        # 2) Parse label file (if it exists)
+        if os.path.exists(lbl_path):
+            with open(lbl_path, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) != 10:
+                        continue  # skip malformed lines
+                    cls = int(parts[0])
+                    coords = list(map(float, parts[1:9]))
+                    ang = float(parts[9])
 
-                    class_idx = int(parts[0])  # Gets the class index.
-                    coords = list(map(float, parts[1:9]))  # Gets the coordinates.
-                    angle = float(parts[9])  # Gets the angle.
+                    # Denormalize coordinates (x1, y1, ..., x4, y4) from [0,1] to absolute pixels
+                    pts_px: List[float] = []
+                    for i in range(0, 8, 2):
+                        x = coords[i] * W
+                        y = coords[i + 1] * H
+                        pts_px.extend([x, y])
 
-                    coords_px = []  # List to store coordinates in pixel space.
-                    for i in range(0, 8, 2):  # Iterates over the coordinates.
-                        x = (
-                            coords[i] * width
-                        )  # Calculates the x-coordinate in pixel space.
-                        y = (
-                            coords[i + 1] * height
-                        )  # Calculates the y-coordinate in pixel space.
-                        coords_px.extend([x, y])  # Adds the coordinates to the list.
+                    class_idxs.append(cls)
+                    boxes.append(pts_px)
+                    angles.append(ang)
 
-                    class_idxs.append(class_idx)  # Adds the class index to the list.
-                    boxes.append(coords_px)  # Adds the coordinates to the list.
-                    angles.append(angle)  # Adds the angle to the list.
+        # 3) Convert lists to tensors (or empty tensors if no GT)
+        if len(boxes) > 0:
+            boxes_t = torch.tensor(boxes, dtype=torch.float32)  # (N,8)
+            angles_t = torch.tensor(angles, dtype=torch.float32)  # (N,)
+            cls_t = torch.tensor(class_idxs, dtype=torch.long)  # (N,)
+            valid_mask = torch.ones(len(boxes), dtype=torch.bool)  # (N,)
         else:
-            # Background image — no boxes or angles, just class index 5
-            class_idxs.append(5)  # Adds class index 5 for background images.
+            # No ground truth available → treat as background
+            boxes_t = torch.zeros((0, 8), dtype=torch.float32)
+            angles_t = torch.zeros((0,), dtype=torch.float32)
+            cls_t = torch.zeros((0,), dtype=torch.long)
+            valid_mask = torch.zeros((0,), dtype=torch.bool)
 
-        # Build target dictionary
-        target = {
-            "boxes": torch.tensor(boxes, dtype=torch.float32),  # shape (N, 8) or (0, 8)
-            "angles": torch.tensor(angles, dtype=torch.float32),  # shape (N,) or (0,)
-            "class_idx": torch.tensor(
-                class_idxs, dtype=torch.long
-            ),  # shape (N,) or (1,) if background
+        # 4) Build target dictionary
+        target: Dict[str, torch.Tensor] = {
+            "boxes": boxes_t,
+            "angles": angles_t,
+            "class_idx": cls_t,
+            "valid_mask": valid_mask,
         }
 
-        sample = {
-            "image": image,
+        # 5) Build sample dictionary
+        sample: Dict[str, Any] = {
+            "image": img,
             "target": target,
         }
 
-        if self.transform:
+        # 6) Apply transform (if any)
+        if self.transform is not None:
             sample = self.transform(sample)
 
         return sample

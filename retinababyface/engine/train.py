@@ -143,94 +143,88 @@ class EarlyStopping:
 
 
 def nms_rotated(
-    boxes: torch.Tensor,  # shape: (N, 5), format: (cx, cy, w, h, θ)
-    scores: torch.Tensor,  # shape: (N,), confidence scores for each box
+    boxes: torch.Tensor,  # (N, 5) - (cx, cy, w, h, θ)
+    scores: torch.Tensor,  # (N,)   - confidence scores
     threshold: float = 0.45,
 ) -> torch.Tensor:
     """
-    Performs Non-Maximum Suppression (NMS) for rotated bounding boxes using probabilistic IoU.
+    Performs Non-Maximum Suppression (NMS) for rotated bounding boxes (OBBs)
+    using pairwise probabilistic IoU (pIoU) as the suppression criterion.
+
+    Boxes with IoU ≥ threshold and lower score are suppressed.
 
     Args:
-        boxes (torch.Tensor): Tensor of shape (N, 5) with boxes in (cx, cy, w, h, θ) format.
-        scores (torch.Tensor): Tensor of shape (N,) with confidence scores for each box.
-        threshold (float): IoU threshold for suppression.
+        boxes (Tensor): Tensor of shape (N, 5) with rotated boxes in (cx, cy, w, h, θ) format.
+        scores (Tensor): Confidence scores for each box, shape (N,).
+        threshold (float): IoU threshold for suppression (default: 0.45).
 
     Returns:
-        torch.Tensor: Indices of the selected boxes after NMS, in the original order.
+        Tensor: Indices of boxes kept after NMS, referring to the original input order.
     """
+    # Sort boxes by descending score
+    order = scores.argsort(descending=True)
+    boxes = boxes[order]
+    scores = scores[order]
 
-    # Sort boxes by scores in descending order
-    sorted_idx = torch.argsort(scores, descending=True)
-    # Reorder boxes and scores based on sorted indices
-    boxes_sorted = boxes[sorted_idx]
-    # Reorder scores based on sorted indices
-    scores_sorted = scores[sorted_idx]
-
-    # Compute pairwise IoU using batch_probiou function
-    ious = batch_probiou(boxes_sorted, boxes_sorted)
-
-    # Create a mask for IoUs greater than the threshold
+    # Compute full pairwise IoU matrix (NxN)
+    ious = batch_probiou(boxes, boxes)
     mask = ious >= threshold
-    # Set the diagonal to False to avoid self-comparison
-    mask.fill_diagonal_(False)
+    mask.fill_diagonal_(False)  # Avoid suppressing self
 
-    # Initialize a suppression mask
-    suppress = torch.zeros_like(scores_sorted, dtype=torch.bool)
-    for i in range(scores_sorted.size(0)):
-        if not suppress[i]:
-            # Suppress boxes that have IoU greater than the threshold
-            suppress |= mask[i] & (scores_sorted < scores_sorted[i])
+    # Initialize all boxes as "to keep"
+    keep = torch.ones_like(scores, dtype=torch.bool)
 
-    # Get the indices of boxes to keep
-    keep = ~suppress
-    return sorted_idx[keep]
+    # For each box, suppress any lower-scored box with high IoU
+    for i in range(scores.size(0)):
+        if keep[i]:
+            keep &= ~(mask[i] & (scores < scores[i]))
+
+    # Return the indices relative to the original input
+    return order[keep]
 
 
 def infer_with_rotated_nms(
     model: nn.Module,
-    images: torch.Tensor,
-    anchors_xy: torch.Tensor,
-    image_size: Tuple[int, int],
+    images: torch.Tensor,  # (B, 3, H, W)
+    anchors_xy: torch.Tensor,  # (N, 8) anchor corners in xyxyxyxy
+    image_size: Tuple[int, int],  # (W, H)
     conf_thres: float = 0.25,
     iou_thres: float = 0.45,
+    pre_nms_topk: int = 1000,
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Runs forward inference on a batch of images and applies rotated NMS to filter predictions.
-
-    This function processes the raw predictions of the model (classification logits, OBB deltas,
-    and angles), decodes the OBBs from deltas and anchors, filters low-confidence and background
-    predictions, applies rotated NMS, and returns both the (cx,cy,w,h,θ) boxes and their
-    corresponding polygon vertices.
+    Performs inference using a RetinaBabyFace-like model and applies rotated NMS.
 
     Args:
-        model (nn.Module): Trained model with multi-head outputs.
-        images (torch.Tensor): Input image batch of shape (B, 3, H, W).
-        anchors_xy (torch.Tensor): Anchor vertices in shape (N, 8).
-        image_size (Tuple[int, int]): Image size as (width, height).
-        conf_thres (float): Confidence threshold to keep predictions.
+        model (nn.Module): Model that outputs classification logits, vertex deltas, and angles.
+        images (Tensor): Batch of input images, shape (B, 3, H, W).
+        anchors_xy (Tensor): Anchor polygons in (N, 8) format (4 corners).
+        image_size (Tuple[int, int]): Size of input images (W, H).
+        conf_thres (float): Confidence threshold to filter low-score predictions.
         iou_thres (float): IoU threshold for rotated NMS.
-        max_det (int): Maximum number of detections per image.
+        pre_nms_topk (int): Max number of top scoring predictions before NMS.
+        max_det (int): Max number of final predictions per image.
 
     Returns:
-        List[Dict[str, torch.Tensor]]: List (length B) of dictionaries with:
-            - "boxes": (M, 5) predicted boxes in (cx, cy, w, h, θ) format
-            - "scores": (M,) confidence scores
-            - "labels": (M,) class labels
-            - "polygons": (M, 8) predicted polygon coordinates
+        List[Dict[str, Tensor]]: List of length B with dicts per image containing:
+            - 'boxes':    (M, 5) boxes in (cx, cy, w, h, θ) format
+            - 'scores':   (M,)   confidence scores
+            - 'labels':   (M,)   class indices (float)
+            - 'polygons': (M, 8) 4-corner polygons for visualization
     """
     B = images.size(0)
-    logits, deltas, pred_angles = model(images)  # Raw model outputs
-    prob = F.softmax(logits, dim=-1)  # Convert logits to probabilities
+    logits, deltas, pred_angles = model(images)  # → (B, N, C), (B, N, 8), (B, N, 1)
+    prob = F.softmax(logits, dim=-1)
     outputs = []
 
     for b in range(B):
-        scores_b, labels_b = prob[b].max(-1)  # Get highest class score and label
-        keep = (labels_b != 5) & (
-            scores_b > conf_thres
-        )  # Filter out background & low scores
+        # Get top class and score per anchor
+        scores_b, labels_b = prob[b].max(-1)
 
-        if not keep.any():
+        # Filter out background and low-confidence detections
+        keep_mask = (labels_b != 5) & (scores_b > conf_thres)
+        if not keep_mask.any():
             outputs.append(
                 {
                     "boxes": torch.zeros((0, 5), device=images.device),
@@ -241,28 +235,42 @@ def infer_with_rotated_nms(
             )
             continue
 
-        # Decode 8-vertex polygons from deltas + anchors
-        verts_all = decode_vertices(
-            deltas[b][keep], anchors_xy[keep], image_size, use_diag=True
-        )  # (n, 8)
+        # 1) Get original indices of kept proposals
+        idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)  # (N_valid,)
 
-        # Convert to (cx, cy, w, h, θ) format for NMS
-        xywhr = xyxyxyxy2xywhr(verts_all, pred_angles[b][keep].squeeze(-1), image_size)
+        # 2) Select top-K proposals by score
+        scores_k = scores_b[idxs]  # (N_valid,)
+        K = min(pre_nms_topk, scores_k.size(0))
+        topk_scores, topk_inds = scores_k.topk(K, sorted=True)  # (K,)
+        sel = idxs[topk_inds]  # (K,) indices w.r.t. full anchor set
 
-        scores_k = scores_b[keep]
-        labels_k = (
-            labels_b[keep].clamp_max(4).long().float()
-        )  # Clamp label to known classes
+        # 3) Decode selected proposals into polygons
+        verts = decode_vertices(
+            deltas[b][sel],  # (K, 8)
+            anchors_xy[sel],  # (K, 8)
+            image_size,
+            use_diag=True,
+        )  # → (K, 8)
 
-        # Apply rotated NMS
-        keep_idx = nms_rotated(xywhr, scores_k, threshold=iou_thres)[:max_det]
+        # 4) Convert to (cx, cy, w, h, θ) format for NMS
+        xywhr = xyxyxyxy2xywhr(
+            verts, pred_angles[b][sel].squeeze(-1), image_size  # (K,)
+        )  # (K, 5)
 
+        # 5) Apply rotated NMS
+        keep_nms = nms_rotated(xywhr, topk_scores, threshold=iou_thres)
+        keep_nms = keep_nms[:max_det]
+
+        # 6) Map back to original indices in logits/predictions
+        sel_final = sel[keep_nms]  # Final selection
+
+        # 7) Prepare output
         outputs.append(
             {
-                "boxes": xywhr[keep_idx],
-                "scores": scores_k[keep_idx],
-                "labels": labels_k[keep_idx],
-                "polygons": verts_all[keep_idx],  # Final decoded vertices
+                "boxes": xywhr[keep_nms],  # (M, 5)
+                "scores": topk_scores[keep_nms],  # (M,)
+                "labels": labels_b[sel_final].float(),  # (M,)
+                "polygons": verts[keep_nms],  # (M, 8)
             }
         )
 

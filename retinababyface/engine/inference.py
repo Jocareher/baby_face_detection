@@ -214,14 +214,35 @@ def inference(
     # --- Confusion Matrix ---
     cm_labels = list(labels_map) + [-1]
     cm = confusion_matrix(y_true_cls, y_pred_cls, labels=cm_labels)
+    # Compute support and correct
+    support = cm.sum(axis=1)  # total true examples per class
+    correct = np.diag(cm)  # true positives per class
+
+    # Build annotation strings: "correct/support"
+    annot = np.empty_like(cm).astype(str)
+    num_classes = len(cm_labels)
+    for i in range(num_classes):
+        for j in range(num_classes):
+            if i == j:
+                annot[i, j] = f"{correct[i]}/{support[i]}"
+            else:
+                annot[i, j] = str(cm[i, j])
+
+    # Now plot
     fig_cm, ax_cm = plt.subplots(figsize=(8, 6))
-    disp = ConfusionMatrixDisplay(
-        cm, display_labels=[labels_map.get(c, "BG") for c in cm_labels]
+    sns.heatmap(
+        cm,
+        annot=annot,
+        fmt="",
+        cmap="Blues",
+        cbar=False,
+        xticklabels=[labels_map.get(c, "BG") for c in cm_labels],
+        yticklabels=[labels_map.get(c, "BG") for c in cm_labels],
+        ax=ax_cm,
     )
-    disp.plot(
-        ax=ax_cm, cmap="Blues", colorbar=False, xticks_rotation=45, values_format="d"
-    )
-    ax_cm.set_title("Confusion Matrix", pad=20)
+    ax_cm.set_ylabel("True label")
+    ax_cm.set_xlabel("Predicted label")
+    ax_cm.set_title("Confusion Matrix (correct/total on diagonal)")
     fig_cm.tight_layout()
 
     # --- Boxplots: IoU & Angle Error ---

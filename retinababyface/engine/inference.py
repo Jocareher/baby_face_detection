@@ -312,7 +312,7 @@ def inference(
     ax_f1curve.set_xlabel("Confidence Threshold")
     ax_f1curve.set_ylabel("F1 Score")
     ax_f1curve.set_title("F1 vs. Confidence Threshold")
-    ax_f1curve.legend(fontsize=7, loc="upper right", ncol=2)
+    ax_f1curve.legend(fontsize=7, loc="lower left", ncol=1, frameon=False)
     fig_f1curve.tight_layout()
 
     # 10) Qualitative grid

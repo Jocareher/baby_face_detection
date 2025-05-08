@@ -127,35 +127,56 @@ def inference(
                 matched_pred = torch.zeros(M, dtype=torch.bool, device=device)
 
                 for i in range(G):
-                    best_iou, j = iou_matrix[i].max(0)
                     gt_cls = int(gt_lbls[i].item())
+
+                    # Handle case when there are no predictions at all
+                    if iou_matrix.size(1) == 0:
+                        stats_per_class[gt_cls]["fn"] += 1
+
+                        # Add GT info with no match
+                        for c in labels_map:
+                            per_class_true[c].append(int(gt_cls == c))
+                            per_class_score[c].append(0.0)
+
+                        y_pred_cls.append(-1)
+                        y_true_cls.append(gt_cls)
+                        all_gt_labels.append(gt_cls)
+                        all_scores.append(0.0)
+                        all_pred_labels.append(-1)
+                        continue
+
+                    # Find best IoU match for GT i
+                    best_iou, j = iou_matrix[i].max(0)
                     matched = best_iou >= iou_thres
 
                     if matched:
                         stats_per_class[gt_cls]["tp"] += 1
                         iou_vals_per_class[gt_cls].append(best_iou.item())
+
                         pred_ang = p_xywhr[j, 4]
                         err_deg = abs((pred_ang - gt_angs[i]) * 180.0 / math.pi)
                         angle_errs_per_class[gt_cls].append(err_deg.item())
+
                         matched_pred[j] = True
                     else:
                         stats_per_class[gt_cls]["fn"] += 1
 
                     for c in labels_map:
                         per_class_true[c].append(int(gt_cls == c))
-                        per_class_score[c].append(
-                            float(p_scores[j].item()) if matched else 0.0
-                        )
+                        per_class_score[c].append(float(p_scores[j].item()) if matched else 0.0)
 
                     y_pred_cls.append(int(p_lbls[j].item()) if matched else -1)
                     y_true_cls.append(gt_cls)
                     all_gt_labels.append(gt_cls)
-                    all_scores.append(float(p_scores[j].item()))
+                    all_scores.append(float(p_scores[j].item()) if matched else 0.0)
                     all_pred_labels.append(int(p_lbls[j].item()) if matched else -1)
 
+                # Count remaining unmatched predictions as false positives
                 for k in range(M):
                     if not matched_pred[k]:
-                        stats_per_class[int(p_lbls[k].item())]["fp"] += 1
+                        cls_k = int(p_lbls[k].item())
+                        stats_per_class[cls_k]["fp"] += 1
+
 
     # --- Metrics: mAP & PR curves ---
     APs = {}

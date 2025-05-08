@@ -170,3 +170,4 @@ wandb/
 *.csv
 *jpg
 *yaml
+predictions/

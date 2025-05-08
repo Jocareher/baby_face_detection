@@ -1,5 +1,6 @@
 import os
 import math
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import torch
@@ -30,6 +31,7 @@ def inference(
     model: torch.nn.Module,
     checkpoint_path: str,
     test_loader: torch.utils.data.DataLoader,
+    output_dir: str,
     device: torch.device,
     labels_map: dict,
     scale_factors: list,
@@ -359,6 +361,8 @@ def inference(
         ax.axis("off")
     plt.tight_layout(pad=1.0)
 
+    save_individual_predictions(samples, labels_map, output_dir)
+
     return {
         "pr_figure": fig_pr,
         "confusion_figure": fig_cm,
@@ -368,3 +372,84 @@ def inference(
         "grid_figure": fig_grid,
         "mAP": map_global,
     }
+
+
+def save_individual_predictions(samples, labels_map, output_dir):
+    """
+    Save individual test images with both ground truth and predicted bounding boxes.
+
+    Each image will be annotated with:
+    - Ground truth (blue polygon with red orientation line and class + angle)
+    - Predictions (green dashed polygon with orange orientation and class + angle + score)
+
+    Args:
+        samples (List[Tuple]): List of tuples, each containing:
+            (image_tensor, prediction_dict, filename, gt_polygons, gt_angles, gt_labels)
+        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels
+        output_dir (str): Directory where annotated images will be saved
+    """
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    for img_t, pred, fname, gt_polys, gt_angs, gt_lbls in samples:
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.imshow(denormalize_image(img_t))
+        ax.axis("off")
+        ax.set_aspect("equal")
+
+        # Draw ground truth boxes in blue with red edge direction
+        for poly, ang, lbl in zip(gt_polys, gt_angs, gt_lbls):
+            pts = poly.view(4, 2).numpy()
+            ax.add_patch(
+                MplPolygon(pts, closed=True, fill=False, edgecolor="#0055FF", lw=2)
+            )
+            ax.plot(
+                [pts[0, 0], pts[1, 0]], [pts[0, 1], pts[1, 1]], color="#FF3333", lw=2
+            )
+            ax.text(
+                pts[:, 0].mean(),
+                pts[:, 1].mean(),
+                f"{labels_map[int(lbl)]}\n{math.degrees(float(ang)):.1f}°",
+                color="#0055FF",
+                fontsize=6,
+                ha="center",
+                va="center",
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#0055FF", lw=0.5),
+            )
+
+        # Draw predicted boxes in green dashed lines with orange edge direction
+        p_polys = pred["polygons"].cpu()
+        p_lbls = pred["labels"].cpu().numpy().astype(int)
+        p_scores = pred["scores"].cpu().numpy()
+        p_angs = pred["boxes"][:, 4].cpu().numpy()
+
+        for poly, lbl, sc, ang in zip(p_polys, p_lbls, p_scores, p_angs):
+            pts = poly.view(4, 2).numpy()
+            ax.add_patch(
+                MplPolygon(
+                    pts,
+                    closed=True,
+                    fill=False,
+                    edgecolor="#33AA33",
+                    lw=1.5,
+                    linestyle="--",
+                )
+            )
+            ax.plot(
+                [pts[0, 0], pts[1, 0]], [pts[0, 1], pts[1, 1]], color="#FF8800", lw=1.5
+            )
+            ax.text(
+                pts[:, 0].mean(),
+                pts[:, 1].mean(),
+                f"{labels_map[int(lbl)]} {math.degrees(float(ang)):.0f}°\n{sc:.2f}",
+                color="#33AA33",
+                fontsize=5,
+                ha="center",
+                va="center",
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#33AA33", lw=0.5),
+            )
+
+        # Save figure with the same filename in the output directory
+        save_path = os.path.join(output_dir, os.path.basename(fname))
+        fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.1)
+        plt.close(fig)

@@ -28,6 +28,12 @@ def parse_args():
         "--root_dir", type=str, required=True, help="Path to dataset root directory."
     )
     parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="predictions",
+        help="Directory to save individual prediction's results.",
+    )
+    parser.add_argument(
         "--backbone",
         type=str,
         default="densenet121",
@@ -145,6 +151,7 @@ def main():
         model=model,
         checkpoint_path=args.checkpoint,  # used internally for compatibility
         test_loader=test_loader,
+        output_dir=args.output_dir,
         device=device,
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,

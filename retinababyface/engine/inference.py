@@ -15,6 +15,7 @@ from sklearn.metrics import (
     confusion_matrix,
     ConfusionMatrixDisplay,
     f1_score,
+    average_precision_score,
 )
 
 from loss.utils import batch_probiou, xyxyxyxy2xywhr
@@ -180,24 +181,30 @@ def inference(
                         stats_per_class[cls_k]["fp"] += 1
 
     # --- Metrics: mAP & PR curves ---
+    # --- Compute per‐class AP and global mAP ---
     APs = {}
     for c in labels_map:
         y_t = np.array(per_class_true[c])
         y_s = np.array(per_class_score[c])
-        APs[c] = (
-            np.trapz(*precision_recall_curve(y_t, y_s)[0:2]) if y_t.sum() > 0 else 0.0
-        )
-    map_global = np.mean(list(APs.values()))
+        if y_t.sum() > 0:
+            APs[c] = average_precision_score(y_t, y_s)
+        else:
+            APs[c] = 0.0
 
+    map_global = float(np.mean(list(APs.values())))
+
+    # --- Plot Precision–Recall curves with per‐class AP in the legend ---
     fig_pr, ax_pr = plt.subplots(figsize=(6, 5))
     for c, name in labels_map.items():
         y_t = np.array(per_class_true[c])
         y_s = np.array(per_class_score[c])
         if y_t.sum() == 0:
+            # no positives in GT for this class
             ax_pr.step([0, 1], [1, 1], where="post", label=f"{name} (npos=0)")
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
             ax_pr.step(rec, prec, where="post", label=f"{name} AP={APs[c]:.3f}")
+
     ax_pr.set_xlabel("Recall")
     ax_pr.set_ylabel("Precision")
     ax_pr.set_title(f"Precision–Recall (mAP={map_global:.3f})")

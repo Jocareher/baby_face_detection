@@ -163,7 +163,9 @@ def inference(
 
                     for c in labels_map:
                         per_class_true[c].append(int(gt_cls == c))
-                        per_class_score[c].append(float(p_scores[j].item()) if matched else 0.0)
+                        per_class_score[c].append(
+                            float(p_scores[j].item()) if matched else 0.0
+                        )
 
                     y_pred_cls.append(int(p_lbls[j].item()) if matched else -1)
                     y_true_cls.append(gt_cls)
@@ -176,7 +178,6 @@ def inference(
                     if not matched_pred[k]:
                         cls_k = int(p_lbls[k].item())
                         stats_per_class[cls_k]["fp"] += 1
-
 
     # --- Metrics: mAP & PR curves ---
     APs = {}

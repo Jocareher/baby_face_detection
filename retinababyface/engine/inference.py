@@ -453,3 +453,5 @@ def save_individual_predictions(samples, labels_map, output_dir):
         save_path = os.path.join(output_dir, os.path.basename(fname))
         fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.1)
         plt.close(fig)
+
+    print(f"[INFO] Saved individual predictions to {output_dir}")

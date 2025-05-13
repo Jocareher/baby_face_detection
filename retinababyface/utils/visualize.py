@@ -1,5 +1,6 @@
 import math
 import random
+import os
 from typing import Optional, Tuple
 
 import numpy as np
@@ -98,10 +99,16 @@ def draw_obb(
         )  # Add angle annotation.
 
 
-def visualize_dataset(dataset, num_images: int = 9):
+def visualize_dataset(dataset, num_images: int = 9, show: bool = False):
     """
     Displays 'num_images' samples from the dataset in a grid.
     Shows OBBs with segment highlighting, class_idx, angle, and image filename.
+    Args:
+        dataset (Dataset): PyTorch dataset with 'image' and 'target' keys.
+        num_images (int): Number of images to display.
+        show (bool): Whether to display the plot or not.
+    Returns:
+        fig (Figure): Matplotlib figure object.
     """
     total = len(dataset)  # Get the total number of samples in the dataset.
     if total == 0:  # Check if the dataset is empty.
@@ -167,7 +174,30 @@ def visualize_dataset(dataset, num_images: int = 9):
         ax.set_title(f"{base_name}.jpg", fontsize=11, color="black")  # Set the title.
 
     plt.tight_layout()  # Adjust the subplot parameters to give specified padding.
-    plt.show()  # Display the plot.
+    if show:
+        plt.show()
+    return fig
+
+
+def visualize_and_save_dataset_in_script(
+    dataset, split_name: str, save_dir: str, num_images: int = 9
+):
+    """
+    Visualizes a sample of the dataset and saves the result as a grid image.
+
+    Args:
+        dataset (Dataset): PyTorch dataset with 'image' and 'target' keys.
+        split_name (str): Name of the dataset split (e.g., 'train', 'val', 'test').
+        save_dir (str): Path to directory where image will be saved.
+        num_images (int): Number of images to display.
+    """
+    fig = visualize_dataset(dataset, num_images=num_images)
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, f"{split_name}_grid.png")
+    if fig:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[INFO] Saved {split_name} visualization grid to {save_path}")
 
 
 def visualize_predictions(

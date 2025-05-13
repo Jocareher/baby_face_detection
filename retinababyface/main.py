@@ -27,6 +27,7 @@ from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping
 from engine.inference import inference
 from loss.losses import MultiTaskLoss
+from utils.visualize import visualize_and_save_dataset_in_script
 import config
 
 
@@ -264,6 +265,15 @@ def main():
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
 
+    print("[INFO] Visualizing training dataset...")
+    visualize_and_save_dataset_in_script(
+        train_dataset, "train", args.inference_results, num_images=9
+    )
+    print("[INFO] Visualizing validation dataset...")
+    visualize_and_save_dataset_in_script(
+        val_dataset, "val", args.inference_results, num_images=9
+    )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -285,7 +295,7 @@ def main():
     model = RetinaBabyFace(
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
-    
+
     if args.freeze_backbone:
         for p in model.backbone.parameters():
             p.requires_grad = False
@@ -344,6 +354,10 @@ def main():
     )
 
     print(f"[INFO] Loaded {len(test_dataset)} samples from split: {args.split}")
+    print("[INFO] Visualizing test dataset...")
+    visualize_and_save_dataset_in_script(
+        test_dataset, "test", args.inference_results, num_images=9
+    )
 
     test_loader = DataLoader(
         test_dataset,

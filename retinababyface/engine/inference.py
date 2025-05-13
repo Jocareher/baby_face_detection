@@ -212,10 +212,12 @@ def inference(
             APs[c] = 0.0
 
     map_global = float(np.mean(list(APs.values())))
+    sorted_classes = sorted(APs.items(), key=lambda x: x[1], reverse=True)
 
     # --- Plot Precision–Recall curves with per‐class AP in the legend ---
     fig_pr, ax_pr = plt.subplots(figsize=(6, 5))
-    for c, name in labels_map.items():
+    for c, _ in sorted_classes:
+        name = labels_map[c]
         y_t = np.array(per_class_true[c])
         y_s = np.array(per_class_score[c])
         if y_t.sum() == 0:
@@ -223,12 +225,13 @@ def inference(
             ax_pr.step([0, 1], [1, 1], where="post", label=f"{name} (npos=0)")
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            ax_pr.step(rec, prec, where="post", label=f"{name} AP={APs[c]:.3f}")
+            ax_pr.step(rec, prec, where="post", label=f"{name} AP={APs[c]:.3f} (n={y_t.sum()})")
 
     ax_pr.set_xlabel("Recall")
     ax_pr.set_ylabel("Precision")
     ax_pr.set_title(f"Precision–Recall (mAP={map_global:.3f})")
     ax_pr.legend(loc="upper right", fontsize=8)
+    ax_pr.grid(True)
     fig_pr.tight_layout()
 
     # --- Confusion Matrix ---

@@ -215,21 +215,30 @@ class OBBLoss(nn.Module):
         return torch.stack(losses).mean()
 
 
-class SmoothL1OBBLoss(nn.Module):
+class OBBRegressionLoss(nn.Module):
     """
-    Computes Smooth L1 loss between predicted OBB deltas and encoded ground truth deltas.
+    Computes either L1 or Smooth L1 loss between predicted OBB deltas and
+    encoded ground-truth deltas (via encode_vertices).
 
     The loss is applied directly on the 8-point vertex offsets, normalized with respect
     to the anchor box diagonal, as defined in the encode_vertices() function.
     """
 
-    def __init__(self, beta: float = 1.0, reduction: str = "mean"):
+    def __init__(
+        self,
+        loss_type: str = "l1",
+        beta: float = 1.0,
+        reduction: str = "mean",
+    ):
         """
         Args:
-            beta (float): Transition point between L1 and L2 loss in Smooth L1.
-            reduction (str): Reduction method ('mean', 'sum', or 'none').
+            loss_type (str): "l1" for L1 loss, "smooth_l1" for Smooth-L1.
+            beta (float): Transition point for Smooth-L1. Ignored if loss_type="l1".
+            reduction (str): One of "none", "sum", or "mean".
         """
         super().__init__()
+        assert loss_type in ("l1", "smooth_l1"), "loss_type must be 'l1' or 'smooth_l1'"
+        self.loss_type = loss_type
         self.beta = beta
         self.reduction = reduction
 
@@ -239,16 +248,7 @@ class SmoothL1OBBLoss(nn.Module):
         gt_xy: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
         anchors: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
     ) -> torch.Tensor:
-        """
-        Args:
-            pred_deltas (Tensor): Predicted normalized deltas from the OBB head.
-            gt_xy (Tensor): Ground truth boxes in absolute vertex coordinates.
-            anchors (Tensor): Anchor boxes in absolute vertex coordinates.
-
-        Returns:
-            torch.Tensor: Smooth L1 loss between predicted and encoded deltas.
-        """
-        # Remove batch dimension if present
+        # 1) Squeeze away the leading batch=1 dim, if present
         if pred_deltas.dim() == 3 and pred_deltas.size(0) == 1:
             pred = pred_deltas.squeeze(0)
             gt = gt_xy.squeeze(0)
@@ -256,13 +256,16 @@ class SmoothL1OBBLoss(nn.Module):
         else:
             pred, gt, anc = pred_deltas, gt_xy, anchors
 
-        # Encode ground truth to normalized delta space
+        # 2) Encode GT into the same normalized delta space
         gt_deltas = encode_vertices(gt, anc)
 
-        # Compute Smooth L1 loss
-        return F.smooth_l1_loss(
-            pred, gt_deltas, beta=self.beta, reduction=self.reduction
-        )
+        # 3) Compute the selected loss
+        if self.loss_type == "l1":
+            return F.l1_loss(pred, gt_deltas, reduction=self.reduction)
+        else:  # smooth_l1
+            return F.smooth_l1_loss(
+                pred, gt_deltas, beta=self.beta, reduction=self.reduction
+            )
 
 
 class MultiTaskLoss(nn.Module):
@@ -294,7 +297,7 @@ class MultiTaskLoss(nn.Module):
         self.focal_loss = FocalLoss(
             alpha=alpha, gamma=gamma, ignore_index=-100, reduction="mean"
         )
-        self.obb_loss = SmoothL1OBBLoss()
+        self.obb_loss = OBBRegressionLoss()
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb

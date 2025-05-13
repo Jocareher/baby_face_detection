@@ -214,7 +214,6 @@ class OBBLoss(nn.Module):
 
         return torch.stack(losses).mean()
 
-
 class OBBRegressionLoss(nn.Module):
     """
     Computes either L1 or Smooth L1 loss between predicted OBB deltas and
@@ -245,14 +244,14 @@ class OBBRegressionLoss(nn.Module):
     def forward(
         self,
         pred_deltas: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
-        gt_xy: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
-        anchors: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
+        gt_xy: torch.Tensor,         # (B=1, N_pos, 8) or (N_pos, 8)
+        anchors: torch.Tensor,       # (B=1, N_pos, 8) or (N_pos, 8)
     ) -> torch.Tensor:
         # 1) Squeeze away the leading batch=1 dim, if present
         if pred_deltas.dim() == 3 and pred_deltas.size(0) == 1:
             pred = pred_deltas.squeeze(0)
-            gt = gt_xy.squeeze(0)
-            anc = anchors.squeeze(0)
+            gt   = gt_xy.squeeze(0)
+            anc  = anchors.squeeze(0)
         else:
             pred, gt, anc = pred_deltas, gt_xy, anchors
 
@@ -263,9 +262,8 @@ class OBBRegressionLoss(nn.Module):
         if self.loss_type == "l1":
             return F.l1_loss(pred, gt_deltas, reduction=self.reduction)
         else:  # smooth_l1
-            return F.smooth_l1_loss(
-                pred, gt_deltas, beta=self.beta, reduction=self.reduction
-            )
+            return F.smooth_l1_loss(pred, gt_deltas, beta=self.beta, reduction=self.reduction)
+
 
 
 class MultiTaskLoss(nn.Module):
@@ -288,7 +286,7 @@ class MultiTaskLoss(nn.Module):
         self,
         lambda_cls: float = 1.0,
         lambda_obb: float = 1.0,
-        lambda_rot: float = 0.5,
+        lambda_rot: float = 1.0,
         pos_iou_thresh: float = config.POS_IOU_THRESH,
         alpha: List[float] = config.ALPHA,
         gamma: float = config.GAMMA,

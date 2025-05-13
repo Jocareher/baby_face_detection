@@ -16,6 +16,7 @@ from torchvision.models import (
 from torchvision.models.feature_extraction import create_feature_extractor
 
 from .mobilenet import FPN, SSH, MobileNetV1
+from data_setup.augmentations import wrap_to_pi
 import config
 
 
@@ -49,13 +50,17 @@ class OBBHead(nn.Module):
 
 class AngleHead(nn.Module):
     """
-    Head module for predicting the rotation angle (in radians) of each oriented bounding box (OBB).
-
-    The predicted angle is constrained to the range [0, 2π] using a sigmoid activation followed by scaling.
-
+    Head module for predicting the rotation angle of the OBB.
+    The output is constrained to the range [0, 2π] using a sigmoid activation,
+    so that the angle remains within a reasonable distance from the anchor.
     Output shape:
         - Input: (B, C, H, W)
         - Output: (B, N, 1) where N = H × W × num_anchors
+    The angle is represented in radians.
+    The output is then wrapped to the range [-π, π] using wrap_to_pi function.
+    The output is reshaped to (B, N, 1) where N = H × W × num_anchors
+    The 1 value corresponds to the rotation angle of the OBB.
+
     """
 
     def __init__(self, inchannels: int = 64):
@@ -63,14 +68,16 @@ class AngleHead(nn.Module):
         self.conv = nn.Conv2d(inchannels, config.NUM_ANCHORS, kernel_size=1)
 
     def forward(self, x):
-        # Apply 1x1 convolution, reshape and scale sigmoid output to [0, 2π]
+        # Apply 1x1 convolution, reshape and apply sigmoid to constrain output to [0, 2π]
         # The output shape is (B, num_anchors * H * W, 1)
         # The 1 value corresponds to the rotation angle of the OBB.
         # The output is reshaped to (B, N, 1) where N = H × W × num_anchors
         # The angle is represented in radians.
-        return (
-            torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous()) * 2 * math.pi
-        ).view(x.size(0), -1, 1)
+        # The output is then wrapped to the range [-π, π] using wrap_to_pi function.
+        # The output is reshaped to (B, N, 1) where N = H × W × num_anchors
+        raw = torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous()) \
+              * 2 * math.pi
+        return wrap_to_pi(raw).view(x.size(0), -1, 1)
 
 
 class ClassHead(nn.Module):

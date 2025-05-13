@@ -113,8 +113,8 @@ class RandomHorizontalFlipOBB:
             boxes = boxes[:, reorder_idx, :]
             boxes = boxes.view(-1, 8)  # Back to (N, 8)
 
-            # Negate angles
-            angles = -angles % (2 * math.pi)
+            #  Negate & wrap into [-π,π]
+            angles = wrap_to_pi(-angles)
 
             # Flip class indices: vectorized swap using masks
             class_idxs_flipped = class_idxs.clone()
@@ -222,8 +222,8 @@ class RandomRotateOBB:
             device=target["boxes"].device,
         )
 
-        # Update angle and normalize to [0, 2π)
-        angles = (angles - angle_rad) % (2 * math.pi)
+        # Subtract rotation & wrap into [-π,π]
+        angles = wrap_to_pi(angles - angle_rad)
 
         target["boxes"] = boxes  # Updates the boxes in the target dictionary.
         target["angles"] = angles  # Updates the angles in the target dictionary.
@@ -678,3 +678,14 @@ class ToTensorNormalize(object):
         ) / self.std  # Normalizes the image using the mean and standard deviation.
         sample["image"] = image  # Updates the normalized image in the sample.
         return sample
+
+def wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+    """
+    Wrap any angle (in radians) into [-π, π].
+    Works element-wise for tensors.
+    Args:
+        angle (torch.Tensor): The angle in radians to be wrapped.
+    Returns:
+        torch.Tensor: The wrapped angle in radians.
+    """
+    return (angle + math.pi) % (2 * math.pi) - math.pi

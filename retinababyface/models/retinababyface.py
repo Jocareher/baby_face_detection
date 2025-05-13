@@ -75,8 +75,7 @@ class AngleHead(nn.Module):
         # The angle is represented in radians.
         # The output is then wrapped to the range [-π, π] using wrap_to_pi function.
         # The output is reshaped to (B, N, 1) where N = H × W × num_anchors
-        raw = torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous()) \
-              * 2 * math.pi
+        raw = torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous()) * 2 * math.pi
         return wrap_to_pi(raw).view(x.size(0), -1, 1)
 
 

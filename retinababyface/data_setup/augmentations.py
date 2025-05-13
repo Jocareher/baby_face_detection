@@ -679,6 +679,7 @@ class ToTensorNormalize(object):
         sample["image"] = image  # Updates the normalized image in the sample.
         return sample
 
+
 def wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
     """
     Wrap any angle (in radians) into [-π, π].

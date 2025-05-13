@@ -5,7 +5,7 @@ from typing import List, Optional, Callable, Dict, Any, Tuple
 import torch
 from torch.utils.data import Dataset
 
-from .augmentations import Resize
+from .augmentations import Resize, wrap_to_pi
 
 
 class BabyFacesDataset(Dataset):
@@ -159,6 +159,9 @@ class BabyFacesDataset(Dataset):
             angles_t = torch.zeros((0,), dtype=torch.float32)
             cls_t = torch.zeros((0,), dtype=torch.long)
             valid_mask = torch.zeros((0,), dtype=torch.bool)
+
+        # Normalize angles to [-pi, pi]
+        angles_t = wrap_to_pi(angles_t)
 
         # 4) Build target dictionary
         target: Dict[str, torch.Tensor] = {

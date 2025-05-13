@@ -41,6 +41,8 @@ def inference(
     conf_thres: float = 0.25,
     iou_thres: float = 0.5,
     grid_shape: tuple = (3, 3),
+    mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
+    std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
 ) -> dict:
     """
     Full evaluation of a pretrained RetinaBabyFace on a test set.
@@ -50,6 +52,24 @@ def inference(
     - Boxplots: IoU and Angle MAE per class
     - F1-score vs Confidence threshold (per class)
     - Qualitative grid with predictions and GTs
+    - Individual predictions saved to output_dir
+    Args:
+        model (torch.nn.Module): The trained RetinaBabyFace model.
+        checkpoint_path (str): Path to the model checkpoint.
+        test_loader (torch.utils.data.DataLoader): DataLoader for the test dataset.
+        output_dir (str): Directory to save the output figures.
+        device (torch.device): Device to run the model on (CPU or GPU).
+        labels_map (dict): Mapping from class indices to human-readable labels.
+        scale_factors (list): Scale factors for anchor generation.
+        ratio_factors (list): Aspect ratio factors for anchor generation.
+        obb_stats_by_size (dict): Precomputed OBB statistics for different sizes.
+        conf_thres (float): Confidence threshold for predictions.
+        iou_thres (float): IoU threshold for matching predictions to ground truth.
+        grid_shape (tuple): Shape of the grid for displaying predictions.
+        mean (tuple): Mean values for denormalization.
+        std (tuple): Standard deviation values for denormalization.
+    Returns:
+        dict: Dictionary containing various figures and metrics.
     """
 
     # --- Load model ---
@@ -352,7 +372,7 @@ def inference(
     for ax, (img_t, pred, fname, gt_polys, gt_angs, gt_lbls) in zip(
         axes, samples[: rows * cols]
     ):
-        ax.imshow(denormalize_image(img_t))
+        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.set_title(os.path.basename(fname), fontsize=7, color="#333")
         ax.axis("off")
         ax.set_aspect("equal")
@@ -411,7 +431,7 @@ def inference(
         ax.axis("off")
     plt.tight_layout(pad=1.0)
 
-    save_individual_predictions(samples, labels_map, output_dir)
+    save_individual_predictions(samples, labels_map, output_dir, mean, std)
 
     return {
         "pr_figure": fig_pr,
@@ -424,7 +444,7 @@ def inference(
     }
 
 
-def save_individual_predictions(samples, labels_map, output_dir):
+def save_individual_predictions(samples, labels_map, output_dir, mean, std):
     """
     Save individual test images with both ground truth and predicted bounding boxes.
 
@@ -437,13 +457,15 @@ def save_individual_predictions(samples, labels_map, output_dir):
             (image_tensor, prediction_dict, filename, gt_polygons, gt_angles, gt_labels)
         labels_map (Dict[int, str]): Mapping from class indices to human-readable labels
         output_dir (str): Directory where annotated images will be saved
+        mean (Tuple[float, float, float]): Mean values for denormalization
+        std (Tuple[float, float, float]): Standard deviation values for denormalization
     """
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     for img_t, pred, fname, gt_polys, gt_angs, gt_lbls in samples:
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.imshow(denormalize_image(img_t))
+        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
         ax.set_aspect("equal")
 

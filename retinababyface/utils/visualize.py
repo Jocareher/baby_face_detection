@@ -13,27 +13,28 @@ from loss.utils import xyxyxyxy2xywhr, xywhr2xyxyxyxy, decode_vertices
 
 def denormalize_image(
     img_tensor: torch.Tensor,
-    mean: Tuple[float, float, float] = (0.6427, 0.5918, 0.5526),
-    std: Tuple[float, float, float] = (0.2812, 0.2825, 0.3036),
+    mean=(0.6427, 0.5918, 0.5525),
+    std=(0.2812, 0.2825, 0.3036),
 ) -> np.ndarray:
     """
-    Converts a normalized image tensor (C x H x W) back to a NumPy array (H x W x C) in uint8 format.
+    Reverts normalization on an image tensor and converts it to a NumPy array for visualization.
 
     Args:
-        img_tensor (Tensor): The normalized image tensor.
-        mean (tuple): Mean used during normalization (per channel).
-        std (tuple): Std used during normalization (per channel).
+        img_tensor (torch.Tensor): Normalized image tensor of shape (C, H, W), with values in [-1, 1] or [0, 1].
+        mean (Tuple[float, float, float]): Mean values per channel used during normalization.
+        std (Tuple[float, float, float]): Std deviation per channel used during normalization.
 
     Returns:
-        np.ndarray: Denormalized image in uint8 format.
+        np.ndarray: Denormalized image in (H, W, C) format, dtype=uint8, with pixel values in [0, 255].
     """
-    img_np = img_tensor.cpu().numpy()  # Convert the tensor to a NumPy array on CPU.
-    for c in range(3):  # Iterate through each color channel.
-        img_np[c] = img_np[c] * std[c] + mean[c]  # Denormalize the channel.
-    img_np = np.clip(img_np * 255.0, 0, 255).astype(
-        np.uint8
-    )  # Clip and convert to uint8.
-    return img_np.transpose(1, 2, 0)  # Convert to H x W x C format.
+    img = (
+        img_tensor.clone().detach().cpu()
+    )  # Ensure we don't modify the original tensor
+    for t, m, s in zip(img, mean, std):  # Apply inverse normalization per channel
+        t.mul_(s).add_(m)
+    img = torch.clamp(img, 0, 1)  # Clamp to valid pixel range [0, 1]
+    img = (img * 255).byte().numpy()  # Convert to uint8 [0, 255]
+    return np.transpose(img, (1, 2, 0))  # Rearrange to H x W x C for image display
 
 
 def draw_obb(

@@ -1113,7 +1113,7 @@ def train(
                 )
 
             # every 5 epochs, save grid.jpg
-            if (epoch + 1) % 2 == 0:
+            if (epoch + 1) % 5 == 0:
                 in_training_inference(
                     model,
                     val_dataloader,

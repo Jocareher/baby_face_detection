@@ -225,7 +225,9 @@ def inference(
             ax_pr.step([0, 1], [1, 1], where="post", label=f"{name} (npos=0)")
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            ax_pr.step(rec, prec, where="post", label=f"{name} AP={APs[c]:.3f} (n={y_t.sum()})")
+            ax_pr.step(
+                rec, prec, where="post", label=f"{name} AP={APs[c]:.3f} (n={y_t.sum()})"
+            )
 
     ax_pr.set_xlabel("Recall")
     ax_pr.set_ylabel("Precision")

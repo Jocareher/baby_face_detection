@@ -12,12 +12,15 @@
 
 # Load modules
 module load CUDA/12.1
-module load Anaconda3/2020.02
+module load Miniconda3/4.9.2
 
 # Variables
 ENV_NAME=babyface
 PYTHON_VERSION=3.10.13
 REQUIREMENTS_FILE=requirements.txt
+
+#Enable the bash shell
+eval "$(conda shell.bash hook)"
 
 # Create Conda environment if it doesn't exist
 if ! conda info --envs | grep -q "$ENV_NAME"; then

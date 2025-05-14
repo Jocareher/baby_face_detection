@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J retinababyface
-#SBATCH -p gpu
+#SBATCH -p high
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8

@@ -17,7 +17,7 @@ module load Miniconda3/4.9.2
 # Variables
 ENV_NAME=babyface
 PYTHON_VERSION=3.10.13
-REQUIREMENTS_FILE=requirements.txt
+REQUIREMENTS_FILE=/home/jreyes/baby_face_detection/requirements.txt
 
 #Enable the bash shell
 eval "$(conda shell.bash hook)"

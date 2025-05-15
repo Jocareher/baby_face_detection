@@ -104,6 +104,9 @@ def main():
     # 1. Load test dataset and dataloader
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
     val_transform = config.get_val_transform(img_size=resize_size)
+    
+    norm_mean = config.IMAGENET_MEAN
+    norm_std = config.IMAGENET_STD
 
     test_dataset = BabyFacesDataset(
         root_dir=args.root_dir,
@@ -160,6 +163,8 @@ def main():
         conf_thres=args.conf_thres,
         iou_thres=args.iou_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
+        norm_mean=norm_mean,
+        norm_std=norm_std,
     )
 
     # 5. Save output figures

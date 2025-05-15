@@ -163,8 +163,8 @@ def main():
         conf_thres=args.conf_thres,
         iou_thres=args.iou_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
-        norm_mean=norm_mean,
-        norm_std=norm_std,
+        mean=norm_mean,
+        std=norm_std,
     )
 
     # 5. Save output figures

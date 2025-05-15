@@ -185,14 +185,12 @@ def compute_map_and_pr(per_true, per_score) -> Tuple[float,Dict[int,float]]:
 
 def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
     """
-    Precision–Recall Curve:
-    - Cada clase con color fijo de tab20 y línea suave vía interpolación.
-    - Curva global (todos los datos) en azul grueso.
-    - Leyenda fuera, sin marco.
+    Precision–Recall Curve perfectamente proporcionada,
+    con leyenda fuera del área y línea global gruesa.
     """
-    classes    = list(labels_map.keys())
-    cmap       = plt.get_cmap("tab20")
-    fig, ax    = plt.subplots(figsize=(6, 5))
+    classes     = list(labels_map.keys())
+    cmap        = plt.get_cmap("tab20")
+    fig, ax     = plt.subplots(figsize=(6, 5))
     rec_uniform = np.linspace(0, 1, 200)
 
     # curvas por clase
@@ -200,36 +198,44 @@ def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
         y_t = np.array(per_true[cls]); y_s = np.array(per_score[cls])
         col = cmap(i)
         if y_t.sum() == 0:
-            ax.plot(rec_uniform, np.ones_like(rec_uniform),
-                    linestyle='--', color=col, linewidth=2,
-                    label=f"{labels_map[cls]} {APs[cls]:.3f}")
+            prec_i = np.ones_like(rec_uniform)
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            # interpola para línea suave
+            # interpola para suavizar
             prec_i = np.interp(rec_uniform, rec[::-1], prec[::-1])
-            ax.plot(rec_uniform, prec_i,
-                    color=col, linewidth=2,
-                    label=f"{labels_map[cls]} {APs[cls]:.3f}")
+        ax.plot(rec_uniform, prec_i,
+                color=col, linewidth=2,
+                label=f"{labels_map[cls]} {APs[cls]:.3f}")
 
-    # curva global (todos los ejemplos)
+    # curva global (mAP)
     all_y = np.concatenate([per_true[c]  for c in classes])
     all_s = np.concatenate([per_score[c] for c in classes])
-    pg, rg, _ = precision_recall_curve(all_y, all_s)
-    pg_i = np.interp(rec_uniform, rg[::-1], pg[::-1])
-    ax.plot(rec_uniform, pg_i,
+    p_all, r_all, _ = precision_recall_curve(all_y, all_s)
+    p_i = np.interp(rec_uniform, r_all[::-1], p_all[::-1])
+    ax.plot(rec_uniform, p_i,
             color='navy', linewidth=4,
             label=f"all classes {mAP:.3f} mAP@0.5")
 
-    # formato final
-    ax.set(xlabel="Recall", ylabel="Precision",
-           title="Precision–Recall Curve")
+    # ajustes finales
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("Precision–Recall Curve")
     ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(loc="upper right",
-              bbox_to_anchor=(1.02, 1.0),
-              frameon=False,
-              fontsize=8)
-    fig.tight_layout(rect=(0, 0, 0.78, 1))
+
+    # leyenda fuera a la derecha
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.00),
+        frameon=False,
+        fontsize=8
+    )
+
+    # dejamos espacio exacto: 0.78 ocupa el gráfico, el resto para la leyenda
+    fig.subplots_adjust(left=0.10, right=0.78, top=0.95, bottom=0.10)
     return fig
+
 
 
 def plot_confusion_matrix(y_true, y_pred, labels_map):
@@ -273,28 +279,54 @@ def plot_boxplots(data, x_field, y_field, title, y_lim=None):
     return fig
 
 def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
-                         default_th=0.25, n_steps=100, th_min=0.05, th_max=0.95):
+                         default_th=0.25, n_steps=200, th_min=0.05, th_max=0.95):
+    """
+    F1 vs Confidence Threshold con proporción correcta y leyenda fuera.
+    """
     thresholds = np.linspace(th_min, th_max, n_steps)
     y_true     = np.array(all_gts)
     classes    = list(labels_map.keys())
     cmap       = plt.get_cmap("tab20")
     f1_mat     = np.zeros((n_steps, len(classes)))
+
+    # calcula F1
     for i, t in enumerate(thresholds):
-        preds = [lbl if sc>=t else -1 for sc,lbl in zip(all_scores, all_preds)]
-        f1_mat[i] = f1_score(y_true, preds, labels=classes, average=None, zero_division=0)
-    fig, ax = plt.subplots(figsize=(6,4))
+        y_pred = [lbl if sc >= t else -1 for sc, lbl in zip(all_scores, all_preds)]
+        f1s    = f1_score(y_true, y_pred, labels=classes, average=None, zero_division=0)
+        f1_mat[i] = f1s
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    # dibuja cada clase
     for j, cls in enumerate(classes):
-        vals = f1_mat[:,j]; col = cmap(j)
-        ax.plot(thresholds, vals, color=col, linewidth=1.5,
-                label=f"{labels_map[cls]} {vals[np.argmin(abs(thresholds-default_th))]:.3f}")
-        bi = vals.argmax(); tb, fb = thresholds[bi], vals[bi]
+        vals = f1_mat[:, j]
+        col  = cmap(j)
+        ax.plot(thresholds, vals,
+                color=col, linewidth=2,
+                label=f"{labels_map[cls]} {vals[np.abs(thresholds-default_th).argmin()]:.3f}")
+        # marca umbral óptimo
+        bi = vals.argmax()
+        tb, fb = thresholds[bi], vals[bi]
         ax.axvline(tb, linestyle="--", color=col, linewidth=1)
-        ax.scatter(tb, fb, color=col, s=30, zorder=3)
-    ax.set(xlabel="Confidence Threshold", ylabel="F1 Score", title="F1 vs. Confidence Threshold")
+        ax.scatter(tb, fb, color=col, s=50, zorder=3)
+
+    # ajuste ejes
+    ax.set_xlim(th_min, th_max)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Confidence Threshold")
+    ax.set_ylabel("F1 Score")
+    ax.set_title("F1 vs. Confidence Threshold")
     ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(loc="upper right", frameon=False, fontsize=7)
-    for s in ["top","right"]: ax.spines[s].set_visible(False)
-    fig.tight_layout()
+
+    # leyenda fuera
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.00),
+        frameon=False,
+        fontsize=8
+    )
+
+    # ajusta márgenes para que no quede espacio sobrante
+    fig.subplots_adjust(left=0.10, right=0.78, top=0.95, bottom=0.10)
     return fig
 
 # -----------------------------------------------------------------------------

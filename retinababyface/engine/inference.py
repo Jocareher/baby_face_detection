@@ -244,7 +244,6 @@ def plot_precision_recall(per_true, per_score, labels_map, mAP, sigma: float = 2
               frameon=False)
 
     plt.tight_layout()
-    plt.show()
     return fig
 
 
@@ -269,25 +268,68 @@ def plot_confusion_matrix(y_true, y_pred, labels_map):
     fig.tight_layout()
     return fig
 
-def plot_boxplots(data, x_field, y_field, title, y_lim=None):
-    cats   = sorted({d[x_field] for d in data})
-    values = [[d[y_field] for d in data if d[x_field]==c] for c in cats]
-    cmap   = plt.get_cmap("tab20")
-    fig, ax= plt.subplots(figsize=(6,4))
-    bp = ax.boxplot(values, labels=cats, notch=True, patch_artist=True)
-    # mismo color que en PR
+def plot_boxplots(
+    data,
+    x_field: str,
+    y_field: str,
+    title: str,
+    labels_map: Dict[int, str],
+    y_lim=None,
+    cmap_name: str = "tab20"
+):
+    """
+    Boxplots coloreados igual que las curvas de PR/F1:
+    - Mismo orden de clases: list(labels_map.keys())
+    - Mismo colormap: plt.get_cmap(cmap_name)
+    """
+    # 1) Definir clases en el mismo orden de las curvas
+    classes = list(labels_map.keys())
+    class_names = [labels_map[c] for c in classes]
+
+    # 2) Recopilar valores por clase
+    values = [
+        [d[y_field] for d in data if d[x_field] == labels_map[c]]
+        for c in classes
+    ]
+
+    # 3) Setup de figura
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    # 4) Dibujar boxplot base (sin colores)
+    bp = ax.boxplot(
+        values,
+        labels=class_names,
+        notch=True,
+        patch_artist=True,
+        boxprops=dict(facecolor="none", edgecolor="black"),
+        medianprops=dict(color="black"),
+        whiskerprops=dict(color="black"),
+        capprops=dict(color="black"),
+    )
+
+    # 5) Colorear cajas y puntos con el mismo cmap que en PR/F1
+    cmap = plt.get_cmap(cmap_name)
     for i, box in enumerate(bp["boxes"]):
-        box.set_facecolor(cmap(i))
+        color = cmap(i)
+        box.set_facecolor(color)
         box.set_edgecolor("black")
-    # jitter points
+
+    # jitter de los puntos
     for i, vals in enumerate(values):
-        xs = np.random.normal(i+1, 0.06, size=len(vals))
+        xs = np.random.normal(i + 1, 0.06, size=len(vals))
         ax.scatter(xs, vals, color=cmap(i), s=6, alpha=0.7)
-    ax.set(title=title, ylabel=y_field)
-    if y_lim: ax.set_ylim(y_lim)
+
+    # 6) Etiquetas y estilo
+    ax.set_title(title, fontsize=13)
+    ax.set_ylabel(y_field, fontsize=11)
+    ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=10)
+    if y_lim is not None:
+        ax.set_ylim(y_lim)
     ax.grid(axis="y", linestyle=":", alpha=0.6)
-    for s in ["top","right"]: ax.spines[s].set_visible(False)
-    fig.tight_layout()
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    plt.tight_layout()
     return fig
 
 
@@ -341,7 +383,6 @@ def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
               frameon=False)
 
     plt.tight_layout()
-    plt.show()
     return fig
 # -------------------------------------------------------------
 # IV. Qualitative Grid & Saving Individually

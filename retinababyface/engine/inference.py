@@ -184,52 +184,55 @@ def compute_map_and_pr(per_true, per_score) -> Tuple[float,Dict[int,float]]:
     return float(np.mean(list(APs.values()))), APs
 
 def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
-    classes     = list(labels_map.keys())
-    cmap        = plt.get_cmap("tab20")
-    rec_lin     = np.linspace(0, 1, 300)
+    classes = list(labels_map.keys())
+    cmap    = plt.get_cmap("tab20")
+    rec_lin = np.linspace(0, 1, 300)
 
-    fig, ax = plt.subplots(figsize=(6,5))
-    # 1) Curvas por clase
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    # 1) Curvas individuales
     for i, cls in enumerate(classes):
-        y_t = np.array(per_true[cls])
-        y_s = np.array(per_score[cls])
-        col = cmap(i)
+        y_t, y_s = np.array(per_true[cls]), np.array(per_score[cls])
+        col       = cmap(i)
         if y_t.sum() == 0:
-            # npos=0 → precisión = 1 en todo rec
+            # Si no hay positivos, la precision es 1.0 en todo recall
             prec_i = np.ones_like(rec_lin)
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            # interp para rellenar uniformemente
+            # Interpolamos para usar rec_lin uniforme
             prec_i = np.interp(rec_lin, rec[::-1], prec[::-1])
         ax.step(rec_lin, prec_i, where="post", color=col, lw=1.5,
                 label=f"{labels_map[cls]} {APs[cls]:.3f}")
 
-    # 2) Curva mAP global
-    all_y = np.concatenate([per_true[c]  for c in classes])
+    # 2) Curva global (mAP)
+    all_t = np.concatenate([per_true[c]  for c in classes])
     all_s = np.concatenate([per_score[c] for c in classes])
-    p_all, r_all, _ = precision_recall_curve(all_y, all_s)
+    p_all, r_all, _ = precision_recall_curve(all_t, all_s)
     p_i = np.interp(rec_lin, r_all[::-1], p_all[::-1])
     ax.step(rec_lin, p_i, where="post", color="navy", lw=4,
             label=f"all classes {mAP:.3f} mAP@0.5")
 
-    # 3) Ajustes de ejes
+    # 3) Ejes y grid
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title("Precision–Recall Curve")
-    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.grid(True, linestyle=":", linewidth=0.6, color="gray", alpha=0.6)
 
-    # 4) Leyenda COMPLETA fuera de la zona de dibujo
+    # 4) Leyenda completa fuera del área
     leg = ax.legend(
         loc="upper left",
         bbox_to_anchor=(1.02, 1.0),
         frameon=False,
         fontsize=8,
+        handlelength=3,
+        labelspacing=0.6
     )
 
-    # 5) Reservamos suficiente espacio a la derecha
-    fig.subplots_adjust(left=0.10, right=0.60, top=0.95, bottom=0.10)
+    # 5) Reservar espacio a la derecha para la leyenda
+    fig.subplots_adjust(left=0.10, right=0.75, top=0.94, bottom=0.10)
+
     return fig
 
 
@@ -275,6 +278,7 @@ def plot_boxplots(data, x_field, y_field, title, y_lim=None):
     fig.tight_layout()
     return fig
 
+
 def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
                          default_th=0.25, n_steps=200, th_min=0.05, th_max=0.95):
     thresholds = np.linspace(th_min, th_max, n_steps)
@@ -283,14 +287,14 @@ def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
     cmap       = plt.get_cmap("tab20")
     f1_mat     = np.zeros((n_steps, len(classes)))
 
-    # 1) Calculamos f1 para cada umbral y cada clase
+    # 1) Matrix F1
     for i, t in enumerate(thresholds):
-        y_pred = [lbl if sc>=t else -1 for sc,lbl in zip(all_scores, all_preds)]
-        f1_mat[i] = f1_score(y_true, y_pred, labels=classes,
-                             average=None, zero_division=0)
+        y_pred = [lbl if sc>=t else -1 for sc, lbl in zip(all_scores, all_preds)]
+        f1_mat[i] = f1_score(y_true, y_pred, labels=classes, average=None, zero_division=0)
 
-    fig, ax = plt.subplots(figsize=(6,5))
-    # 2) Dibujamos cada curva + marcador de mejor punto
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    # 2) Curvas y marcadores
     for j, cls in enumerate(classes):
         vals = f1_mat[:, j]
         col  = cmap(j)
@@ -301,24 +305,27 @@ def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
         ax.axvline(tb, linestyle="--", color=col, lw=1)
         ax.scatter(tb, fb, color=col, s=50, zorder=3)
 
-    # 3) Ajustes de ejes
+    # 3) Ejes y grid
     ax.set_xlim(th_min, th_max)
     ax.set_ylim(0.0, 1.0)
     ax.set_xlabel("Confidence Threshold")
     ax.set_ylabel("F1 Score")
     ax.set_title("F1 vs. Confidence Threshold")
-    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.grid(True, linestyle=":", linewidth=0.6, color="gray", alpha=0.6)
 
-    # 4) Leyenda completa fuera
+    # 4) Leyenda
     ax.legend(
         loc="upper left",
         bbox_to_anchor=(1.02, 1.0),
         frameon=False,
         fontsize=8,
+        handlelength=3,
+        labelspacing=0.6
     )
 
-    # 5) Espacio derecho
-    fig.subplots_adjust(left=0.10, right=0.60, top=0.95, bottom=0.10)
+    # 5) Ajuste de subplot
+    fig.subplots_adjust(left=0.10, right=0.75, top=0.94, bottom=0.10)
+
     return fig
 # -----------------------------------------------------------------------------
 # IV. Qualitative Grid & Saving Individually

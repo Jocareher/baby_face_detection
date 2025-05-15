@@ -34,11 +34,6 @@ def parse_args():
         help="Directory to save individual prediction's results.",
     )
     parser.add_argument(
-        "--inference_results",
-        type=str,
-        default="inference_results",
-        help="Directory to save the inference plots.",)
-    parser.add_argument(
         "--backbone",
         type=str,
         default="densenet121",

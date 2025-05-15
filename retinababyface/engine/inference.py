@@ -11,6 +11,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from matplotlib.patches import Polygon as MplPolygon
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sklearn.metrics import (
     average_precision_score,

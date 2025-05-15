@@ -104,7 +104,7 @@ def main():
     # 1. Load test dataset and dataloader
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
     val_transform = config.get_val_transform(img_size=resize_size)
-    
+
     norm_mean = config.IMAGENET_MEAN
     norm_std = config.IMAGENET_STD
 

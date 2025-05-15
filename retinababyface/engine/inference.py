@@ -342,7 +342,8 @@ def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
 
     plt.tight_layout()
     plt.show()
-    return fig-------------------------------------------------------------
+    return fig
+# -------------------------------------------------------------
 # IV. Qualitative Grid & Saving Individually
 # -----------------------------------------------------------------------------
 

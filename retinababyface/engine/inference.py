@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
+from matplotlib import patches, patheffects as pe
 from matplotlib.patches import Polygon as MplPolygon
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -220,8 +220,9 @@ def run_inference(
 # -----------------------------------------------------------------------------
 
 
-def compute_map_and_pr(per_true, per_score) -> Tuple[float, Dict[int, float]]:
-    """Compute per-class AP and global mAP."""
+
+def compute_map_and_pr(per_true, per_score):
+    """Compute per‐class AP and global mAP."""
     APs = {}
     for c, y_t in per_true.items():
         y_s = np.array(per_score[c])
@@ -229,67 +230,87 @@ def compute_map_and_pr(per_true, per_score) -> Tuple[float, Dict[int, float]]:
     return float(np.mean(list(APs.values()))), APs
 
 
-def plot_precision_recall(
-    per_true: Dict[int, List[int]],
-    per_score: Dict[int, List[float]],
-    labels_map: Dict[int, str],
-    APs: Dict[int, float],
-    mAP: float,
-) -> plt.Figure:
-    """Plot per-class Precision–Recall curves."""
-    sorted_classes = sorted(APs.keys(), key=lambda c: APs[c], reverse=True)
+def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
+    """Matplotlib per‐class Precision–Recall curves with fixed color map."""
+    # fixed class order & colors
+    classes = list(labels_map.keys())
+    cmap = plt.get_cmap("tab10")
     fig, ax = plt.subplots(figsize=(6, 5))
-    for c in sorted_classes:
-        y_t = np.array(per_true[c])
-        y_s = np.array(per_score[c])
+    for idx, cls in enumerate(classes):
+        name = labels_map[cls]
+        y_t = np.array(per_true[cls])
+        y_s = np.array(per_score[cls])
+        color = cmap(idx)
         if y_t.sum() == 0:
-            ax.step([0, 1], [1, 1], where="post", label=f"{labels_map[c]} (npos=0)")
+            ax.step([0, 1], [1, 1], where="post",
+                    color=color, linestyle="--",
+                    label=f"{name} (npos=0)")
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            ax.step(rec, prec, where="post", label=f"{labels_map[c]} AP={APs[c]:.3f}")
+            ax.step(rec, prec, where="post", color=color,
+                    label=f"{name} AP={APs[cls]:.3f}")
     ax.set(
-        xlabel="Recall", ylabel="Precision", title=f"Precision–Recall (mAP={mAP:.3f})"
+        xlabel="Recall",
+        ylabel="Precision",
+        title=f"Precision–Recall (mAP={mAP:.3f})",
     )
-    ax.legend(loc="upper right", fontsize=8)
-    ax.grid(True)
-    fig.tight_layout()
+    # legend outside, no frame
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0),
+              frameon=False, fontsize=8, title="Classes")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    fig.tight_layout(rect=(0, 0, 0.85, 1))  # leave room for legend
     return fig
 
 
-def plot_confusion_matrix(y_true, y_pred, labels_map) -> plt.Figure:
-    """Plot confusion matrix with correct/total on the diagonal."""
-    cm_labels = list(labels_map) + [-1]
+def plot_confusion_matrix(y_true, y_pred, labels_map):
+    """Simple Matplotlib confusion matrix with annotated counts."""
+    cm_labels = list(labels_map.keys()) + [-1]
+    names = [labels_map.get(c, "BG") for c in cm_labels]
     cm = confusion_matrix(y_true, y_pred, labels=cm_labels)
     support = cm.sum(axis=1)
     correct = np.diag(cm)
-    annot = np.empty_like(cm).astype(str)
-    for i in range(len(cm_labels)):
-        for j in range(len(cm_labels)):
-            annot[i, j] = f"{correct[i]}/{support[i]}" if i == j else str(cm[i, j])
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(
-        cm,
-        annot=annot,
-        fmt="",
-        cmap="Blues",
-        cbar=False,
-        xticklabels=[labels_map.get(c, "BG") for c in cm_labels],
-        yticklabels=[labels_map.get(c, "BG") for c in cm_labels],
-        ax=ax,
-    )
-    ax.set(xlabel="Predicted label", ylabel="True label", title="Confusion Matrix")
+    fig, ax = plt.subplots(figsize=(6, 6))
+    im = ax.imshow(cm, cmap="Blues", vmin=0)
+    # annotate
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            txt = f"{correct[i]}/{support[i]}" if i==j else str(cm[i,j])
+            ax.text(j, i, txt, ha="center", va="center", color="white" if cm[i,j]>cm.max()/2 else "black")
+    ax.set_xticks(np.arange(len(names)))
+    ax.set_xticklabels(names, rotation=45, ha="right")
+    ax.set_yticks(np.arange(len(names)))
+    ax.set_yticklabels(names)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    ax.set_title("Confusion Matrix")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
     return fig
 
 
-def plot_boxplots(data: List[Dict], x: str, y: str, title: str) -> plt.Figure:
-    """Generic boxplot + stripplot for a given dataframe list."""
-    df = pd.DataFrame(data)
+def plot_boxplots(data, x_field, y_field, title, y_lim=None):
+    """
+    Generic Matplotlib boxplot + jittered scatter.
+    `data` is a list of dicts with keys x_field, y_field.
+    """
+    # collect per‐category
+    cats = sorted({d[x_field] for d in data})
+    values = [[d[y_field] for d in data if d[x_field]==cat] for cat in cats]
     fig, ax = plt.subplots(figsize=(6, 4))
-    sns.boxplot(data=df, x=x, y=y, notch=True, palette="pastel", ax=ax)
-    sns.stripplot(data=df, x=x, y=y, color="gray", size=3, jitter=True, ax=ax)
-    ax.set(title=title, xlabel="", ylabel=y)
+    # boxplot
+    bp = ax.boxplot(values, labels=cats, notch=True, patch_artist=True,
+                    boxprops=dict(facecolor="#DDDDDD", edgecolor="black"))
+    # scatter jitter
+    for i, vals in enumerate(values):
+        x = np.random.normal(i+1, 0.08, size=len(vals))
+        ax.scatter(x, vals, color="gray", s=6, alpha=0.6)
+    ax.set_title(title)
+    ax.set_ylabel(y_field)
+    ax.set_xlabel("")
+    if y_lim:
+        ax.set_ylim(y_lim)
+    ax.grid(axis="y", linestyle=":", alpha=0.6)
     fig.tight_layout()
     return fig
 
@@ -297,72 +318,39 @@ def plot_boxplots(data: List[Dict], x: str, y: str, title: str) -> plt.Figure:
 # -----------------------------------------------------------------------------
 # Helper: plot F1 vs confidence threshold, marking best F1 with red dashed line
 # -----------------------------------------------------------------------------
-def plot_f1_vs_threshold(
-    all_gt_labels: List[int],
-    all_scores: List[float],
-    all_pred_labels: List[int],
-    labels_map: Dict[int, str],
-    default_th: float = 0.25,
-    n_steps: int = 100,
-    th_min: float = 0.05,
-    th_max: float = 0.95,
-) -> plt.Figure:
-    """
-    Plot per-class F1 score vs confidence threshold, and draw a red dashed line
-    at each class's best threshold.
-    """
+def plot_f1_vs_threshold(all_gt, all_scores, all_pred, labels_map, default_th=0.25,
+                         n_steps=100, th_min=0.05, th_max=0.95):
+    """Matplotlib F1 vs. confidence threshold, marking each class’s best."""
     thresholds = np.linspace(th_min, th_max, n_steps)
-    y_true = np.array(all_gt_labels)
-    n_classes = len(labels_map)
-
-    # Compute F1 matrix [n_steps x n_classes]
-    f1_matrix = np.zeros((n_steps, n_classes), dtype=float)
-    for i, t in enumerate(thresholds):
-        y_pred_t = [
-            lbl if sc >= t else -1 for sc, lbl in zip(all_scores, all_pred_labels)
-        ]
-        f1s = f1_score(
-            y_true, y_pred_t, labels=list(labels_map), average=None, zero_division=0
-        )
-        f1_matrix[i] = f1s
-
-    fig, ax = plt.subplots(figsize=(6, 4))
+    y_true = np.array(all_gt)
+    classes = list(labels_map.keys())
     cmap = plt.get_cmap("tab10")
 
-    for j, (cls_idx, cls_name) in enumerate(labels_map.items()):
-        f1_vals = f1_matrix[:, j]
-        color = cmap(j)
-        # Plot the F1 curve
-        ax.plot(
-            thresholds,
-            f1_vals,
-            label=f"{cls_name} (F1@{default_th:.2f}={f1_vals[np.argmin(np.abs(thresholds-default_th))]:.3f})",
-            color=color,
-            linewidth=1.5,
-        )
-        # Mark the best F1 point
-        idx_best = np.argmax(f1_vals)
-        th_best, f1_best = thresholds[idx_best], f1_vals[idx_best]
-        ax.axvline(th_best, linestyle="--", color="red", linewidth=1)
-        ax.scatter(th_best, f1_best, color=color, s=30, zorder=3)
-        ax.text(
-            th_best + 0.005,
-            f1_best,
-            f"{f1_best:.2f}",
-            color=color,
-            fontsize=7,
-            va="bottom",
-        )
+    # compute f1
+    f1_mat = np.zeros((n_steps, len(classes)))
+    for i, t in enumerate(thresholds):
+        y_pred = [lbl if sc>=t else -1 for sc, lbl in zip(all_scores, all_pred)]
+        f1s = f1_score(y_true, y_pred, labels=classes, average=None, zero_division=0)
+        f1_mat[i,:] = f1s
 
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for j, cls in enumerate(classes):
+        vals = f1_mat[:,j]
+        color = cmap(j)
+        ax.plot(thresholds, vals, label=f"{labels_map[cls]} (F1@{default_th:.2f}={vals[np.abs(thresholds-default_th).argmin()]:.3f})",
+                color=color, linewidth=1.5)
+        # best point
+        bi = vals.argmax()
+        tb, fb = thresholds[bi], vals[bi]
+        ax.axvline(tb, linestyle="--", color=color, linewidth=1)
+        ax.scatter(tb, fb, color=color, s=30, zorder=3)
     ax.set_xlim(th_min, th_max)
     ax.set_xlabel("Confidence Threshold")
     ax.set_ylabel("F1 Score")
-    ax.set_title("F1 vs Confidence Threshold")
+    ax.set_title("F1 vs. Confidence Threshold")
     ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(
-        loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=7, title="Classes"
-    )
-    fig.tight_layout(pad=0.5)
+    ax.legend(loc="lower right", frameon=False, fontsize=7)
+    fig.tight_layout()
     return fig
 
 
@@ -372,111 +360,56 @@ def plot_f1_vs_threshold(
 
 
 def plot_qualitative_grid(
-    samples: List[
-        Tuple[
-            torch.Tensor, Dict[str, Any], str, torch.Tensor, torch.Tensor, torch.Tensor
-        ]
-    ],
-    labels_map: Dict[int, str],
-    grid_shape: Tuple[int, int],
-    mean: Tuple[float, float, float],
-    std: Tuple[float, float, float],
-) -> plt.Figure:
+    samples, labels_map, grid_shape, mean, std
+):
     """
-    Plot a grid of images with GT (blue) and predicted (green) OBBs,
-    annotated with class & angle (and score for preds). Uses text outlines
-    for maximum contrast without opaque boxes.
-
-    Args:
-        samples: List of (img_tensor, output_dict, filename, gt_polys, gt_angs, gt_lbls)
-        labels_map: map from class idx to readable name
-        grid_shape: (rows, cols)
-        mean, std: for denormalization
-    Returns:
-        Matplotlib Figure
+    Plot a grid of images with GT boxes (blue/red) and predictions (green/orange),
+    annotated with class, angle and score. No opaque text boxes.
     """
     rows, cols = grid_shape
-    fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 4, rows * 4), facecolor="white"
-    )
+    fig, axes = plt.subplots(rows, cols, figsize=(cols*4, rows*4), facecolor="white")
     axes = axes.flatten()
 
-    for ax, (img_t, out, fname, gt_polys, gt_angs, gt_lbls) in zip(
-        axes, samples[: rows * cols]
-    ):
-        # Show image
+    for ax, (img_t, out, fname, gt_boxes, gt_ang, gt_lbl) in zip(axes, samples[:rows*cols]):
+        # show
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
-        ax.set_title(os.path.basename(fname), fontsize=8, color="#333")
+        ax.set_title(os.path.basename(fname), fontsize=8)
 
-        # --- Draw ground truth boxes ---
-        for pts, ang, cls in zip(gt_polys, gt_angs, gt_lbls):
-            pts_np = pts.view(4, 2).numpy()
-            # box
-            ax.add_patch(
-                plt.Polygon(
-                    pts_np, closed=True, fill=False, edgecolor="#0055FF", linewidth=2
-                )
-            )
-            # orientation edge
-            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="#FF3333", linewidth=2)
-            # annotation: class + angle
-            label = f"{labels_map[int(cls)]}\n{math.degrees(float(ang)):.1f}°"
-            centroid = pts_np.mean(axis=0)
-            ax.text(
-                centroid[0],
-                centroid[1],
-                label,
-                color="#0055FF",
-                fontsize=6,
-                fontweight="bold",
-                ha="center",
-                va="center",
-                path_effects=[pe.withStroke(linewidth=2, foreground="white")],
-            )
+        # GT
+        for pts, ang, cls in zip(gt_boxes, gt_ang, gt_lbl):
+            pts_np = pts.view(4,2).numpy()
+            poly = patches.Polygon(pts_np, closed=True, fill=False, edgecolor="#0055FF", linewidth=2)
+            ax.add_patch(poly)
+            # orientation
+            ax.plot(pts_np[[0,1],0], pts_np[[0,1],1], color="#FF3333", linewidth=2)
+            # label+angle
+            lbl = f"{labels_map[int(cls)]}: {math.degrees(ang):.1f}°"
+            cen = pts_np.mean(axis=0)
+            ax.text(cen[0], cen[1], lbl, color="#0055FF", fontsize=6, fontweight="bold",
+                    ha="center", va="center",
+                    path_effects=[pe.withStroke(linewidth=2, foreground="white")])
 
-        # --- Draw predicted boxes ---
-        # ensure we match each polygon with its label, score, angle
-        boxes_xywhr = out.get("boxes")  # shape (M,5)
-        for i, (pts, lbl, score) in enumerate(
-            zip(out["polygons"], out["labels"], out["scores"])
-        ):
-            pts_np = pts.cpu().view(4, 2).numpy()
-            # box
-            ax.add_patch(
-                plt.Polygon(
-                    pts_np,
-                    closed=True,
-                    fill=False,
-                    edgecolor="#33AA33",
-                    linewidth=1.5,
-                    linestyle="--",
-                )
-            )
-            # orientation edge
-            ax.plot(
-                pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="#FF8800", linewidth=1.5
-            )
-            # annotation: class + angle + score
+        # Predictions
+        boxes_xywhr = out.get("boxes", None)
+        for i, (poly_pts, cls, score) in enumerate(zip(out["polygons"], out["labels"], out["scores"])):
+            pts_np = poly_pts.view(4,2).numpy()
+            poly = patches.Polygon(pts_np, closed=True, fill=False,
+                                   edgecolor="#33AA33", linewidth=1.5, linestyle="--")
+            ax.add_patch(poly)
+            ax.plot(pts_np[[0,1],0], pts_np[[0,1],1], color="#FF8800", linewidth=1.5)
             if boxes_xywhr is not None:
-                ang_pred = math.degrees(float(boxes_xywhr[i, 4]))
-                label = f"{labels_map[int(lbl)]}\n{ang_pred:.1f}° {float(score):.2f}"
+                ang_pred = math.degrees(float(boxes_xywhr[i,4]))
+                lbl = f"{labels_map[int(cls)]}: {ang_pred:.1f}° / {score:.2f}"
             else:
-                label = f"{labels_map[int(lbl)]}\n{float(score):.2f}"
-            centroid = pts_np.mean(axis=0)
-            ax.text(
-                centroid[0],
-                centroid[1],
-                label,
-                color="#33AA33",
-                fontsize=5,
-                ha="center",
-                va="center",
-                path_effects=[pe.withStroke(linewidth=2, foreground="black")],
-            )
+                lbl = f"{labels_map[int(cls)]}: {score:.2f}"
+            cen = pts_np.mean(axis=0)
+            ax.text(cen[0], cen[1], lbl, color="#33AA33", fontsize=5,
+                    ha="center", va="center",
+                    path_effects=[pe.withStroke(linewidth=2, foreground="black")])
 
-    # turn off unused axes
-    for ax in axes[len(samples) :]:
+    # blank extra axes
+    for ax in axes[len(samples):]:
         ax.axis("off")
 
     fig.tight_layout(pad=0.5)

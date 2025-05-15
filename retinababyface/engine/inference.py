@@ -2,7 +2,7 @@ import os
 import math
 import logging
 from pathlib import Path
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Union
 
 import torch
 import numpy as np
@@ -88,7 +88,7 @@ def prepare_anchors(
     # Generate anchors in both formats
     anchors_xy, anchors_xywhr = generate_anchors_for_training(
         model=model,
-        image_size=resize_size,
+        resize_size=resize_size,
         device=device,
         base_size=base_size,
         base_ratio=base_ratio,
@@ -771,7 +771,7 @@ def inference(
     model: torch.nn.Module,
     checkpoint_path: str,
     test_loader: DataLoader,
-    output_dir: str,
+    output_dir: Union[str, Path],
     device: torch.device,
     labels_map: Dict[int, str],
     scale_factors: List[float],
@@ -815,6 +815,11 @@ def inference(
             - IoU and angle boxplots
             - Qualitative grid
     """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pred_dir = output_dir / "predictions"
+    pred_dir.mkdir(exist_ok=True)
+
     print("[STEP 1] Loading checkpoint...")
     load_model_checkpoint(model, checkpoint_path, device)
 
@@ -899,13 +904,7 @@ def inference(
     )
 
     print("[STEP 5] Saving individual prediction images...")
-    save_individual_predictions(
-        samples=results["samples"],
-        labels_map=labels_map,
-        output_dir=output_dir,
-        mean=mean,
-        std=std,
-    )
+    save_individual_predictions(results["samples"], labels_map, pred_dir, mean, std)
 
     print("[DONE] Inference and reporting completed.")
     return {

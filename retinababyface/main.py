@@ -6,6 +6,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 # Adding the root directory to the system path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,33 +37,23 @@ def parse_args():
         description="Train and evaluate RetinaBabyFace model"
     )
 
-    # Dataset and paths
+    #  Principal output folder (replaces individual paths)
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        required=True,
+        help="Root directory to save all outputs: checkpoints, logs, visualizations, predictions, etc.",
+    )
+
+    # Dataset
     parser.add_argument(
         "--root_dir",
         type=str,
         required=True,
         help="Path to the dataset root directory.",
     )
-    parser.add_argument(
-        "--checkpoint_path",
-        type=str,
-        default="checkpoint.pt",
-        help="Path to save/load the model checkpoint.",
-    )
-    parser.add_argument(
-        "--inference_results",
-        type=str,
-        default="inference_results",
-        help="Directory to save the inference plots.",
-    )
-    parser.add_argument(
-        "--predictions_dir",
-        type=str,
-        default="predictions",
-        help="Directory to save per-image prediction visualizations.",
-    )
 
-    # Model and image input
+    # Model & input settings
     parser.add_argument(
         "--img_size",
         type=int,
@@ -103,134 +94,55 @@ def parse_args():
     )
 
     # Training hyperparameters
+    parser.add_argument("--epochs", type=int, default=config.DEFAULT_EPOCHS)
+    parser.add_argument("--lr", type=float, default=config.DEFAULT_LR)
+    parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
     parser.add_argument(
-        "--epochs",
-        type=int,
-        default=config.DEFAULT_EPOCHS,
-        help="Number of training epochs.",
-    )
-    parser.add_argument(
-        "--lr", type=float, default=config.DEFAULT_LR, help="Initial learning rate."
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=config.DEFAULT_BATCH_SIZE,
-        help="Batch size for training and validation.",
-    )
-    parser.add_argument(
-        "--weight_decay",
-        type=float,
-        default=config.DEFAULT_WEIGHT_DECAY,
-        help="Weight decay for optimizer.",
+        "--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY
     )
     parser.add_argument(
         "--optimizer",
         type=str,
         default=config.DEFAULT_OPTIMIZER,
         choices=["ADAM", "SGD"],
-        help="Optimizer type.",
     )
     parser.add_argument(
         "--scheduler",
         type=str,
         default=config.DEFAULT_SCHEDULER,
         choices=[None, "ReduceLR", "OneCycle", "Cosine"],
-        help="Learning rate scheduler.",
     )
-    parser.add_argument(
-        "--clip_value",
-        type=float,
-        default=config.DEFAULT_CLIP_VALUE,
-        help="Max norm for gradient clipping.",
-    )
+    parser.add_argument("--clip_value", type=float, default=config.DEFAULT_CLIP_VALUE)
     parser.add_argument(
         "--grad_clip_mode",
         type=str,
         default=config.DEFAULT_GRAD_CLIP_MODE,
         choices=["Norm", "Value"],
-        help="Gradient clipping strategy.",
     )
-    parser.add_argument(
-        "--patience",
-        type=int,
-        default=config.DEFAULT_PATIENCE,
-        help="Early stopping patience (epochs).",
-    )
+    parser.add_argument("--patience", type=int, default=config.DEFAULT_PATIENCE)
 
     # Loss weighting
-    parser.add_argument(
-        "--lambda_cls",
-        type=float,
-        default=config.LAMBDA_CLS,
-        help="Weight for classification loss.",
-    )
-    parser.add_argument(
-        "--lambda_obb",
-        type=float,
-        default=config.LAMBDA_OBB,
-        help="Weight for OBB regression loss.",
-    )
-    parser.add_argument(
-        "--lambda_rot",
-        type=float,
-        default=config.LAMBDA_ROT,
-        help="Weight for angle regression loss.",
-    )
+    parser.add_argument("--lambda_cls", type=float, default=config.LAMBDA_CLS)
+    parser.add_argument("--lambda_obb", type=float, default=config.LAMBDA_OBB)
+    parser.add_argument("--lambda_rot", type=float, default=config.LAMBDA_ROT)
 
     # Data augmentation
+    parser.add_argument("--use_augmentation", action="store_true", default=True)
     parser.add_argument(
-        "--use_augmentation",
-        action="store_true",
-        default=True,
-        help="Apply data augmentation during training.",
-    )
-    parser.add_argument(
-        "--no_augmentation",
-        action="store_false",
-        dest="use_augmentation",
-        help="Disable data augmentation.",
+        "--no_augmentation", action="store_false", dest="use_augmentation"
     )
 
     # Logging & tracking
-    parser.add_argument(
-        "--record_metrics", action="store_true", help="Enable logging to WandB."
-    )
-    parser.add_argument(
-        "--project", type=str, default=config.PROJECT_NAME, help="WandB project name."
-    )
-    parser.add_argument(
-        "--run_name", type=str, default=config.RUN_NAME, help="WandB run name."
-    )
+    parser.add_argument("--record_metrics", action="store_true")
+    parser.add_argument("--project", type=str, default=config.PROJECT_NAME)
+    parser.add_argument("--run_name", type=str, default=config.RUN_NAME)
 
-    # Inference configuration
-    parser.add_argument(
-        "--split",
-        type=str,
-        default="test",
-        help="Dataset split to evaluate: 'test' or 'val'.",
-    )
-    parser.add_argument(
-        "--conf_thres",
-        type=float,
-        default=0.25,
-        help="Confidence threshold for predictions.",
-    )
-    parser.add_argument(
-        "--iou_thres", type=float, default=0.5, help="IoU threshold for evaluation."
-    )
-    parser.add_argument(
-        "--grid_rows",
-        type=int,
-        default=3,
-        help="Number of rows for visualization grid.",
-    )
-    parser.add_argument(
-        "--grid_cols",
-        type=int,
-        default=3,
-        help="Number of columns for visualization grid.",
-    )
+    # Inference
+    parser.add_argument("--split", type=str, default="test", help="Split to evaluate.")
+    parser.add_argument("--conf_thres", type=float, default=0.25)
+    parser.add_argument("--iou_thres", type=float, default=0.5)
+    parser.add_argument("--grid_rows", type=int, default=3)
+    parser.add_argument("--grid_cols", type=int, default=3)
 
     return parser.parse_args()
 
@@ -239,23 +151,50 @@ def main():
     args = parse_args()
     print("[INFO] Starting training and inference with args:", vars(args))
 
-    # Save config
-    with open(f"{args.run_name}.yaml", "w") as f:
-        yaml.dump(vars(args), f)
+    # ------------------------------------------------------------------------
+    # I. Output directory structure
+    # ------------------------------------------------------------------------
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
+    ckpt_path = output_dir / "checkpoint.pt"
+    csv_path = output_dir / f"{args.run_name}.csv"
+    config_path = output_dir / f"{args.run_name}.yaml"
+    figures_dir = output_dir / "figures"
+    grids_dir = output_dir / "dataset_grids"
+    predictions_dir = output_dir / "predictions"
+    anchor_preview_path = output_dir / "anchors_preview.jpg"
+    inference_preview = output_dir / "training_grids"
+
+    inference_preview.mkdir(exist_ok=True)
+    figures_dir.mkdir(exist_ok=True)
+    grids_dir.mkdir(exist_ok=True)
+    predictions_dir.mkdir(exist_ok=True)
+
+    # Save full config to YAML
+    with open(config_path, "w") as f:
+        yaml.dump(vars(args), f)
+    print(f"[INFO] Saved config to {config_path}")
+
+    # ------------------------------------------------------------------------
+    # II. Setup
+    # ------------------------------------------------------------------------
     set_seed(42)
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
 
     norm_mean = config.IMAGENET_MEAN if args.freeze_backbone else config.MEAN
     norm_std = config.IMAGENET_STD if args.freeze_backbone else config.STD
-
     img_size = tuple(args.img_size)
+
     train_transform = config.get_train_transform(
         img_size, args.use_augmentation, mean=norm_mean, std=norm_std
     )
     val_transform = config.get_val_transform(img_size, mean=norm_mean, std=norm_std)
 
+    # ------------------------------------------------------------------------
+    # III. Datasets and loaders
+    # ------------------------------------------------------------------------
     train_dataset = BabyFacesDataset(
         args.root_dir, split="train", transform=train_transform
     )
@@ -265,14 +204,11 @@ def main():
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
 
-    print("[INFO] Visualizing training dataset...")
+    # Optional: visualize datasets
     visualize_and_save_dataset_in_script(
-        train_dataset, "train", args.inference_results, num_images=9
+        train_dataset, "train", grids_dir, num_images=9
     )
-    print("[INFO] Visualizing validation dataset...")
-    visualize_and_save_dataset_in_script(
-        val_dataset, "val", args.inference_results, num_images=9
-    )
+    visualize_and_save_dataset_in_script(val_dataset, "val", grids_dir, num_images=9)
 
     train_loader = DataLoader(
         train_dataset,
@@ -291,7 +227,9 @@ def main():
         pin_memory=True,
     )
 
-    print("[INFO] Building model...")
+    # ------------------------------------------------------------------------
+    # IV. Model and loss setup
+    # ------------------------------------------------------------------------
     model = RetinaBabyFace(
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
@@ -318,9 +256,12 @@ def main():
 
     multitask_loss = MultiTaskLoss(args.lambda_cls, args.lambda_obb, args.lambda_rot)
     earlystopping = EarlyStopping(
-        args.patience, verbose=True, delta=0.001, path=args.checkpoint_path
+        args.patience, verbose=True, delta=0.001, path=ckpt_path
     )
 
+    # ------------------------------------------------------------------------
+    # V. Training
+    # ------------------------------------------------------------------------
     print("[INFO] Starting training...")
     train(
         model,
@@ -342,23 +283,21 @@ def main():
         config.SCALE_FACTORS,
         config.RATIO_FACTORS,
         config.PRECOMPUTED_OBB_STATS,
+        csv_path=csv_path,
+        anchor_preview_path=anchor_preview_path,
+        inference_preview=inference_preview,
     )
 
     print("\n[INFO] Training completed!")
 
-    # INFERENCE
+    # ------------------------------------------------------------------------
+    # VI. Inference
+    # ------------------------------------------------------------------------
     print("[INFO] Starting inference...")
 
     test_dataset = BabyFacesDataset(
         args.root_dir, split=args.split, transform=val_transform
     )
-
-    print(f"[INFO] Loaded {len(test_dataset)} samples from split: {args.split}")
-    print("[INFO] Visualizing test dataset...")
-    visualize_and_save_dataset_in_script(
-        test_dataset, "test", args.inference_results, num_images=9
-    )
-
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
@@ -368,6 +307,8 @@ def main():
         pin_memory=True,
     )
 
+    visualize_and_save_dataset_in_script(test_dataset, "test", grids_dir, num_images=9)
+
     labels_map = {
         0: "3/4 Leftside",
         1: "3/4 Rightside",
@@ -376,60 +317,44 @@ def main():
         4: "Right Profile",
     }
 
+    # Reload model for inference
     trained_model = RetinaBabyFace(
-        backbone_name=args.backbone,
-        out_channel=args.out_channel,
-        pretrained=args.use_pretrained,
+        args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
-
-    print(f"[INFO] Loading weights from: {args.checkpoint_path}")
-    state = torch.load(args.checkpoint_path, map_location=device)
-    if "model_state_dict" in state:
-        trained_model.load_state_dict(state["model_state_dict"])
-    else:
-        trained_model.load_state_dict(state)
-
+    print(f"[INFO] Loading weights from: {ckpt_path}")
+    state = torch.load(ckpt_path, map_location=device)
+    trained_model.load_state_dict(
+        state["model_state_dict"] if "model_state_dict" in state else state
+    )
     trained_model.eval()
 
     figures = inference(
         trained_model,
-        args.checkpoint_path,
-        test_loader,
-        args.predictions_dir,
-        device,
-        labels_map,
-        config.SCALE_FACTORS,
-        config.RATIO_FACTORS,
-        config.PRECOMPUTED_OBB_STATS,
-        args.conf_thres,
-        args.iou_thres,
-        (args.grid_rows, args.grid_cols),
+        checkpoint_path=ckpt_path,
+        test_loader=test_loader,
+        output_dir=predictions_dir,
+        device=device,
+        labels_map=labels_map,
+        scale_factors=config.SCALE_FACTORS,
+        ratio_factors=config.RATIO_FACTORS,
+        obb_stats_by_size=config.PRECOMPUTED_OBB_STATS,
+        conf_thres=args.conf_thres,
+        iou_thres=args.iou_thres,
+        grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,
     )
 
-    os.makedirs(args.inference_results, exist_ok=True)
-    figures["pr_figure"].savefig(
-        os.path.join(args.inference_results, "precision_recall.png"), dpi=150
-    )
-    figures["confusion_figure"].savefig(
-        os.path.join(args.inference_results, "confusion_matrix.png"), dpi=150
-    )
-    figures["grid_figure"].savefig(
-        os.path.join(args.inference_results, "grid_examples.png"), dpi=150
-    )
-    figures["iou_boxplot_figure"].savefig(
-        os.path.join(args.inference_results, "iou_boxplot_figure.png"), dpi=150
-    )
-    figures["angle_boxplot_figure"].savefig(
-        os.path.join(args.inference_results, "angle_boxplot_figure.png"), dpi=150
-    )
-    figures["f1_threshold_figure"].savefig(
-        os.path.join(args.inference_results, "f1_threshold_figure.png"), dpi=150
-    )
+    # Save all figures
+    figures["pr_figure"].savefig(figures_dir / "precision_recall.png", dpi=150)
+    figures["confusion_figure"].savefig(figures_dir / "confusion_matrix.png", dpi=150)
+    figures["grid_figure"].savefig(figures_dir / "grid_examples.png", dpi=150)
+    figures["iou_boxplot_figure"].savefig(figures_dir / "iou_boxplot.png", dpi=150)
+    figures["angle_boxplot_figure"].savefig(figures_dir / "angle_boxplot.png", dpi=150)
+    figures["f1_threshold_figure"].savefig(figures_dir / "f1_threshold.png", dpi=150)
 
-    print("[INFO] Inference and evaluation completed.")
-    print(f"[INFO] All figures saved to: {args.inference_results}")
+    print(f"[INFO] All figures saved to {figures_dir}")
+    print(f"[INFO] All predictions saved to {predictions_dir}")
 
 
 if __name__ == "__main__":

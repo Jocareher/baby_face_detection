@@ -2,7 +2,8 @@ import time
 import csv
 import os
 import random
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Union
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -472,6 +473,7 @@ def generate_anchors_for_training(
     base_ratio: float,
     scale_factors: List[float],
     ratio_factors: List[float],
+    anchor_preview_path: Optional[Union[str, Path]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Generates oriented anchor boxes (OBBs) for the training stage of the model, based on the
@@ -490,6 +492,7 @@ def generate_anchors_for_training(
         base_ratio (float): Base aspect ratio of the anchors.
         scale_factors (List[float]): List of scale multipliers to generate anchors of various sizes.
         ratio_factors (List[float]): List of aspect ratio multipliers to create anchors of different shapes.
+        anchor_preview_path (Optional[Union[str, Path]]): Path to save a preview of the generated anchors.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
@@ -527,8 +530,7 @@ def generate_anchors_for_training(
     anchors_xywhr = xyxyxyxy2xywhr(anchors_xy, zeros, (W, H))
 
     # Optionally save a preview of a sample of anchors
-    preview_path = "anchors_preview.jpg"
-    if not os.path.exists(preview_path):
+    if anchor_preview_path is not None and not os.path.exists(anchor_preview_path):
         all_anc = anchors_xy.cpu().numpy()  # (N, 8)
         K = min(200, all_anc.shape[0])  # Sample K anchors for visualization
         idxs = random.sample(range(all_anc.shape[0]), K)
@@ -551,9 +553,9 @@ def generate_anchors_for_training(
             ax.add_patch(poly)
 
         plt.tight_layout()
-        plt.savefig(preview_path, dpi=150)
+        plt.savefig(anchor_preview_path, dpi=150)
         plt.close(fig)
-        print(f"[INFO] Anchor preview saved to {preview_path}")
+        print(f"[INFO] Anchor preview saved to {anchor_preview_path}")
 
     return anchors_xy, anchors_xywhr
 
@@ -890,6 +892,9 @@ def train(
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
     obb_stats_by_size: Optional[Dict[Tuple[int, int], Dict[str, float]]] = None,
     grid_shape: Tuple[int, int] = (3, 3),
+    csv_path: Union[str, Path] = "training_metrics.csv",
+    anchor_preview_path: Optional[Union[str, Path]] = None,
+    inference_preview: Optional[Union[str, Path]] = None,
 ) -> Dict[str, List[float]]:
     """
     Trains the model and optionally records metrics.
@@ -914,13 +919,16 @@ def train(
         scale_factors (List[float], optional): Scale factors for anchor generation.
         ratio_factors (List[float], optional): Ratio factors for anchor generation.
         obb_stats_by_size (Dict[Tuple[int, int], Dict[str, float]], optional): Precomputed OBB statistics by size.
+        csv_path (Union[str, Path], optional): Path to save training metrics CSV.
+        anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
+        grid_shape (Tuple[int, int], optional): Grid shape for anchor generation.
 
     Returns:
         Dict[str, List[float]]: Dictionary containing lists of training and testing losses.
     """
 
     # CSV file name for logging metrics
-    csv_filename = f"{run_name}.csv"
+    csv_filename = str(csv_path)
     header = [
         "epoch",
         "train_total_loss",
@@ -935,7 +943,6 @@ def train(
         "learning_rate",
         "epoch_time",
     ]
-    # Create CSV file and write header
     with open(csv_filename, mode="w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -987,6 +994,7 @@ def train(
         base_ratio=base_ratio,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
+        anchor_preview_path=anchor_preview_path,
     )
     # Convert anchors to xyxy format
     anchors_tuple = (anchors_xy, anchors_xywhr)
@@ -1113,15 +1121,15 @@ def train(
                 )
 
             # every 5 epochs, save grid.jpg
-            if (epoch + 1) % 5 == 0:
+            if (epoch + 1) % 5 == 0 and inference_preview is not None:
+                out_path = inference_preview / f"{run_name}_epoch{epoch+1}.jpg"
                 in_training_inference(
                     model,
                     val_dataloader,
                     anchors_xy,
                     device,
                     resize_size,
-                    run_name,
-                    epoch + 1,
+                    out_path,
                     grid_shape,
                 )
 
@@ -1149,8 +1157,7 @@ def in_training_inference(
     anchors_xy: torch.Tensor,
     device: torch.device,
     resize_size: Tuple[int, int],
-    run_name: str,
-    epoch: int,
+    out_path: Union[str, Path],
     grid_shape=(3, 3),
 ):
     """
@@ -1169,7 +1176,7 @@ def in_training_inference(
         device (torch.device): Target device for inference.
         resize_size (Tuple[int, int]): Size used to resize input images (W, H).
         run_name (str): Prefix name used to save the output visualization.
-        epoch (int): Current training epoch (used in filename).
+        out_path (Union[str, Path]): Path to save the output image.
         grid_shape (Tuple[int, int]): Grid shape for visual output (rows, cols).
 
     Returns:
@@ -1240,7 +1247,6 @@ def in_training_inference(
             )
 
     plt.tight_layout()
-    out_path = f"{run_name}_{epoch}.jpg"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     model.train()

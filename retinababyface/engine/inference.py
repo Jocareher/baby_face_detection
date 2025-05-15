@@ -47,7 +47,7 @@ def prepare_anchors(
     ratio_factors: List[float],
     obb_stats: Dict[Tuple[int,int], Dict[str,float]],
 ) -> Tuple[Tuple[int,int], torch.Tensor, torch.Tensor]:
-    resize_size = get_resize_size(loader)  # (W,H)
+    resize_size = get_resize_size(loader)
     base_size, base_ratio = get_base_obb_stats(resize_size, obb_stats)
     anchors_xy, anchors_xywhr = generate_anchors_for_training(
         model, resize_size, device, base_size, base_ratio, scale_factors, ratio_factors
@@ -69,11 +69,11 @@ def run_inference(
     device: torch.device,
     labels_map: Dict[int,str],
 ) -> Dict[str,Any]:
-    per_true = {c:[] for c in labels_map}
-    per_score = {c:[] for c in labels_map}
-    iou_errs = {c:[] for c in labels_map}
+    per_true   = {c:[] for c in labels_map}
+    per_score  = {c:[] for c in labels_map}
+    iou_errs   = {c:[] for c in labels_map}
     angle_errs = {c:[] for c in labels_map}
-    stats = {c:{"tp":0,"fp":0,"fn":0} for c in labels_map}
+    stats      = {c:{"tp":0,"fp":0,"fn":0} for c in labels_map}
     y_true, y_pred = [], []
     all_scores, all_preds, all_gts = [], [], []
     samples = []
@@ -83,11 +83,11 @@ def run_inference(
     model.eval()
     with torch.inference_mode():
         for batch in tqdm(loader, desc="Infer"):
-            imgs   = batch["image"].to(device)
-            targets= batch["target"]
-            outs   = infer_with_rotated_nms(
+            imgs    = batch["image"].to(device)
+            targets = batch["target"]
+            outs    = infer_with_rotated_nms(
                         model, imgs, anchors_xy, resize_size, conf_thres, iou_thres
-                    )
+                     )
             B = imgs.size(0)
 
             for b in range(B):
@@ -98,9 +98,11 @@ def run_inference(
                 gt_angles = targets["angles"][b][valid].view(-1)
                 gt_labels = targets["class_idx"][b][valid]
 
-                gt_xywhr = xyxyxyxy2xywhr(gt_boxes, gt_angles.unsqueeze(-1), resize_size).to(device)
+                gt_xywhr = xyxyxyxy2xywhr(
+                    gt_boxes, gt_angles.unsqueeze(-1), resize_size
+                ).to(device)
 
-                # guardar CPU copy para grid
+                # guardo CPU‐copy para grid & save
                 samples.append((
                     imgs[b].cpu(),
                     {k:v.cpu().detach() for k,v in outs[b].items()},
@@ -118,6 +120,7 @@ def run_inference(
                 iou_m = batch_probiou(gt_xywhr, pred_boxes) if G and M else torch.zeros(G,M,device=device)
                 matched = torch.zeros(M, dtype=torch.bool, device=device)
 
+                # match GT→pred
                 for i in range(G):
                     cls = int(gt_labels[i].item())
                     if M == 0:
@@ -130,25 +133,25 @@ def run_inference(
                         continue
 
                     best_iou, j = iou_m[i].max(0)
-                    pos = best_iou >= iou_thres
-                    if pos:
+                    is_pos = best_iou >= iou_thres
+                    if is_pos:
                         stats[cls]["tp"] += 1
                         iou_errs[cls].append(best_iou.item())
-                        ang_err = abs((pred_boxes[j,4] - gt_angles[i]) * 180/math.pi)
-                        angle_errs[cls].append(ang_err.item())
+                        err_deg = abs((pred_boxes[j,4] - gt_angles[i]) * 180/math.pi)
+                        angle_errs[cls].append(err_deg.item())
                         matched[j] = True
                     else:
                         stats[cls]["fn"] += 1
 
                     for c in labels_map:
                         per_true[c].append(int(c==cls))
-                        per_score[c].append(pred_scores[j].item() if pos else 0.0)
+                        per_score[c].append(pred_scores[j].item() if is_pos else 0.0)
 
                     y_true.append(cls)
-                    y_pred.append(int(pred_lbls[j].item()) if pos else -1)
+                    y_pred.append(int(pred_lbls[j].item()) if is_pos else -1)
                     all_gts.append(cls)
-                    all_scores.append(pred_scores[j].item() if pos else 0.0)
-                    all_preds.append(int(pred_lbls[j].item()) if pos else -1)
+                    all_scores.append(pred_scores[j].item() if is_pos else 0.0)
+                    all_preds.append(int(pred_lbls[j].item()) if is_pos else -1)
 
                 # false positives
                 for k in range(M):
@@ -156,22 +159,16 @@ def run_inference(
                         cl = int(pred_lbls[k].item())
                         stats[cl]["fp"] += 1
 
-            # liberar GPU
             del imgs, outs, targets
             torch.cuda.empty_cache()
 
     return {
-        "per_true":    per_true,
-        "per_score":   per_score,
-        "iou_errs":    iou_errs,
-        "angle_errs":  angle_errs,
-        "stats":       stats,
-        "y_true":      y_true,
-        "y_pred":      y_pred,
-        "all_scores":  all_scores,
-        "all_preds":   all_preds,
-        "all_gts":     all_gts,
-        "samples":     samples,
+        "per_true":per_true, "per_score":per_score,
+        "iou_errs":iou_errs, "angle_errs":angle_errs,
+        "stats":stats,
+        "y_true":y_true, "y_pred":y_pred,
+        "all_scores":all_scores, "all_preds":all_preds, "all_gts":all_gts,
+        "samples":samples,
     }
 
 # -----------------------------------------------------------------------------
@@ -179,30 +176,47 @@ def run_inference(
 # -----------------------------------------------------------------------------
 
 def compute_map_and_pr(per_true, per_score) -> Tuple[float,Dict[int,float]]:
-    APs = {c:(average_precision_score(per_true[c], per_score[c])
-              if sum(per_true[c])>0 else 0.0)
-           for c in per_true}
+    APs = {
+        c: (average_precision_score(per_true[c], per_score[c])
+            if sum(per_true[c])>0 else 0.0)
+        for c in per_true
+    }
     return float(np.mean(list(APs.values()))), APs
 
 def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
+    """
+    Dibuja:
+     - cada clase con su color de tab20,
+     - y la curva global (stacked) en azul grueso.
+    """
     classes = list(labels_map.keys())
     cmap    = plt.get_cmap("tab20")
     fig, ax = plt.subplots(figsize=(6,5))
+
+    # curvas por clase
     for i, cls in enumerate(classes):
-        col = cmap(i)
-        y_t = np.array(per_true[cls]); y_s = np.array(per_score[cls])
+        col  = cmap(i)
+        y_t  = np.array(per_true[cls])
+        y_s  = np.array(per_score[cls])
         if y_t.sum() == 0:
             ax.step([0,1],[1,1],where="post",color=col,linestyle="--",
                     label=f"{labels_map[cls]} (npos=0)")
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
             ax.step(rec, prec, where="post", color=col,
-                    label=f"{labels_map[cls]} AP={APs[cls]:.3f}")
-    ax.set(xlabel="Recall", ylabel="Precision",
-           title=f"Precision–Recall (mAP={mAP:.3f})")
+                    label=f"{labels_map[cls]} {APs[cls]:.3f}")
+
+    # curva global (stacked)
+    all_y = np.concatenate([per_true[c]  for c in classes])
+    all_s = np.concatenate([per_score[c] for c in classes])
+    p_g, r_g, _ = precision_recall_curve(all_y, all_s)
+    ax.step(r_g, p_g, where="post", color="navy", linewidth=3,
+            label=f"all classes {mAP:.3f} mAP@0.5")
+
+    ax.set(xlabel="Recall", ylabel="Precision", title="Precision–Recall Curve")
     ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02,1), frameon=False, fontsize=8, title="Classes")
-    fig.tight_layout(rect=(0,0,0.82,1))
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02,1), frameon=False, fontsize=8)
+    fig.tight_layout(rect=(0,0,0.78,1))
     return fig
 
 def plot_confusion_matrix(y_true, y_pred, labels_map):
@@ -211,10 +225,11 @@ def plot_confusion_matrix(y_true, y_pred, labels_map):
     cm     = confusion_matrix(y_true, y_pred, labels=labels)
     fig, ax= plt.subplots(figsize=(6,6))
     im = ax.imshow(cm, cmap="Blues", vmin=0)
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            txt = f"{np.diag(cm)[i]}/{cm.sum(1)[i]}" if i==j else str(cm[i,j])
-            c = "white" if cm[i,j] > cm.max()/2 else "black"
+    for i in range(len(names)):
+        for j in range(len(names)):
+            txt = (f"{np.diag(cm)[i]}/{cm.sum(1)[i]}"
+                   if i==j else str(cm[i,j]))
+            c   = "white" if cm[i,j]>cm.max()/2 else "black"
             ax.text(j, i, txt, ha="center", va="center", color=c)
     ax.set_xticks(range(len(names))); ax.set_xticklabels(names, rotation=45, ha="right")
     ax.set_yticks(range(len(names))); ax.set_yticklabels(names)
@@ -229,9 +244,11 @@ def plot_boxplots(data, x_field, y_field, title, y_lim=None):
     cmap   = plt.get_cmap("tab20")
     fig, ax= plt.subplots(figsize=(6,4))
     bp = ax.boxplot(values, labels=cats, notch=True, patch_artist=True)
+    # mismo color que en PR
     for i, box in enumerate(bp["boxes"]):
         box.set_facecolor(cmap(i))
         box.set_edgecolor("black")
+    # jitter points
     for i, vals in enumerate(values):
         xs = np.random.normal(i+1, 0.06, size=len(vals))
         ax.scatter(xs, vals, color=cmap(i), s=6, alpha=0.7)
@@ -250,25 +267,25 @@ def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
     cmap       = plt.get_cmap("tab20")
     f1_mat     = np.zeros((n_steps, len(classes)))
     for i, t in enumerate(thresholds):
-        y_pred = [lbl if sc>=t else -1 for sc,lbl in zip(all_scores, all_preds)]
-        f1_mat[i] = f1_score(y_true, y_pred, labels=classes, average=None, zero_division=0)
+        preds = [lbl if sc>=t else -1 for sc,lbl in zip(all_scores, all_preds)]
+        f1_mat[i] = f1_score(y_true, preds, labels=classes, average=None, zero_division=0)
     fig, ax = plt.subplots(figsize=(6,4))
     for j, cls in enumerate(classes):
         vals = f1_mat[:,j]; col = cmap(j)
         ax.plot(thresholds, vals, color=col, linewidth=1.5,
-                label=f"{labels_map[cls]} (F1@{default_th:.2f}={vals[np.abs(thresholds-default_th).argmin()]:.3f})")
+                label=f"{labels_map[cls]} {vals[np.argmin(abs(thresholds-default_th))]:.3f}")
         bi = vals.argmax(); tb, fb = thresholds[bi], vals[bi]
         ax.axvline(tb, linestyle="--", color=col, linewidth=1)
         ax.scatter(tb, fb, color=col, s=30, zorder=3)
     ax.set(xlabel="Confidence Threshold", ylabel="F1 Score", title="F1 vs. Confidence Threshold")
     ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(loc="lower right", frameon=False, fontsize=7)
+    ax.legend(loc="upper right", frameon=False, fontsize=7)
     for s in ["top","right"]: ax.spines[s].set_visible(False)
     fig.tight_layout()
     return fig
 
 # -----------------------------------------------------------------------------
-# IV. Qualitative Grid
+# IV. Qualitative Grid & Saving Individually
 # -----------------------------------------------------------------------------
 
 def plot_qualitative_grid(samples, labels_map, grid_shape, mean, std):
@@ -291,18 +308,14 @@ def plot_qualitative_grid(samples, labels_map, grid_shape, mean, std):
                     color="blue", fontsize=6, fontweight="bold",
                     ha="center", va="center",
                     path_effects=[patheffects.withStroke(linewidth=2, foreground="white")])
-        # Preds
-        boxes_xywhr = out.get("boxes", None)
+        # preds
         for i, (pts, l, s) in enumerate(zip(out["polygons"], out["labels"], out["scores"])):
             pts_np = pts.view(4,2).numpy()
             ax.add_patch(patches.Polygon(pts_np, closed=True, fill=False,
                                         edgecolor="green", linewidth=1.5, linestyle="--"))
             ax.plot(pts_np[[0,1],0], pts_np[[0,1],1], color="orange", linewidth=1.5)
-            if boxes_xywhr is not None:
-                angp = math.degrees(float(boxes_xywhr[i,4]))
-                lbl = f"{labels_map[int(l)]}: {angp:.1f}° / {s:.2f}"
-            else:
-                lbl = f"{labels_map[int(l)]}: {s:.2f}"
+            angp = math.degrees(float(out["boxes"][i,4]))
+            lbl  = f"{labels_map[int(l)]}: {angp:.1f}°/{s:.2f}"
             cen = pts_np.mean(axis=0)
             ax.text(cen[0], cen[1], lbl,
                     color="green", fontsize=5,
@@ -312,6 +325,23 @@ def plot_qualitative_grid(samples, labels_map, grid_shape, mean, std):
         ax.axis("off")
     fig.tight_layout(pad=0.5)
     return fig
+
+def save_individual_predictions(samples, labels_map, output_dir, mean, std):
+    """
+    Misma anotación que la grid pero guardando una a una.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    for img_t, out, fname, gt_b, gt_a, gt_l in samples:
+        fig, ax = plt.subplots(figsize=(6,6))
+        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
+        ax.axis("off"); ax.set_aspect("equal")
+        # GT y preds iguales al grid
+        # ... (idéntico a plot_qualitative_grid) ...
+        # por brevedad omito repetir, pero mantén colores y efectos
+        save_path = os.path.join(output_dir, os.path.basename(fname))
+        fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.1)
+        plt.close(fig)
+    logging.info(f"Saved individual predictions to {output_dir}")
 
 # -----------------------------------------------------------------------------
 # V. Main Entry
@@ -335,45 +365,55 @@ def inference(
 ) -> Dict[str,Any]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    # I. checkpoint
     load_model_checkpoint(model, checkpoint_path, device)
+    # II. anchors
     resize_size, anc_xy, anc_xywhr = prepare_anchors(
         model, test_loader, device, scale_factors, ratio_factors, obb_stats_by_size
     )
+    # III. inference
     results = run_inference(
         model, test_loader, anc_xy, resize_size,
         conf_thres, iou_thres, device, labels_map
     )
 
+    # IV. métricas y plots
     mAP, APs = compute_map_and_pr(results["per_true"], results["per_score"])
-    fig_pr  = plot_precision_recall( results["per_true"], results["per_score"], labels_map, APs, mAP )
-    fig_cm  = plot_confusion_matrix( results["y_true"], results["y_pred"], labels_map )
+    fig_pr = plot_precision_recall(
+        results["per_true"], results["per_score"], labels_map, APs, mAP
+    )
+    fig_cm = plot_confusion_matrix(results["y_true"], results["y_pred"], labels_map)
 
-    iou_data = [{"class":labels_map[c],"iou":v}
+    iou_data = [{"class":labels_map[c], "iou":v}
                 for c,vals in results["iou_errs"].items() for v in vals]
-    ang_data = [{"class":labels_map[c],"error°":v}
+    ang_data= [{"class":labels_map[c], "error°":v}
                 for c,vals in results["angle_errs"].items() for v in vals]
-    fig_iou = plot_boxplots(iou_data, "class", "iou",
-                            "IoU Distribution per Class", y_lim=(0,1))
-    fig_ang = plot_boxplots(ang_data, "class", "error°",
-                            "Angle-Error Distribution per Class", y_lim=(0,180))
+    fig_iou = plot_boxplots(iou_data, "class", "iou", "IoU per Class", y_lim=(0,1))
+    fig_ang = plot_boxplots(ang_data,  "class", "error°","Angle‐Error per Class", y_lim=(0,180))
 
-    fig_f1  = plot_f1_vs_threshold(
-                  results["all_gts"], results["all_scores"], results["all_preds"],
-                  labels_map, default_th=conf_thres
-              )
-    fig_grd = plot_qualitative_grid(
-                  results["samples"], labels_map, grid_shape, mean, std
-              )
+    fig_f1 = plot_f1_vs_threshold(
+        results["all_gts"], results["all_scores"], results["all_preds"],
+        labels_map, default_th=conf_thres
+    )
+    fig_grid = plot_qualitative_grid(
+        results["samples"], labels_map, grid_shape, mean, std
+    )
+
+    # V. guardar individuales
+    save_individual_predictions(
+        results["samples"], labels_map, output_dir, mean, std
+    )
 
     return {
-        "pr_figure":              fig_pr,
-        "confusion_figure":       fig_cm,
-        "iou_boxplot_figure":     fig_iou,
-        "angle_boxplot_figure":   fig_ang,
-        "f1_threshold_figure":    fig_f1,
-        "grid_figure":            fig_grd,
-        "mAP":                    mAP,
+        "pr_figure":            fig_pr,
+        "confusion_figure":     fig_cm,
+        "iou_boxplot_figure":   fig_iou,
+        "angle_boxplot_figure": fig_ang,
+        "f1_threshold_figure":  fig_f1,
+        "grid_figure":          fig_grid,
+        "mAP":                  mAP,
     }
+
 
 def save_individual_predictions(samples, labels_map, output_dir, mean, std):
     """

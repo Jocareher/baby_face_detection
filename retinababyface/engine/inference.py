@@ -184,16 +184,11 @@ def compute_map_and_pr(per_true, per_score) -> Tuple[float,Dict[int,float]]:
     return float(np.mean(list(APs.values()))), APs
 
 def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
-    """
-    Precision–Recall Curve perfectamente proporcionada,
-    con leyenda fuera del área y línea global gruesa.
-    """
     classes     = list(labels_map.keys())
     cmap        = plt.get_cmap("tab20")
-    fig, ax     = plt.subplots(figsize=(6, 5))
     rec_uniform = np.linspace(0, 1, 200)
 
-    # curvas por clase
+    fig, ax = plt.subplots(figsize=(6,5))
     for i, cls in enumerate(classes):
         y_t = np.array(per_true[cls]); y_s = np.array(per_score[cls])
         col = cmap(i)
@@ -201,40 +196,35 @@ def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
             prec_i = np.ones_like(rec_uniform)
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            # interpola para suavizar
             prec_i = np.interp(rec_uniform, rec[::-1], prec[::-1])
-        ax.plot(rec_uniform, prec_i,
-                color=col, linewidth=2,
+        ax.plot(rec_uniform, prec_i, color=col, lw=2,
                 label=f"{labels_map[cls]} {APs[cls]:.3f}")
 
-    # curva global (mAP)
+    # curva global
     all_y = np.concatenate([per_true[c]  for c in classes])
     all_s = np.concatenate([per_score[c] for c in classes])
     p_all, r_all, _ = precision_recall_curve(all_y, all_s)
     p_i = np.interp(rec_uniform, r_all[::-1], p_all[::-1])
-    ax.plot(rec_uniform, p_i,
-            color='navy', linewidth=4,
+    ax.plot(rec_uniform, p_i, color='navy', lw=4,
             label=f"all classes {mAP:.3f} mAP@0.5")
 
-    # ajustes finales
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
+    ax.set_xlim(0,1)
+    ax.set_ylim(0,1)
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title("Precision–Recall Curve")
     ax.grid(True, linestyle=":", alpha=0.6)
 
-    # leyenda fuera a la derecha
-    ax.legend(
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1.00),
-        frameon=False,
-        fontsize=8
-    )
+    # leyenda afuera, más ancho
+    ax.legend(loc="upper left",
+              bbox_to_anchor=(1.02,1.00),
+              frameon=False,
+              fontsize=8)
 
-    # dejamos espacio exacto: 0.78 ocupa el gráfico, el resto para la leyenda
-    fig.subplots_adjust(left=0.10, right=0.78, top=0.95, bottom=0.10)
+    # aquí reducimos el área de la curva para dejar espacio extra a la derecha
+    fig.subplots_adjust(left=0.10, right=0.60, top=0.95, bottom=0.10)
     return fig
+
 
 
 
@@ -280,53 +270,40 @@ def plot_boxplots(data, x_field, y_field, title, y_lim=None):
 
 def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
                          default_th=0.25, n_steps=200, th_min=0.05, th_max=0.95):
-    """
-    F1 vs Confidence Threshold con proporción correcta y leyenda fuera.
-    """
     thresholds = np.linspace(th_min, th_max, n_steps)
     y_true     = np.array(all_gts)
     classes    = list(labels_map.keys())
     cmap       = plt.get_cmap("tab20")
     f1_mat     = np.zeros((n_steps, len(classes)))
 
-    # calcula F1
     for i, t in enumerate(thresholds):
-        y_pred = [lbl if sc >= t else -1 for sc, lbl in zip(all_scores, all_preds)]
-        f1s    = f1_score(y_true, y_pred, labels=classes, average=None, zero_division=0)
-        f1_mat[i] = f1s
+        y_pred   = [lbl if sc>=t else -1 for sc,lbl in zip(all_scores, all_preds)]
+        f1_mat[i] = f1_score(y_true, y_pred, labels=classes,
+                             average=None, zero_division=0)
 
-    fig, ax = plt.subplots(figsize=(6, 5))
-    # dibuja cada clase
+    fig, ax = plt.subplots(figsize=(6,5))
     for j, cls in enumerate(classes):
-        vals = f1_mat[:, j]
-        col  = cmap(j)
-        ax.plot(thresholds, vals,
-                color=col, linewidth=2,
+        vals = f1_mat[:,j]; col = cmap(j)
+        ax.plot(thresholds, vals, color=col, lw=2,
                 label=f"{labels_map[cls]} {vals[np.abs(thresholds-default_th).argmin()]:.3f}")
-        # marca umbral óptimo
         bi = vals.argmax()
         tb, fb = thresholds[bi], vals[bi]
-        ax.axvline(tb, linestyle="--", color=col, linewidth=1)
+        ax.axvline(tb, linestyle="--", color=col, lw=1)
         ax.scatter(tb, fb, color=col, s=50, zorder=3)
 
-    # ajuste ejes
     ax.set_xlim(th_min, th_max)
-    ax.set_ylim(0.0, 1.0)
+    ax.set_ylim(0,1)
     ax.set_xlabel("Confidence Threshold")
     ax.set_ylabel("F1 Score")
     ax.set_title("F1 vs. Confidence Threshold")
     ax.grid(True, linestyle=":", alpha=0.6)
 
-    # leyenda fuera
-    ax.legend(
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1.00),
-        frameon=False,
-        fontsize=8
-    )
+    ax.legend(loc="upper left",
+              bbox_to_anchor=(1.02,1.00),
+              frameon=False,
+              fontsize=8)
 
-    # ajusta márgenes para que no quede espacio sobrante
-    fig.subplots_adjust(left=0.10, right=0.78, top=0.95, bottom=0.10)
+    fig.subplots_adjust(left=0.10, right=0.60, top=0.95, bottom=0.10)
     return fig
 
 # -----------------------------------------------------------------------------

@@ -69,14 +69,14 @@ def prepare_anchors(
 
 def run_inference(
     model: torch.nn.Module,
-    loader: torch.utils.data.DataLoader,
+    loader: DataLoader,
     anchors_xy: torch.Tensor,
     resize_size: Tuple[int, int],
     conf_thres: float,
     iou_thres: float,
     device: torch.device,
     labels_map: Dict[int, str],
-):
+) -> Dict[str, Any]:
     """
     Run model inference + rotated NMS on the test_loader and accumulate:
       - per‐class true/score for PR
@@ -85,118 +85,132 @@ def run_inference(
       - raw lists of scores & labels for global F1 curve
       - a small set of samples for qualitative grid
     """
-    per_class_true = {c: [] for c in labels_map}
+
+    per_class_true  = {c: [] for c in labels_map}
     per_class_score = {c: [] for c in labels_map}
-    iou_errs = {c: [] for c in labels_map}
-    angle_errs = {c: [] for c in labels_map}
+    iou_errs        = {c: [] for c in labels_map}
+    angle_errs      = {c: [] for c in labels_map}
     y_true_cls, y_pred_cls = [], []
     all_scores, all_pred_labels, all_gt_labels = [], [], []
-    stats_per_class = {c: {"tp": 0, "fp": 0, "fn": 0} for c in labels_map}
+    stats_per_class = {c: {"tp":0,"fp":0,"fn":0} for c in labels_map}
     samples = []
     dataset = loader.dataset
     idx_ptr = 0
 
-    for batch in tqdm(loader, desc="Infer"):
-        imgs = batch["image"].to(device)
-        targets = batch["target"]
-        outs = infer_with_rotated_nms(
-            model, imgs, anchors_xy, resize_size, conf_thres, iou_thres
-        )
-        B = imgs.size(0)
+    model.eval()
+    with torch.inference_mode():
+        for batch in tqdm(loader, desc="Infer"):
+            # 1) Lleva sólo las imágenes a GPU
+            imgs    = batch["image"].to(device)
+            targets = batch["target"]
 
-        for b in range(B):
-            base = dataset.file_list[idx_ptr]
-            idx_ptr += 1
+            # 2) Forward + NMS
+            outs = infer_with_rotated_nms(
+                model, imgs, anchors_xy, resize_size, conf_thres, iou_thres
+            )
+            B = imgs.size(0)
 
-            valid = targets["valid_mask"][b]
-            gt_boxes = targets["boxes"][b][valid]
-            gt_angles = targets["angles"][b][valid].view(-1)
-            gt_labels = targets["class_idx"][b][valid]
+            # 3) Procesa cada muestra
+            for b in range(B):
+                base = dataset.file_list[idx_ptr]
+                idx_ptr += 1
 
-            # Convert gt to xywhr for IoU
-            gt_xywhr = xyxyxyxy2xywhr(
-                gt_boxes, gt_angles.unsqueeze(-1), resize_size
-            ).to(device)
+                # Extrae ground-truth
+                valid       = targets["valid_mask"][b]
+                gt_boxes    = targets["boxes"][b][valid]
+                gt_angles   = targets["angles"][b][valid].view(-1)
+                gt_labels   = targets["class_idx"][b][valid]
 
-            # Save a few for qualitative grid
-            samples.append(
-                (
-                    imgs[b].cpu(),
-                    outs[b],
-                    base,
-                    gt_boxes.cpu(),
-                    gt_angles.cpu(),
-                    gt_labels.cpu(),
+                # Calcula IoU entre gt y preds
+                gt_xywhr = xyxyxyxy2xywhr(
+                    gt_boxes, gt_angles.unsqueeze(-1), resize_size
+                ).to(device)
+
+                # ---- GUARDAR EN SAMPLES (siempre CPU!) ----
+                img_cpu       = imgs[b].cpu()
+                out_cpu       = {k: v.cpu().detach() for k,v in outs[b].items()}
+                gt_boxes_cpu  = gt_boxes.cpu()
+                gt_angles_cpu = gt_angles.cpu()
+                gt_labels_cpu = gt_labels.cpu()
+                samples.append(
+                    (img_cpu, out_cpu, base, gt_boxes_cpu, gt_angles_cpu, gt_labels_cpu)
                 )
-            )
+                # -------------------------------------------
 
-            pred_boxes = outs[b]["boxes"].to(device)
-            pred_polys = outs[b]["polygons"].to(device)
-            pred_scores = outs[b]["scores"].to(device)
-            pred_lbls = outs[b]["labels"].to(device)
+                # Prepara predicciones en GPU para matching
+                pred_boxes  = outs[b]["boxes"].to(device)
+                pred_polys  = outs[b]["polygons"].to(device)
+                pred_scores = outs[b]["scores"].to(device)
+                pred_lbls   = outs[b]["labels"].to(device)
 
-            G, M = gt_xywhr.size(0), pred_boxes.size(0)
-            iou_matrix = (
-                batch_probiou(gt_xywhr, pred_boxes)
-                if G and M
-                else torch.zeros(G, M, device=device)
-            )
-            matched = torch.zeros(M, dtype=torch.bool, device=device)
+                G, M = gt_xywhr.size(0), pred_boxes.size(0)
+                iou_matrix = (
+                    batch_probiou(gt_xywhr, pred_boxes)
+                    if G and M else torch.zeros(G, M, device=device)
+                )
+                matched = torch.zeros(M, dtype=torch.bool, device=device)
 
-            # match GT→pred
-            for i in range(G):
-                cls = int(gt_labels[i].item())
-                if M == 0:
-                    stats_per_class[cls]["fn"] += 1
+                # Match GT → preds
+                for i in range(G):
+                    cls = int(gt_labels[i].item())
+                    if M == 0:
+                        stats_per_class[cls]["fn"] += 1
+                        for c in labels_map:
+                            per_class_true[c].append(int(c == cls))
+                            per_class_score[c].append(0.0)
+                        y_true_cls.append(cls)
+                        y_pred_cls.append(-1)
+                        all_gt_labels.append(cls)
+                        all_scores.append(0.0)
+                        all_pred_labels.append(-1)
+                        continue
+
+                    best_iou, j = iou_matrix[i].max(0)
+                    is_pos = best_iou >= iou_thres
+                    if is_pos:
+                        stats_per_class[cls]["tp"] += 1
+                        iou_errs[cls].append(best_iou.item())
+                        err_deg = abs((pred_boxes[j,4] - gt_angles[i]) * 180/math.pi)
+                        angle_errs[cls].append(err_deg.item())
+                        matched[j] = True
+                    else:
+                        stats_per_class[cls]["fn"] += 1
+
                     for c in labels_map:
                         per_class_true[c].append(int(c == cls))
-                        per_class_score[c].append(0.0)
+                        per_class_score[c].append(
+                            pred_scores[j].item() if is_pos else 0.0
+                        )
                     y_true_cls.append(cls)
-                    y_pred_cls.append(-1)
+                    y_pred_cls.append(int(pred_lbls[j].item()) if is_pos else -1)
                     all_gt_labels.append(cls)
-                    all_scores.append(0.0)
-                    all_pred_labels.append(-1)
-                    continue
+                    all_scores.append(pred_scores[j].item() if is_pos else 0.0)
+                    all_pred_labels.append(
+                        int(pred_lbls[j].item()) if is_pos else -1
+                    )
 
-                best_iou, j = iou_matrix[i].max(0)
-                is_pos = best_iou >= iou_thres
-                if is_pos:
-                    stats_per_class[cls]["tp"] += 1
-                    iou_errs[cls].append(best_iou.item())
-                    err_deg = abs((pred_boxes[j, 4] - gt_angles[i]) * 180 / math.pi)
-                    angle_errs[cls].append(err_deg.item())
-                    matched[j] = True
-                else:
-                    stats_per_class[cls]["fn"] += 1
+                # False positives
+                for k in range(M):
+                    if not matched[k]:
+                        cls = int(pred_lbls[k].item())
+                        stats_per_class[cls]["fp"] += 1
 
-                for c in labels_map:
-                    per_class_true[c].append(int(c == cls))
-                    per_class_score[c].append(pred_scores[j].item() if is_pos else 0.0)
-
-                y_true_cls.append(cls)
-                y_pred_cls.append(int(pred_lbls[j].item()) if is_pos else -1)
-                all_gt_labels.append(cls)
-                all_scores.append(pred_scores[j].item() if is_pos else 0.0)
-                all_pred_labels.append(int(pred_lbls[j].item()) if is_pos else -1)
-
-            # false positives
-            for k in range(M):
-                if not matched[k]:
-                    cls = int(pred_lbls[k].item())
-                    stats_per_class[cls]["fp"] += 1
+            # 4) Libera memoria GPU antes del siguiente batch
+            del imgs, outs, targets
+            torch.cuda.empty_cache()
 
     return {
         "per_class_true": per_class_true,
         "per_class_score": per_class_score,
-        "iou_errs": iou_errs,
-        "angle_errs": angle_errs,
-        "stats_per_class": stats_per_class,
-        "y_true_cls": y_true_cls,
-        "y_pred_cls": y_pred_cls,
-        "all_scores": all_scores,
-        "all_pred_labels": all_pred_labels,
-        "all_gt_labels": all_gt_labels,
-        "samples": samples,
+        "iou_errs":       iou_errs,
+        "angle_errs":     angle_errs,
+        "stats_per_class":stats_per_class,
+        "y_true_cls":     y_true_cls,
+        "y_pred_cls":     y_pred_cls,
+        "all_scores":     all_scores,
+        "all_pred_labels":all_pred_labels,
+        "all_gt_labels":  all_gt_labels,
+        "samples":        samples,
     }
 
 

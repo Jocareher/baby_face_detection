@@ -501,8 +501,18 @@ def inference(
                 for c,vals in results["iou_errs"].items() for v in vals]
     ang_data= [{"class":labels_map[c], "error°":v}
                 for c,vals in results["angle_errs"].items() for v in vals]
-    fig_iou = plot_boxplots(iou_data, "class", "iou", "IoU per Class", y_lim=(0,1))
-    fig_ang = plot_boxplots(ang_data,  "class", "error°","Angle‐Error per Class", y_lim=(0,180))
+    fig_iou = plot_boxplots(iou_data, 
+                        x_field="class", 
+                        y_field="iou", 
+                        title="IoU Distribution per Class", 
+                        labels_map=labels_map,
+                        y_lim=(0,1))
+    fig_ang = plot_boxplots(ang_data,
+                        x_field="class",
+                        y_field="error°",
+                        title="Angle-Error Distribution per Class",
+                        labels_map=labels_map,
+                        y_lim=(0,180))
 
     fig_f1 = plot_f1_vs_threshold(
         results["all_gts"], results["all_scores"], results["all_preds"],

@@ -185,39 +185,52 @@ def compute_map_and_pr(per_true, per_score) -> Tuple[float,Dict[int,float]]:
 
 def plot_precision_recall(per_true, per_score, labels_map, APs, mAP):
     """
-    Dibuja:
-     - cada clase con su color de tab20,
-     - y la curva global (stacked) en azul grueso.
+    Precision–Recall Curve:
+    - Cada clase con color fijo de tab20 y línea suave vía interpolación.
+    - Curva global (todos los datos) en azul grueso.
+    - Leyenda fuera, sin marco.
     """
-    classes = list(labels_map.keys())
-    cmap    = plt.get_cmap("tab20")
-    fig, ax = plt.subplots(figsize=(6,5))
+    classes    = list(labels_map.keys())
+    cmap       = plt.get_cmap("tab20")
+    fig, ax    = plt.subplots(figsize=(6, 5))
+    rec_uniform = np.linspace(0, 1, 200)
 
     # curvas por clase
     for i, cls in enumerate(classes):
-        col  = cmap(i)
-        y_t  = np.array(per_true[cls])
-        y_s  = np.array(per_score[cls])
+        y_t = np.array(per_true[cls]); y_s = np.array(per_score[cls])
+        col = cmap(i)
         if y_t.sum() == 0:
-            ax.step([0,1],[1,1],where="post",color=col,linestyle="--",
-                    label=f"{labels_map[cls]} (npos=0)")
+            ax.plot(rec_uniform, np.ones_like(rec_uniform),
+                    linestyle='--', color=col, linewidth=2,
+                    label=f"{labels_map[cls]} {APs[cls]:.3f}")
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
-            ax.step(rec, prec, where="post", color=col,
+            # interpola para línea suave
+            prec_i = np.interp(rec_uniform, rec[::-1], prec[::-1])
+            ax.plot(rec_uniform, prec_i,
+                    color=col, linewidth=2,
                     label=f"{labels_map[cls]} {APs[cls]:.3f}")
 
-    # curva global (stacked)
+    # curva global (todos los ejemplos)
     all_y = np.concatenate([per_true[c]  for c in classes])
     all_s = np.concatenate([per_score[c] for c in classes])
-    p_g, r_g, _ = precision_recall_curve(all_y, all_s)
-    ax.step(r_g, p_g, where="post", color="navy", linewidth=3,
+    pg, rg, _ = precision_recall_curve(all_y, all_s)
+    pg_i = np.interp(rec_uniform, rg[::-1], pg[::-1])
+    ax.plot(rec_uniform, pg_i,
+            color='navy', linewidth=4,
             label=f"all classes {mAP:.3f} mAP@0.5")
 
-    ax.set(xlabel="Recall", ylabel="Precision", title="Precision–Recall Curve")
+    # formato final
+    ax.set(xlabel="Recall", ylabel="Precision",
+           title="Precision–Recall Curve")
     ax.grid(True, linestyle=":", alpha=0.6)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02,1), frameon=False, fontsize=8)
-    fig.tight_layout(rect=(0,0,0.78,1))
+    ax.legend(loc="upper right",
+              bbox_to_anchor=(1.02, 1.0),
+              frameon=False,
+              fontsize=8)
+    fig.tight_layout(rect=(0, 0, 0.78, 1))
     return fig
+
 
 def plot_confusion_matrix(y_true, y_pred, labels_map):
     labels = list(labels_map.keys()) + [-1]
@@ -289,40 +302,52 @@ def plot_f1_vs_threshold(all_gts, all_scores, all_preds, labels_map,
 # -----------------------------------------------------------------------------
 
 def plot_qualitative_grid(samples, labels_map, grid_shape, mean, std):
+    """
+    Grid de imágenes con OBB GT (azul/rojo) y pred (verde/naranja).
+    Textos centrados en cada caja (sin adjust_text).
+    """
     rows, cols = grid_shape
     fig, axes = plt.subplots(rows, cols, figsize=(cols*4, rows*4), facecolor="white")
     axes = axes.flatten()
+
     for ax, (img_t, out, fname, gt_b, gt_a, gt_l) in zip(axes, samples[:rows*cols]):
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
         ax.set_title(Path(fname).name, fontsize=8)
-        # GT
+
+        # ground truth
         for pts, ang, cls in zip(gt_b, gt_a, gt_l):
             pts_np = pts.view(4,2).numpy()
             ax.add_patch(patches.Polygon(pts_np, closed=True, fill=False,
                                         edgecolor="blue", linewidth=2))
-            ax.plot(pts_np[[0,1],0], pts_np[[0,1],1], color="red", linewidth=2)
-            lbl = f"{labels_map[int(cls)]}: {math.degrees(ang):.1f}°"
+            ax.plot(pts_np[[0,1],0], pts_np[[0,1],1],
+                    color="red", linewidth=2)
             cen = pts_np.mean(axis=0)
-            ax.text(cen[0], cen[1], lbl,
+            ax.text(cen[0], cen[1],
+                    f"{labels_map[int(cls)]}: {math.degrees(ang):.1f}°",
                     color="blue", fontsize=6, fontweight="bold",
                     ha="center", va="center",
                     path_effects=[patheffects.withStroke(linewidth=2, foreground="white")])
-        # preds
+
+        # predicciones
         for i, (pts, l, s) in enumerate(zip(out["polygons"], out["labels"], out["scores"])):
             pts_np = pts.view(4,2).numpy()
             ax.add_patch(patches.Polygon(pts_np, closed=True, fill=False,
                                         edgecolor="green", linewidth=1.5, linestyle="--"))
-            ax.plot(pts_np[[0,1],0], pts_np[[0,1],1], color="orange", linewidth=1.5)
-            angp = math.degrees(float(out["boxes"][i,4]))
-            lbl  = f"{labels_map[int(l)]}: {angp:.1f}°/{s:.2f}"
+            ax.plot(pts_np[[0,1],0], pts_np[[0,1],1],
+                    color="orange", linewidth=1.5)
             cen = pts_np.mean(axis=0)
-            ax.text(cen[0], cen[1], lbl,
+            angp = math.degrees(float(out["boxes"][i,4]))
+            ax.text(cen[0], cen[1],
+                    f"{labels_map[int(l)]}: {angp:.1f}°/{s:.2f}",
                     color="green", fontsize=5,
                     ha="center", va="center",
                     path_effects=[patheffects.withStroke(linewidth=2, foreground="black")])
+
+    # oculta los ejes sobrantes
     for ax in axes[len(samples):]:
         ax.axis("off")
+
     fig.tight_layout(pad=0.5)
     return fig
 

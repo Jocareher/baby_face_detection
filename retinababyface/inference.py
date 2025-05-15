@@ -28,11 +28,16 @@ def parse_args():
         "--root_dir", type=str, required=True, help="Path to dataset root directory."
     )
     parser.add_argument(
-        "--output_dir",
+        "--pred_dir",
         type=str,
         default="predictions",
         help="Directory to save individual prediction's results.",
     )
+    parser.add_argument(
+        "--inference_results",
+        type=str,
+        default="inference_results",
+        help="Directory to save the inference plots.",)
     parser.add_argument(
         "--backbone",
         type=str,
@@ -87,7 +92,7 @@ def parse_args():
         help="Number of columns in qualitative grid (default: 3).",
     )
     parser.add_argument(
-        "--out_dir",
+        "--inference_results",
         type=str,
         default="inference_results",
         help="Directory to save the output figures (default: inference_results/).",
@@ -154,7 +159,7 @@ def main():
         model=model,
         checkpoint_path=args.checkpoint,  # used internally for compatibility
         test_loader=test_loader,
-        output_dir=args.output_dir,
+        output_dir=args.pred_dir,
         device=device,
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,
@@ -168,28 +173,28 @@ def main():
     )
 
     # 5. Save output figures
-    os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(args.inference_results, exist_ok=True)
 
     figures["pr_figure"].savefig(
-        os.path.join(args.out_dir, "precision_recall.png"), dpi=150
+        os.path.join(args.inference_results, "precision_recall.png"), dpi=150
     )
     figures["confusion_figure"].savefig(
-        os.path.join(args.out_dir, "confusion_matrix.png"), dpi=150
+        os.path.join(args.inference_results, "confusion_matrix.png"), dpi=150
     )
     figures["grid_figure"].savefig(
-        os.path.join(args.out_dir, "grid_examples.png"), dpi=150
+        os.path.join(args.inference_results, "grid_examples.png"), dpi=150
     )
     figures["iou_boxplot_figure"].savefig(
-        os.path.join(args.out_dir, "iou_boxplot_figure.png"), dpi=150
+        os.path.join(args.inference_results, "iou_boxplot_figure.png"), dpi=150
     )
     figures["angle_boxplot_figure"].savefig(
-        os.path.join(args.out_dir, "angle_boxplot_figure.png"), dpi=150
+        os.path.join(args.inference_results, "angle_boxplot_figure.png"), dpi=150
     )
     figures["f1_threshold_figure"].savefig(
-        os.path.join(args.out_dir, "f1_threshold_figure.png"), dpi=150
+        os.path.join(args.inference_results, "f1_threshold_figure.png"), dpi=150
     )
 
-    print(f"[INFO] Inference results saved to '{args.out_dir}/'")
+    print(f"[INFO] Inference results saved to '{args.inference_results}/'")
 
 
 if __name__ == "__main__":

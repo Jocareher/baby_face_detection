@@ -33,7 +33,7 @@ class FocalLoss(nn.Module):
         self,
         alpha: Union[float, List[float]] = 1.0,
         gamma: float = 2.0,
-        ignore_index: int = None,
+        ignore_index: int = -100,
         reduction: str = "mean",
     ):
         super().__init__()
@@ -357,13 +357,21 @@ class MultiTaskLoss(nn.Module):
                 iou_thr=self.pos_iou_thr,
             )
 
-            # Step 2: Classification loss using focal loss
-            if pos_mask.any():
-                tgt_cls = torch.full(
-                    (N,), 5, dtype=torch.long, device=orient_logits.device
-                )
-                tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
-                cls_loss += self.focal_loss(orient_logits[b], tgt_cls)
+            # Step 2a: Classification loss using focal loss
+            # Select positive samples
+            tgt_cls = torch.full(
+                (N,),
+                fill_value=self.focal_loss.ignore_index,
+                dtype=torch.long,
+                device=orient_logits.device,
+            )
+            # Assign class labels to positive samples
+            tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
+            # Assign class labels to negative samples
+            cls_loss += self.focal_loss(
+                orient_logits[b].unsqueeze(0),
+                tgt_cls.unsqueeze(0),
+            )
 
             # Step 2b: Face/no-face BCE loss with Hard Negative Mining
             # Select positive and negative samples

@@ -37,14 +37,6 @@ def parse_args():
         description="Train and evaluate RetinaBabyFace model"
     )
 
-    #  Principal output folder (replaces individual paths)
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        required=True,
-        help="Root directory to save all outputs: checkpoints, logs, visualizations, predictions, etc.",
-    )
-
     # Dataset
     parser.add_argument(
         "--root_dir",
@@ -154,7 +146,7 @@ def main():
     # ------------------------------------------------------------------------
     # I. Output directory structure
     # ------------------------------------------------------------------------
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.run_name)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ckpt_path = output_dir / "checkpoint.pt"

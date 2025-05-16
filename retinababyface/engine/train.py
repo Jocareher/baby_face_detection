@@ -195,7 +195,7 @@ def infer_with_rotated_nms(
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference using a RetinaBabyFace-like model with an extra face/no-face head 
+    Performs inference using a RetinaBabyFace-like model with an extra face/no-face head
     and applies rotated NMS.
 
     Args:
@@ -217,34 +217,37 @@ def infer_with_rotated_nms(
     """
     B = images.size(0)
     # Unpack the new face/no-face head output
-    logits, deltas, pred_angles, face_scores = model(images) 
+    logits, deltas, pred_angles, face_scores = model(images)
     orientation_probs = F.softmax(logits, dim=-1)
     outputs = []
 
     for b in range(B):
         # Get the per-anchor orientation labels & confidences
         orient_conf, orient_labels = orientation_probs[b].max(-1)
-        
-        # Extract face score per-anchor
-        face_scores_b = face_scores[b].squeeze(-1) 
-        
-        # Filter purely on face presence
-        keep_mask = face_scores_b > conf_thres  
-        if not keep_mask.any():
-            outputs.append({
-                "boxes":    torch.zeros((0, 5), device=images.device),
-                "scores":   torch.zeros((0,),    device=images.device),
-                "labels":   torch.zeros((0,),    device=images.device),
-                "polygons": torch.zeros((0, 8), device=images.device),
-            })
-            continue
 
+        # Extract face score per-anchor
+        face_scores_b = face_scores[b].squeeze(-1)
+
+        # Filter purely on face presence
+        keep_mask = face_scores_b > conf_thres
+        if not keep_mask.any():
+            outputs.append(
+                {
+                    "boxes": torch.zeros((0, 5), device=images.device),
+                    "scores": torch.zeros((0,), device=images.device),
+                    "labels": torch.zeros((0,), device=images.device),
+                    "polygons": torch.zeros((0, 8), device=images.device),
+                }
+            )
+            continue
 
         # 1) Get original indices of kept proposals
         idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)  # (N_valid,)
 
         # 2) Select top-K proposals by score
-        scores_k = face_scores_b[idxs] # Use face_scores_b here instead of orientation_conf
+        scores_k = face_scores_b[
+            idxs
+        ]  # Use face_scores_b here instead of orientation_conf
         K = min(pre_nms_topk, scores_k.size(0))
         topk_scores, topk_inds = scores_k.topk(K, sorted=True)  # (K,)
         sel = idxs[topk_inds]  # (K,) indices w.r.t. full anchor set
@@ -270,12 +273,16 @@ def infer_with_rotated_nms(
         sel_final = sel[keep_nms]  # Final selection
 
         # 7) Prepare output
-        outputs.append({
-            "boxes":    xywhr[keep_nms], # (M, 5) in (cx, cy, w, h, θ)
-            "scores":   face_scores_b[sel][keep_nms], # (M,)
-            "labels":   orient_labels[sel_final].float(), # (M,)       
-            "polygons": verts[keep_nms], # (M, 8) in (x1, y1, x2, y2, x3, y3, x4, y4)
-        })
+        outputs.append(
+            {
+                "boxes": xywhr[keep_nms],  # (M, 5) in (cx, cy, w, h, θ)
+                "scores": face_scores_b[sel][keep_nms],  # (M,)
+                "labels": orient_labels[sel_final].float(),  # (M,)
+                "polygons": verts[
+                    keep_nms
+                ],  # (M, 8) in (x1, y1, x2, y2, x3, y3, x4, y4)
+            }
+        )
 
     return outputs
 
@@ -287,7 +294,7 @@ def compute_map_rotated(
     all_gt_boxes: List[torch.Tensor],
     all_gt_labels: List[torch.Tensor],
     iou_thr: float = 0.5,
-    num_classes: int = 6,
+    num_classes: int = 5,
 ) -> float:
     """
     Computes the mean Average Precision (mAP) for rotated bounding boxes across all non-background classes.
@@ -303,7 +310,7 @@ def compute_map_rotated(
         all_gt_boxes (List[Tensor]): List of (M_i, 5) tensors with ground truth boxes for each image.
         all_gt_labels (List[Tensor]): List of (M_i,) tensors with ground truth class indices.
         iou_thr (float): IoU threshold to consider a prediction a true positive.
-        num_classes (int): Total number of classes including background.
+        num_classes (int): Total number of classes
 
     Returns:
         float: The computed mean Average Precision (mAP) over all foreground classes.
@@ -315,14 +322,8 @@ def compute_map_rotated(
     device = all_pred_scores[0].device
     APs: List[torch.Tensor] = []
 
-    # Define which class is the background class
-    bg_idx = num_classes - 1
-
     # Compute AP for each class (excluding background)
     for c in range(num_classes):
-        if c == bg_idx:
-            continue
-
         # 1) Collect all predictions for class `c` across all images
         preds = []
         for img_i in range(len(all_pred_boxes)):
@@ -698,10 +699,17 @@ def train_step(
         anchors (torch.Tensor): Anchor boxes tensor.
 
     Returns:
-        Tuple[float, float, float, float, float]: Average total loss, average class loss, average OBB loss, average angular loss, and current learning rate.
+        Tuple[float, float, float, float, float, float]:
+        - Average total loss
+        - Average class loss
+        - Average face loss
+        - Average OBB loss
+        - Average angular loss
+        - And current learning rate.
     """
     model.train()  # Set the model to training mode.
     total_loss_sum = 0.0
+    face_loss_sum = 0.0
     class_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
@@ -721,7 +729,7 @@ def train_step(
         image_sizes = [(images.shape[3], images.shape[2])] * images.size(
             0
         )  # [(W, H), ...]
-        loss, loss_class, loss_obb, loss_angle = loss_fn(
+        loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
             pred, targets, batch_anchors, anchors_xywhr, image_sizes
         )  # Calculate loss.
 
@@ -744,6 +752,7 @@ def train_step(
 
         total_loss_sum += loss.item()
         class_loss_sum += loss_class
+        face_loss_sum += loss_face
         obb_loss_sum += loss_obb
         angular_loss_sum += loss_angle
         total_batches += 1
@@ -751,10 +760,18 @@ def train_step(
     current_lr = optimizer.param_groups[0]["lr"]  # Get current learning rate.
     avg_total_loss = total_loss_sum / total_batches
     avg_class_loss = class_loss_sum / total_batches
+    avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_angular_loss = angular_loss_sum / total_batches
 
-    return avg_total_loss, avg_class_loss, avg_obb_loss, avg_angular_loss, current_lr
+    return (
+        avg_total_loss,
+        avg_class_loss,
+        avg_face_loss,
+        avg_obb_loss,
+        avg_angular_loss,
+        current_lr,
+    )
 
 
 def val_step(
@@ -763,7 +780,7 @@ def val_step(
     loss_fn: nn.Module,
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
-) -> Tuple[float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float]:
     """
     Runs one full evaluation loop on the test dataset, computing predictions, losses, and rotated mAP.
 
@@ -780,6 +797,7 @@ def val_step(
         Tuple[float, float, float, float, float]: A tuple containing:
             - avg_loss (float): Average total loss across all test batches.
             - avg_class_loss (float): Average classification loss.
+            - avg_face_loss (float): Average face loss.
             - avg_obb_loss (float): Average oriented bounding box (OBB) loss.
             - avg_angular_loss (float): Average angular prediction loss.
             - mAP (float): Rotated mean Average Precision using 11-point interpolation.
@@ -789,6 +807,7 @@ def val_step(
     # Initialize accumulators for different losses
     total_loss = 0.0
     class_loss_sum = 0.0
+    face_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
     total_batches = 0
@@ -842,13 +861,14 @@ def val_step(
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
 
             # Compute multitask loss and individual components
-            loss, loss_class, loss_obb, loss_angle = loss_fn(
+            loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
                 pred, targets, batch_anchors, anchors_xywhr, image_sizes
             )
 
             # Accumulate loss values
             total_loss += loss.item()
             class_loss_sum += loss_class
+            face_loss_sum += loss_face
             obb_loss_sum += loss_obb
             angular_loss_sum += loss_angle
             total_batches += 1
@@ -856,6 +876,7 @@ def val_step(
     # Compute average losses across all batches
     avg_loss = total_loss / total_batches
     avg_class_loss = class_loss_sum / total_batches
+    avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_angular_loss = angular_loss_sum / total_batches
 
@@ -870,7 +891,7 @@ def val_step(
         num_classes=6,
     )
 
-    return avg_loss, avg_class_loss, avg_obb_loss, avg_angular_loss, mAP
+    return avg_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_angular_loss, mAP
 
 
 def train(
@@ -935,10 +956,12 @@ def train(
         "epoch",
         "train_total_loss",
         "train_class_loss",
+        "train_face_loss",
         "train_obb_loss",
         "train_angular_loss",
         "test_total_loss",
         "test_class_loss",
+        "test_face_loss",
         "test_obb_loss",
         "test_angular_loss",
         "test_mAP",
@@ -952,10 +975,12 @@ def train(
     results = {
         "train_total_loss": [],
         "train_class_loss": [],
+        "train_face_loss": [],
         "train_obb_loss": [],
         "train_angular_loss": [],
         "test_total_loss": [],
         "test_class_loss": [],
+        "test_face_loss": [],
         "test_obb_loss": [],
         "test_angular_loss": [],
         "test_mAP": [],
@@ -1016,6 +1041,7 @@ def train(
             (
                 train_total_loss,
                 train_class_loss,
+                train_face_loss,
                 train_obb_loss,
                 train_angular_loss,
                 current_lr,
@@ -1037,6 +1063,7 @@ def train(
             (
                 test_total_loss,
                 test_class_loss,
+                test_face_loss,
                 test_obb_loss,
                 test_angular_loss,
                 test_mAP,
@@ -1060,10 +1087,10 @@ def train(
                 f"Epoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
             )
             print(
-                f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
+                f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | Face Loss: {train_face_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
             )
             print(
-                f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}  | mAP: {test_mAP:.4f}"
+                f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f}|  Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}  | mAP: {test_mAP:.4f}"
             )
 
             # if device.type == "cuda":
@@ -1092,10 +1119,12 @@ def train(
 
             results["train_total_loss"].append(train_total_loss)
             results["train_class_loss"].append(train_class_loss)
+            results["train_face_loss"].append(train_face_loss)
             results["train_obb_loss"].append(train_obb_loss)
             results["train_angular_loss"].append(train_angular_loss)
             results["test_total_loss"].append(test_total_loss)
             results["test_class_loss"].append(test_class_loss)
+            results["test_face_loss"].append(test_face_loss)
             results["test_obb_loss"].append(test_obb_loss)
             results["test_angular_loss"].append(test_angular_loss)
             results["test_mAP"].append(test_mAP)
@@ -1110,10 +1139,12 @@ def train(
                         epoch + 1,
                         f"{train_total_loss:.4f}",
                         f"{train_class_loss:.4f}",
+                        f"{train_face_loss:.4f}",
                         f"{train_obb_loss:.4f}",
                         f"{train_angular_loss:.4f}",
                         f"{test_total_loss:.4f}",
                         f"{test_class_loss:.4f}",
+                        f"{test_face_loss:.4f}",
                         f"{test_obb_loss:.4f}",
                         f"{test_angular_loss:.4f}",
                         f"{test_mAP:.4f}",

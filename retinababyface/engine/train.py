@@ -217,8 +217,14 @@ def infer_with_rotated_nms(
     """
     B = images.size(0)
     # Unpack the new face/no-face head output
-    logits, deltas, pred_angles, face_scores = model(images)
-    orientation_probs = F.softmax(logits, dim=-1)
+    (
+        logits,
+        face_scores,
+        deltas,
+        pred_angles,
+    ) = model(images)
+    face_scores = face_scores.squeeze(-1)  # (B, N, 1) → (B, N)
+    orientation_probs = F.softmax(logits, dim=-1)  # (B, N, 5)
     outputs = []
 
     for b in range(B):
@@ -226,7 +232,7 @@ def infer_with_rotated_nms(
         orient_conf, orient_labels = orientation_probs[b].max(-1)
 
         # Extract face score per-anchor
-        face_scores_b = face_scores[b].squeeze(-1)
+        face_scores_b = face_scores[b]  # (N,)
 
         # Filter purely on face presence
         keep_mask = face_scores_b > conf_thres

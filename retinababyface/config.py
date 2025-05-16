@@ -48,7 +48,7 @@ PRECOMPUTED_OBB_STATS = {
 # =======================
 # Anchor Generation Params
 # =======================
-SCALE_FACTORS = [0.75, 1.0, 1.2]
+SCALE_FACTORS = [0.5, 1.0, 1.5]
 RATIO_FACTORS = [1.1851]
 ANGLES = [
     -math.pi / 2,
@@ -65,7 +65,7 @@ NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 # =======================
 # Loss Function Weights
 # =======================
-ALPHA = [1.5, 1.5, 1.5, 2.0, 2.0, 0.5]
+ALPHA = [1.5, 1.5, 1.5, 2.5, 2.5]
 GAMMA = 2.0
 POS_IOU_THRESH = 0.3
 LAMBDA_CLS = 1.0

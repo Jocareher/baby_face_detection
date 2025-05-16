@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from .utils import (
     match_anchors_to_targets,
-    decode_vertices,
     probiou,
     xyxyxyxy2xywhr,
     encode_vertices,
@@ -138,7 +137,7 @@ class RotationLoss(nn.Module):
         return loss.mean()  # Return the mean rotation loss.
 
 
-class OBBLoss(nn.Module):
+class OBBIoULoss(nn.Module):
     """
     Computes loss between predicted and ground-truth Oriented Bounding Boxes (OBBs)
     using probabilistic IoU as a similarity metric.
@@ -290,6 +289,7 @@ class MultiTaskLoss(nn.Module):
         lambda_cls: float = 1.0,
         lambda_obb: float = 1.0,
         lambda_rot: float = 1.0,
+        lambda_face: float = 1.0,
         pos_iou_thresh: float = config.POS_IOU_THRESH,
         alpha: List[float] = config.ALPHA,
         gamma: float = config.GAMMA,
@@ -298,18 +298,23 @@ class MultiTaskLoss(nn.Module):
         self.focal_loss = FocalLoss(
             alpha=alpha, gamma=gamma, ignore_index=-100, reduction="mean"
         )
+        self.bce_loss = nn.BCELoss(reduction="mean")
         self.obb_loss = OBBRegressionLoss()
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb
         self.lambda_rot = lambda_rot
+        self.lambda_face = lambda_face
         self.pos_iou_thr = pos_iou_thresh
 
     def forward(
         self,
         preds: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor
-        ],  # (logits, deltas, angles)
+            torch.Tensor,  # orient_logits: (B, N, 5)
+            torch.Tensor,  # face_logits:   (B, N, 1)
+            torch.Tensor,  # deltas:        (B, N, 8)
+            torch.Tensor,  # angles:        (B, N, 1)
+        ],
         targets: Dict[
             str, torch.Tensor
         ],  # GT dict: boxes, angle, class_idx, valid_mask
@@ -318,10 +323,10 @@ class MultiTaskLoss(nn.Module):
         image_sizes: List[Tuple[int, int]],  # (W, H) for each image
     ) -> Tuple[torch.Tensor, float, float, float]:
         """
-        Computes the total multi-task loss and returns all components.
+        Computes the total multi-task loss and returns all components:
 
         Args:
-            preds (Tuple[Tensor]): Output tuple (logits, deltas, angles) from the model.
+            preds (Tuple[Tensor]): Output tuple (orientation_logits, face_logits, deltas, angles) from the model.
             targets (Dict[str, Tensor]): Ground-truth information per image.
             anchors_xy (Tensor): Anchor boxes in xyxyxyxy format (B, N, 8).
             anchors_xywhr (Tensor): Anchor boxes in (cx, cy, w, h, θ) format (N, 5).
@@ -331,13 +336,15 @@ class MultiTaskLoss(nn.Module):
             Tuple[Tensor, float, float, float]:
                 - total_loss: Combined loss tensor.
                 - cls_loss (float): Classification loss.
+                - face_loss (float): Face classification loss.
                 - obb_loss (float): Oriented bounding box regression loss.
                 - rot_loss (float): Rotation angle regression loss.
         """
-        logits, deltas, pred_angles = preds
-        B, N, C = logits.shape
+        orient_logits, face_logits, deltas, pred_angles = preds
+        B, N, C = orient_logits.shape
 
         cls_loss = 0.0
+        face_loss = 0.0
         obb_loss = 0.0
         rot_loss = 0.0
         valid_batches = 0
@@ -354,9 +361,14 @@ class MultiTaskLoss(nn.Module):
             # print(f"batch {b}: pos={pos_mask.sum().item()} / {pos_mask.numel()}")
 
             # Step 2: Classification loss using focal loss
-            tgt_cls = torch.full((N,), 5, dtype=torch.long, device=logits.device)
+            tgt_cls = torch.full((N,), 5, dtype=torch.long, device=orient_logits.device)
             tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
-            cls_loss += self.focal_loss(logits[b], tgt_cls)
+            cls_loss += self.focal_loss(orient_logits[b], tgt_cls)
+
+            # Step 2b: Face/no-face BCE loss
+            # Build binary target: 1 for any positive anchor, else 0
+            tgt_face = pos_mask.float().unsqueeze(1)  # (N,1)
+            face_loss += self.bce_loss(face_logits[b], tgt_face)
 
             # Step 3: OBB regression loss (only for positives)
             if pos_mask.any():
@@ -379,17 +391,25 @@ class MultiTaskLoss(nn.Module):
 
         # Normalize losses over batch
         cls_loss /= B
+        face_loss /= B
         if valid_batches == 0:
-            total_loss = self.lambda_cls * cls_loss
-            return total_loss, cls_loss.item(), 0.0, 0.0
+            total_loss = self.lambda_cls * cls_loss + self.lambda_face * face_loss
+            return total_loss, cls_loss.item(), face_loss.item(), 0.0, 0.0
 
         obb_loss /= valid_batches
         rot_loss /= valid_batches
 
         total_loss = (
             self.lambda_cls * cls_loss
+            + self.lambda_face * face_loss
             + self.lambda_obb * obb_loss
             + self.lambda_rot * rot_loss
         )
 
-        return total_loss, cls_loss.item(), obb_loss.item(), rot_loss.item()
+        return (
+            total_loss,
+            cls_loss.item(),
+            face_loss.item(),
+            obb_loss.item(),
+            rot_loss.item(),
+        )

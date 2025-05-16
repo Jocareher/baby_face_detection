@@ -927,6 +927,13 @@ def train(
 ) -> Dict[str, List[float]]:
     """
     Trains the model and optionally records metrics.
+    This function handles the training loop, validation, and logging of metrics.
+    It also generates anchors for the training process and can save a preview of the anchors.
+    The function supports early stopping, learning rate scheduling, and gradient clipping.
+    It also allows for the use of Weights & Biases for tracking metrics and visualizations.
+    The function can save training metrics to a CSV file and optionally save a preview of the anchors.
+    The function also supports the generation of anchors for training and can save a preview of the anchors.
+    It can also save a preview of the inference results.
 
     Args:
         model (nn.Module): The model to train.
@@ -1096,7 +1103,7 @@ def train(
                 f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | Face Loss: {train_face_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
             )
             print(
-                f"Test metrics | Total Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f}|  Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f}  | mAP: {test_mAP:.4f}"
+                f"Test metrics | Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f}| Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f} | mAP: {test_mAP:.4f}"
             )
 
             # if device.type == "cuda":
@@ -1111,10 +1118,12 @@ def train(
                         "epoch": epoch + 1,
                         "train_total_loss": train_total_loss,
                         "train_class_loss": train_class_loss,
+                        "train_face_loss": train_face_loss,
                         "train_obb_loss": train_obb_loss,
                         "train_angular_loss": train_angular_loss,
                         "test_total_loss": test_total_loss,
                         "test_class_loss": test_class_loss,
+                        "test_face_loss": test_face_loss,
                         "test_obb_loss": test_obb_loss,
                         "test_angular_loss": test_angular_loss,
                         "test_mAP": test_mAP,

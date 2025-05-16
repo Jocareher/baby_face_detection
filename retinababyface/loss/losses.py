@@ -99,6 +99,10 @@ class FocalLoss(nn.Module):
 class RotationLoss(nn.Module):
     """
     Module for calculating the rotation loss between predicted and ground truth angles.
+    The loss is defined as:
+        L_rot = 1 - cos(pred_angle - gt_angle)
+    This loss penalizes the difference between predicted and ground truth angles,
+    with a higher loss for larger differences.
     """
 
     def __init__(self):

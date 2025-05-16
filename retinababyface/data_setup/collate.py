@@ -6,8 +6,8 @@ import torch.nn.functional as F
 
 def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Custom collate function that stacks images, pads the target tensors,
-    and generates a 'valid_mask' to indicate the presence of valid objects.
+    Collate a batch of samples, stacking images and padding per-sample object tensors.
+    Uses `valid_mask` to mark which entries are real, so no explicit 'background' class is needed.
 
     Args:
         batch (List[Dict[str, Any]]): A list of dictionaries, where each dictionary represents a sample
@@ -45,14 +45,14 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         if n == 0:
             boxes = torch.zeros((0, 8), dtype=torch.float32)
             angles = torch.zeros((0,), dtype=torch.float32)
-            classes = torch.full((0,), fill_value=5, dtype=torch.long)  # 5 = no face
+            classes = torch.zeros((0,), dtype=torch.long)
 
         padded_boxes.append(
             F.pad(boxes, (0, 0, 0, pad_size))
         )  # Pad the bounding boxes tensor.
         padded_angles.append(F.pad(angles, (0, pad_size)))  # Pad the angles tensor.
         padded_classes.append(
-            F.pad(classes, (0, pad_size), value=5)
+            F.pad(classes, (0, pad_size), value=0)
         )  # Pad the class indices tensor.
 
         mask = torch.zeros(max_num_objs, dtype=torch.bool)  # Create a mask tensor.

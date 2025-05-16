@@ -190,6 +190,20 @@ def match_anchors_to_targets(
             - A boolean tensor of shape (N,) indicating which anchors are matched (positive).
             - A tensor of shape (N,) with the index of the best GT box for each anchor.
     """
+    # Check if anchors are empty
+    if gt_boxes_xy.numel() == 0:
+        # No ground truth boxes, return empty tensors
+        # Create empty tensors with the same device as anchors_xywhr
+        # and the same number of rows as anchors_xywhr
+        # pos_mask: (N,) boolean tensor indicating positive matches
+        # best_gt: (N,) tensor with the index of the best GT box for each anchor
+        # Both tensors are initialized to zero
+        # and have the same device as anchors_xywhr
+        N = anchors_xywhr.size(0)
+        return (
+            torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # pos_mask
+            torch.zeros(N, dtype=torch.long, device=anchors_xywhr.device),  # best_gt
+        )
     W, H = image_size
     gt_xywhr = xyxyxyxy2xywhr(gt_boxes_xy, gt_angles, (W, H))
 

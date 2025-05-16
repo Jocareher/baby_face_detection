@@ -358,17 +358,43 @@ class MultiTaskLoss(nn.Module):
                 image_sizes[b],
                 iou_thr=self.pos_iou_thr,
             )
-            # print(f"batch {b}: pos={pos_mask.sum().item()} / {pos_mask.numel()}")
 
             # Step 2: Classification loss using focal loss
             tgt_cls = torch.full((N,), 5, dtype=torch.long, device=orient_logits.device)
             tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
             cls_loss += self.focal_loss(orient_logits[b], tgt_cls)
 
-            # Step 2b: Face/no-face BCE loss
-            # Build binary target: 1 for any positive anchor, else 0
-            tgt_face = pos_mask.float().unsqueeze(1)  # (N,1)
-            face_loss += self.bce_loss(face_logits[b], tgt_face)
+            # Step 2b: Face/no-face BCE loss with Hard Negative Mining
+            # Select positive and negative samples
+            pos_idx = torch.nonzero(pos_mask, as_tuple=False).squeeze(1)
+            # Select negative samples
+            neg_mask = ~pos_mask
+            # Get indices of negative samples
+            # Note: neg_mask is a boolean tensor, so we can use it directly
+            # to get the indices of negative samples
+            neg_idx = torch.nonzero(neg_mask, as_tuple=False).squeeze(1)
+
+            # Sample negative samples (up to 3x the number of positive samples)
+            # to balance the loss
+            num_pos = pos_idx.numel()
+            num_neg = min(neg_idx.numel(), num_pos * 3)
+
+            # If there are negative samples, sample them
+            # randomly, otherwise use all positive samples
+            # Note: we use the same random seed for all batches
+            # to ensure reproducibility
+            if num_neg > 0:
+                perm = torch.randperm(neg_idx.numel(), device=neg_idx.device)[:num_neg]
+                sampled_neg = neg_idx[perm]
+                sel_idx = torch.cat([pos_idx, sampled_neg], dim=0)
+            else:
+                sel_idx = pos_idx
+
+            # Create a mask for the selected indices
+            tgt_face_sel = pos_mask.float().unsqueeze(1)[sel_idx]
+            # Select the face logits for the selected indices
+            face_logits_sel = face_logits[b][sel_idx]
+            face_loss += self.bce_loss(face_logits_sel, tgt_face_sel)
 
             # Step 3: OBB regression loss (only for positives)
             if pos_mask.any():

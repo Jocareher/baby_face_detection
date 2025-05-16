@@ -195,7 +195,8 @@ def infer_with_rotated_nms(
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference using a RetinaBabyFace-like model and applies rotated NMS.
+    Performs inference using a RetinaBabyFace-like model with an extra face/no-face head 
+    and applies rotated NMS.
 
     Args:
         model (nn.Module): Model that outputs classification logits, vertex deltas, and angles.
@@ -210,37 +211,40 @@ def infer_with_rotated_nms(
     Returns:
         List[Dict[str, Tensor]]: List of length B with dicts per image containing:
             - 'boxes':    (M, 5) boxes in (cx, cy, w, h, θ) format
-            - 'scores':   (M,)   confidence scores
-            - 'labels':   (M,)   class indices (float)
+            - 'scores':   (M,)   face probabilities
+            - 'labels':   (M,)   orientation labels (0–4)
             - 'polygons': (M, 8) 4-corner polygons for visualization
     """
     B = images.size(0)
-    logits, deltas, pred_angles = model(images)  # → (B, N, C), (B, N, 8), (B, N, 1)
-    prob = F.softmax(logits, dim=-1)
+    # Unpack the new face/no-face head output
+    logits, deltas, pred_angles, face_scores = model(images) 
+    orientation_probs = F.softmax(logits, dim=-1)
     outputs = []
 
     for b in range(B):
-        # Get top class and score per anchor
-        scores_b, labels_b = prob[b].max(-1)
-
-        # Filter out background and low-confidence detections
-        keep_mask = (labels_b != 5) & (scores_b > conf_thres)
+        # Get the per-anchor orientation labels & confidences
+        orient_conf, orient_labels = orientation_probs[b].max(-1)
+        
+        # Extract face score per-anchor
+        face_scores_b = face_scores[b].squeeze(-1) 
+        
+        # Filter purely on face presence
+        keep_mask = face_scores_b > conf_thres  
         if not keep_mask.any():
-            outputs.append(
-                {
-                    "boxes": torch.zeros((0, 5), device=images.device),
-                    "scores": torch.zeros((0,), device=images.device),
-                    "labels": torch.zeros((0,), device=images.device),
-                    "polygons": torch.zeros((0, 8), device=images.device),
-                }
-            )
+            outputs.append({
+                "boxes":    torch.zeros((0, 5), device=images.device),
+                "scores":   torch.zeros((0,),    device=images.device),
+                "labels":   torch.zeros((0,),    device=images.device),
+                "polygons": torch.zeros((0, 8), device=images.device),
+            })
             continue
+
 
         # 1) Get original indices of kept proposals
         idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)  # (N_valid,)
 
         # 2) Select top-K proposals by score
-        scores_k = scores_b[idxs]  # (N_valid,)
+        scores_k = face_scores_b[idxs] # Use face_scores_b here instead of orientation_conf
         K = min(pre_nms_topk, scores_k.size(0))
         topk_scores, topk_inds = scores_k.topk(K, sorted=True)  # (K,)
         sel = idxs[topk_inds]  # (K,) indices w.r.t. full anchor set
@@ -266,14 +270,12 @@ def infer_with_rotated_nms(
         sel_final = sel[keep_nms]  # Final selection
 
         # 7) Prepare output
-        outputs.append(
-            {
-                "boxes": xywhr[keep_nms],  # (M, 5)
-                "scores": topk_scores[keep_nms],  # (M,)
-                "labels": labels_b[sel_final].float(),  # (M,)
-                "polygons": verts[keep_nms],  # (M, 8)
-            }
-        )
+        outputs.append({
+            "boxes":    xywhr[keep_nms], # (M, 5) in (cx, cy, w, h, θ)
+            "scores":   face_scores_b[sel][keep_nms], # (M,)
+            "labels":   orient_labels[sel_final].float(), # (M,)       
+            "polygons": verts[keep_nms], # (M, 8) in (x1, y1, x2, y2, x3, y3, x4, y4)
+        })
 
     return outputs
 

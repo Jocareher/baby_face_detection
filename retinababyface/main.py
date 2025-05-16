@@ -115,6 +115,7 @@ def parse_args():
 
     # Loss weighting
     parser.add_argument("--lambda_cls", type=float, default=config.LAMBDA_CLS)
+    parser.add_argument("--lambda_face", type=float, default=config.LAMBDA_FACE)
     parser.add_argument("--lambda_obb", type=float, default=config.LAMBDA_OBB)
     parser.add_argument("--lambda_rot", type=float, default=config.LAMBDA_ROT)
 
@@ -246,7 +247,9 @@ def main():
         device=device.type,
     )
 
-    multitask_loss = MultiTaskLoss(args.lambda_cls, args.lambda_obb, args.lambda_rot)
+    multitask_loss = MultiTaskLoss(
+        args.lambda_cls, args.lambda_obb, args.lambda_rot, args.lambda_face
+    )
     earlystopping = EarlyStopping(
         args.patience, verbose=True, delta=0.001, path=ckpt_path
     )

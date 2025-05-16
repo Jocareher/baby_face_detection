@@ -33,7 +33,7 @@ class FocalLoss(nn.Module):
         self,
         alpha: Union[float, List[float]] = 1.0,
         gamma: float = 2.0,
-        ignore_index: int = -100,
+        ignore_index: int = None,
         reduction: str = "mean",
     ):
         super().__init__()
@@ -295,9 +295,7 @@ class MultiTaskLoss(nn.Module):
         gamma: float = config.GAMMA,
     ):
         super().__init__()
-        self.focal_loss = FocalLoss(
-            alpha=alpha, gamma=gamma, ignore_index=-100, reduction="mean"
-        )
+        self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
         self.bce_loss = nn.BCELoss(reduction="mean")
         self.obb_loss = OBBRegressionLoss()
         self.rot_loss = RotationLoss()
@@ -360,9 +358,12 @@ class MultiTaskLoss(nn.Module):
             )
 
             # Step 2: Classification loss using focal loss
-            tgt_cls = torch.full((N,), 5, dtype=torch.long, device=orient_logits.device)
-            tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
-            cls_loss += self.focal_loss(orient_logits[b], tgt_cls)
+            if pos_mask.any():
+                tgt_cls = torch.full(
+                    (N,), 5, dtype=torch.long, device=orient_logits.device
+                )
+                tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
+                cls_loss += self.focal_loss(orient_logits[b], tgt_cls)
 
             # Step 2b: Face/no-face BCE loss with Hard Negative Mining
             # Select positive and negative samples
@@ -414,22 +415,23 @@ class MultiTaskLoss(nn.Module):
                 ga = wrap_to_pi(ga)
                 rot_loss += self.rot_loss(pa, ga)
 
-        # Normalize losses over batch
-        cls_loss /= B
+        # Normalize classification loss by the number of valid batches
+        cls_loss = cls_loss / valid_batches if valid_batches > 0 else 0.0
         face_loss /= B
-        if valid_batches == 0:
-            total_loss = self.lambda_cls * cls_loss + self.lambda_face * face_loss
-            return total_loss, cls_loss.item(), face_loss.item(), 0.0, 0.0
-
-        obb_loss /= valid_batches
-        rot_loss /= valid_batches
-
-        total_loss = (
-            self.lambda_cls * cls_loss
-            + self.lambda_face * face_loss
-            + self.lambda_obb * obb_loss
-            + self.lambda_rot * rot_loss
-        )
+        # Normalize OBB and rotation losses by the number of valid batches
+        if valid_batches > 0:
+            obb_loss /= valid_batches
+            rot_loss /= valid_batches
+            # total loss is a weighted sum of all components
+            total_loss = (
+                self.lambda_cls * cls_loss
+                + self.lambda_face * face_loss
+                + self.lambda_obb * obb_loss
+                + self.lambda_rot * rot_loss
+            )
+        else:
+            # If no valid batches, set all losses to zero
+            total_loss = self.lambda_face * face_loss
 
         return (
             total_loss,

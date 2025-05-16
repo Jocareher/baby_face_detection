@@ -21,7 +21,8 @@ class BabyFacesDataset(Dataset):
     - x1, y1, ..., x4, y4: normalized (0–1) coordinates of the OBB corners
     - angle: rotation angle in radians (clockwise), usually measured from the top-left corner
 
-    Images without a corresponding label file are treated as background and assigned class index 5.
+    Images without a .txt file yield zero GT boxes; background (no-face)
+    handling is done later by anchor matching.
 
     It is assumed the dataset is organized as:
         root_dir/
@@ -107,8 +108,9 @@ class BabyFacesDataset(Dataset):
                 - "target" (dict): A dictionary with:
                     - "boxes" (Tensor): (N, 8) absolute polygon vertex coordinates.
                     - "angles" (Tensor): (N,) rotation angles in radians.
-                    - "class_idx" (Tensor): (N,) class indices (0 to 4), or 5 if background.
+                    - "class_idx" (Tensor): (N,) class indices (0 to 4).
                     - "valid_mask" (Tensor): (N,) boolean mask indicating valid entries.
+                    - "has_face": Tensor[1]   # optionally added below
         """
         base = self.file_list[idx]
         img_path = os.path.join(self.images_dir, base + ".jpg")
@@ -170,6 +172,9 @@ class BabyFacesDataset(Dataset):
             "class_idx": cls_t,
             "valid_mask": valid_mask,
         }
+
+        # Add a boolean indicating if the image has any faces
+        target["has_face"] = torch.tensor(len(boxes) > 0, dtype=torch.bool)
 
         # 5) Build sample dictionary
         sample: Dict[str, Any] = {

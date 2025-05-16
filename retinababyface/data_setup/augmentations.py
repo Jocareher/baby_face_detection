@@ -682,11 +682,14 @@ class ToTensorNormalize(object):
 
 def wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
     """
-    Wrap any angle (in radians) into [-π, π].
-    Works element-wise for tensors.
+    Wraps an angle in radians to the range [-π, π].
+    This is useful for ensuring that angles are within a standard range.
+
     Args:
         angle (torch.Tensor): The angle in radians to be wrapped.
+
     Returns:
         torch.Tensor: The wrapped angle in radians.
+
     """
     return (angle + math.pi) % (2 * math.pi) - math.pi

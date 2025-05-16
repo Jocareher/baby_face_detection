@@ -38,7 +38,6 @@ def get_default_device() -> torch.device:
     Determines the default device to use for PyTorch computations.
 
     If a CUDA-enabled GPU is available, it returns "cuda".
-    If an MPS-enabled GPU is available, it returns "mps".
     Otherwise, it returns "cpu".
 
     Returns:
@@ -46,7 +45,7 @@ def get_default_device() -> torch.device:
     """
     if torch.cuda.is_available():
         return torch.device("cuda")  # Use CUDA if available.
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")  # Use MPS if available.
+    # elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    #     return torch.device("mps")  # Use MPS if available.
     else:
         return torch.device("cpu")  # Use CPU if no GPU is available.

@@ -341,10 +341,18 @@ class RandomScaleTranslateOBB:
 
             # If no boxes are valid, assign empty tensors
             if valid_boxes.shape[0] == 0:
+                # No valid boxes
                 target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
+                # No valid angles
                 target["angles"] = torch.empty((0,), dtype=torch.float32)
-                target["class_idx"] = torch.tensor([5], dtype=torch.long)
+                # No valid class indices
+                target["class_idx"] = torch.empty((0,), dtype=torch.long)
             else:
+                # Assign valid boxes, angles, and class indices
+                # Reshape valid boxes to (N, 8)
+                # and convert to tensor
+                # Convert valid angles to tensor
+                # and valid class indices to tensor
                 target["boxes"] = torch.tensor(
                     valid_boxes, dtype=torch.float32, device=boxes.device
                 )

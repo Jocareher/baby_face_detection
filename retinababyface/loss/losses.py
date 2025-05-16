@@ -270,18 +270,44 @@ class OBBRegressionLoss(nn.Module):
 
 class MultiTaskLoss(nn.Module):
     """
-    Multi-task loss combining classification, OBB regression, and angle regression.
+    Multi-task loss function for RetinaFace model.
+    This loss function combines the following components:
+        1. Focal loss for classification (multi-class).
+        2. Binary cross-entropy loss for face classification.
+        3. Oriented bounding box regression loss.
+        4. Rotation angle regression loss.
+        5. Probabilistic IoU loss for OBBs.
+    The loss function is designed to handle multiple tasks simultaneously,
+    allowing the model to learn from all tasks at once.
+    The loss function is defined as:
+        L_cls = FocalLoss(orient_logits, tgt_cls)
+        L_face = BCE(face_logits, tgt_face)
+        L_obb = OBBRegressionLoss(pred_deltas, gt_xy, anc_xy)
+        L_rot = RotationLoss(pred_angles, gt_angles)
 
     The total loss is defined as:
-        L_total = λ_cls * L_focal + λ_obb * L_smoothL1 + λ_rot * L_angle
+        L_total = λ_cls * L_focal + λ_face * L_bce + λ_obb * L_obb + λ_rot * L_rot
 
     Args:
         lambda_cls (float): Weight for the classification loss.
         lambda_obb (float): Weight for the oriented bounding box regression loss.
         lambda_rot (float): Weight for the angle regression loss.
+        lambda_face (float): Weight for the face classification loss.
         pos_iou_thresh (float): IoU threshold to consider an anchor as positive.
         alpha (List[float]): Class-balancing weights for focal loss.
         gamma (float): Focusing parameter for focal loss.
+
+    Note:
+        - The loss function expects the model's output to be in the following format:
+            (orient_logits, face_logits, deltas, angles)
+        - The targets dictionary should contain the following keys:
+            "boxes": Ground truth boxes in xyxyxyxy format.
+            "angle": Ground truth angles in radians.
+            "class_idx": Class indices for each object.
+            "valid_mask": Boolean mask indicating valid object positions.
+        - The anchors_xy tensor should contain the anchor boxes in xyxyxyxy format.
+        - The anchors_xywhr tensor should contain the anchor boxes in (cx, cy, w, h, θ) format.
+        - The image_sizes list should contain the sizes of each image in the batch.
     """
 
     def __init__(

@@ -20,6 +20,27 @@ from data_setup.augmentations import wrap_to_pi
 import config
 
 
+class FaceHead(nn.Module):
+    """
+    Head module for predicting a binary face/no‐face logit per anchor.
+    The output is a single value per anchor, indicating the presence of a face.
+
+
+    Output shape:
+        - Input: (B, C, H, W)
+        - Output: (B, N, 1) where N = H × W × num_anchors
+    """
+
+    def __init__(self, in_ch: int):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, config.NUM_ANCHORS * 1, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # sigmoid to map to [0,1] probability, view into (B, N, 1)
+        prob = torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous())
+        return prob.view(x.size(0), -1, 1)
+
+
 class OBBHead(nn.Module):
     """
     Head module for predicting the 8 normalized offsets (Δx, Δy) of the 4 vertices
@@ -84,13 +105,13 @@ class ClassHead(nn.Module):
     Head module for class prediction.
     """
 
-    def __init__(self, inchannels: int = 64, num_classes: int = 6):
+    def __init__(self, inchannels: int = 64, num_classes: int = 5):
         """
         Initializes the ClassHead module.
 
         Args:
             inchannels (int): Number of input channels. Defaults to 64.
-            num_classes (int): Number of classes to predict. Defaults to 6.
+            num_classes (int): Number of classes to predict. Defaults to 5.
             num_anchors (int): Number of anchors per location. Defaults to 2.
         """
         super().__init__()
@@ -107,12 +128,12 @@ class ClassHead(nn.Module):
             x (torch.Tensor): Input feature map.
 
         Returns:
-            torch.Tensor: Predicted class logits.
+            torch.Tensor: Predicted class orientation_logits.
         """
         # Apply the convolution and rearrange the tensor dimensions.
         # The output shape is (batch_size, num_anchors * H * W, num_classes).
-        # The num_classes values correspond to the class logits for each anchor.
-        # The logits are not normalized, so they can be used directly for classification.
+        # The num_classes values correspond to the class orientation_logits for each anchor.
+        # The orientation_logits are not normalized, so they can be used directly for classification.
         return (
             self.conv(x)
             .permute(0, 2, 3, 1)
@@ -156,12 +177,15 @@ class RetinaBabyFace(nn.Module):
         self.ssh2 = SSH(out_channel, out_channel)
         self.ssh3 = SSH(out_channel, out_channel)
 
-        # Prediction heads: Oriented bounding boxes, rotation angles, and class logits
+        # Prediction heads:
+        #  - OBB regression
+        #  - Angle regression
+        #  - Orientation classification (5 ways)
+        #  - Face/no‐face binary classification
         self.obb_head = nn.ModuleList([OBBHead(out_channel) for _ in range(3)])
         self.angle_head = nn.ModuleList([AngleHead(out_channel) for _ in range(3)])
-        self.class_head = nn.ModuleList(
-            [ClassHead(out_channel, num_classes=6) for _ in range(3)]
-        )
+        self.class_head = nn.ModuleList([ClassHead(out_channel) for _ in range(3)])
+        self.face_head = nn.ModuleList([FaceHead(out_channel) for _ in range(3)])
 
     def make_backbone(
         self, name: str, pretrained: bool
@@ -274,7 +298,8 @@ class RetinaBabyFace(nn.Module):
 
         Returns:
             Tuple containing:
-                - logits (torch.Tensor): Class logits, shape (B, N, num_classes)
+                - orientation_logits (torch.Tensor): Class orientation_logits, shape (B, N, num_classes)
+                - face_logits (torch.Tensor): Face/no‐face orientation_logits, shape (B, N, 1)
                 - obbs (torch.Tensor): Predicted OBB vertex displacements, shape (B, N, 8)
                 - angs (torch.Tensor): Predicted angles in radians, shape (B, N, 1)
         """
@@ -288,12 +313,18 @@ class RetinaBabyFace(nn.Module):
         f1, f2, f3 = self.ssh1(p3), self.ssh2(p4), self.ssh3(p5)
 
         # Concatenate the outputs from the SSH blocks
-        logits = torch.cat([h(f) for h, f in zip(self.class_head, (f1, f2, f3))], dim=1)
+        orientation_logits = torch.cat(
+            [h(f) for h, f in zip(self.class_head, (f1, f2, f3))], dim=1
+        )
+        # Concatenate the outputs from the face heads
+        face_logits = torch.cat(
+            [h(f) for h, f in zip(self.face_head, (f1, f2, f3))], dim=1
+        )
         # Concatenate the outputs from the OBB and angle heads
         obbs = torch.cat([h(f) for h, f in zip(self.obb_head, (f1, f2, f3))], dim=1)
         # Concatenate the outputs from the angle heads
         angs = torch.cat([h(f) for h, f in zip(self.angle_head, (f1, f2, f3))], dim=1)
-        return logits, obbs, angs
+        return orientation_logits, face_logits, obbs, angs
 
 
 class ViTFeature2D(nn.Module):

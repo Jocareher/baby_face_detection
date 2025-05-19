@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from matplotlib.patches import Polygon as MplPolygon
+from PIL import Image, ImageDraw, ImageFont
 
 
 from loss.utils import xyxyxyxy2xywhr, xywhr2xyxyxyxy, decode_vertices
@@ -301,3 +302,92 @@ def visualize_predictions(
 
         plt.tight_layout()
         plt.show()
+
+
+def create_training_gif(
+    image_folder: str, output_gif: str, font_path: Optional[str] = None
+):
+    """
+    Creates a training progress GIF with large bold titles indicating the epoch number.
+
+    Args:
+        image_folder (str): Folder with .jpg/.png images named with 'epoch{num}'.
+        output_gif (str): Path where the animated GIF will be saved.
+        font_path (Optional[str]): Optional path to a .ttf font to use.
+    """
+    valid_exts = [".jpg", ".png"]
+    image_files = [
+        f
+        for f in os.listdir(image_folder)
+        if os.path.splitext(f)[1].lower() in valid_exts
+    ]
+
+    def extract_epoch(filename: str) -> int:
+        match = re.search(r"epoch(\d+)", filename, re.IGNORECASE)
+        return int(match.group(1)) if match else -1
+
+    images = [(extract_epoch(f), f) for f in image_files if extract_epoch(f) >= 0]
+    images.sort(key=lambda x: x[0])
+
+    if not images:
+        print("[WARNING] No valid images with epoch numbers found.")
+        return
+
+    frames = []
+
+    for epoch, filename in images:
+        img_path = os.path.join(image_folder, filename)
+        img = Image.open(img_path).convert("RGB")
+        width, height = img.size
+
+        # --- Reserve space for title banner ---
+        title_height = int(height * 0.1)  # 12% of image height
+        canvas = Image.new("RGB", (width, height + title_height), color="white")
+        canvas.paste(img, (0, title_height))
+
+        draw = ImageDraw.Draw(canvas)
+        font_size = int(title_height * 0.3)
+
+        # --- Font loading ---
+        font = None
+        if font_path and os.path.exists(font_path):
+            font = ImageFont.truetype(font_path, font_size)
+        else:
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+            except:
+                try:
+                    font = ImageFont.truetype(
+                        "/System/Library/Fonts/Supplemental/Arial Bold.ttf", font_size
+                    )
+                except:
+                    raise RuntimeError(
+                        "[ERROR] No valid TTF font found. Please provide --font_path."
+                    )
+
+        # --- Text and placement ---
+        text = f"EPOCH : {epoch}"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        text_x = (width - text_width) // 2
+        text_y = (title_height - text_height) // 2
+
+        # --- Draw shadow + text ---
+        draw.text((text_x + 2, text_y + 2), text, font=font, fill="black")
+        draw.text((text_x, text_y), text, font=font, fill="black")
+
+        frames.append(canvas)
+
+    # --- Save GIF ---
+    frames[0].save(
+        output_gif,
+        format="GIF",
+        append_images=frames[1:],
+        save_all=True,
+        duration=500,
+        loop=0,
+        optimize=True,
+    )
+
+    print(f"[INFO] GIF saved to {output_gif} ({len(frames)} frames).")

@@ -178,14 +178,16 @@ class RetinaBabyFace(nn.Module):
         self.ssh3 = SSH(out_channel, out_channel)
 
         # Prediction heads:
-        #  - OBB regression
-        #  - Angle regression
-        #  - Orientation classification (5 ways)
-        #  - Face/no‐face binary classification
-        self.obb_head = nn.ModuleList([OBBHead(out_channel) for _ in range(3)])
-        self.angle_head = nn.ModuleList([AngleHead(out_channel) for _ in range(3)])
-        self.class_head = nn.ModuleList([ClassHead(out_channel) for _ in range(3)])
-        self.face_head = nn.ModuleList([FaceHead(out_channel) for _ in range(3)])
+        # OBB head for predicting 8 vertex displacements
+        # Angle head for predicting rotation angle
+        # Class head for predicting class orientation_logits
+        # Face head for predicting face/no‐face orientation_logits
+        # Each head is a 1x1 convolutional layer followed by reshaping
+        # and activation functions as needed.
+        self.obb_head = OBBHead(out_channel)
+        self.angle_head = AngleHead(out_channel)
+        self.class_head = ClassHead(out_channel)
+        self.face_head = FaceHead(out_channel)
 
     def make_backbone(
         self, name: str, pretrained: bool
@@ -314,16 +316,14 @@ class RetinaBabyFace(nn.Module):
 
         # Concatenate the outputs from the SSH blocks
         orientation_logits = torch.cat(
-            [h(f) for h, f in zip(self.class_head, (f1, f2, f3))], dim=1
+            [self.class_head(f) for f in (f1, f2, f3)], dim=1
         )
         # Concatenate the outputs from the face heads
-        face_logits = torch.cat(
-            [h(f) for h, f in zip(self.face_head, (f1, f2, f3))], dim=1
-        )
+        face_logits = torch.cat([self.face_head(f) for f in (f1, f2, f3)], dim=1)
         # Concatenate the outputs from the OBB and angle heads
-        obbs = torch.cat([h(f) for h, f in zip(self.obb_head, (f1, f2, f3))], dim=1)
+        obbs = torch.cat([self.obb_head(f) for f in (f1, f2, f3)], dim=1)
         # Concatenate the outputs from the angle heads
-        angs = torch.cat([h(f) for h, f in zip(self.angle_head, (f1, f2, f3))], dim=1)
+        angs = torch.cat([self.angle_head(f) for f in (f1, f2, f3)], dim=1)
         return orientation_logits, face_logits, obbs, angs
 
 

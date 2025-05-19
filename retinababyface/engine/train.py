@@ -237,6 +237,7 @@ def infer_with_rotated_nms(
 
         # Filter purely on face presence
         keep_mask = face_scores_b > conf_thres
+        keep_mask &= orient_conf > conf_thres 
         if not keep_mask.any():
             outputs.append(
                 {
@@ -247,8 +248,6 @@ def infer_with_rotated_nms(
                 }
             )
             continue
-
-        keep_mask = face_scores[b] > conf_thres
 
         # 1) Get original indices of kept proposals
         idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)  # (N_valid,)

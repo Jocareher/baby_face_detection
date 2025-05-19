@@ -5,7 +5,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
-#SBATCH --time=1-00:00:00
 #SBATCH --output=/home/jreyes/baby_face_detection/retinababyface/slurm_%j.out
 #SBATCH --error=/home/jreyes/baby_face_detection/retinababyface/slurm_%j.err
 #SBATCH --chdir=/home/jreyes/baby_face_detection/retinababyface

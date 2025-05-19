@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib import patches, patheffects
 from matplotlib.patches import Polygon as MplPolygon
 from torch.utils.data import DataLoader
+from torch.nn import functional as F
 from scipy.ndimage import gaussian_filter1d
 from tqdm import tqdm
 from sklearn.metrics import (
@@ -28,6 +29,7 @@ from engine.train import (
     batch_probiou,
     denormalize_image,
 )
+from data_setup.augmentations import wrap_to_pi
 
 # -----------------------------------------------------------------------------
 # I. Model Checkpoint and Anchor Preparation
@@ -162,6 +164,9 @@ def run_inference(
                 model, imgs, anchors_xy, resize_size, conf_thres, iou_thres
             )
 
+            orient_logits, _, _, _ = model(imgs)
+            orientation_probs = F.softmax(orient_logits, dim=-1)
+
             batch_size = imgs.size(0)
             for b in range(batch_size):
                 fname = dataset.file_list[global_idx]
@@ -221,31 +226,48 @@ def run_inference(
                         all_scores.append(0.0)
                         all_preds.append(-1)
                         continue
-
+                    # Find the best prediction for the current GT
                     best_iou, best_j = iou_matrix[i].max(0)
-                    is_match = best_iou >= iou_thres
+                    # Check if the best prediction is a match
+                    # and if it belongs to the same class
+
+                    is_match = (best_iou >= iou_thres) and (pred_labels[best_j] == cls)
 
                     if is_match:
+                        # Update stats for true positive
                         stats[cls]["tp"] += 1
+                        # Compute IoU and angle error
                         iou_errs[cls].append(best_iou.item())
-                        angle_diff = abs(
-                            (pred_boxes[best_j, 4] - gt_angles[i]) * 180 / math.pi
-                        )
+                        # Compute angle error
+                        raw_diff = pred_boxes[best_j, 4] - gt_angles[i]
+                        # Normalize the angle difference to [-pi, pi]
+                        wrapped = wrap_to_pi(raw_diff)
+                        # Convert to degrees
+                        angle_diff = wrapped.abs() * 180.0 / math.pi
+                        # Store the angle error
                         angle_errs[cls].append(angle_diff.item())
                         matched[best_j] = True
                     else:
+                        # Update stats for false negative
                         stats[cls]["fn"] += 1
 
                     for c in labels_map:
+                        # Append true/score pairs for PR/mAP
                         per_true[c].append(int(c == cls))
+                        # Append score for the best prediction
                         per_score[c].append(
-                            pred_scores[best_j].item() if is_match else 0.0
+                            orientation_probs[b, best_j, c].item() if is_match else 0.0
                         )
-
+                    # Append true/score pairs for confusion matrix
                     y_true.append(cls)
+                    # Append predicted label (-1 for background)
                     y_pred.append(int(pred_labels[best_j].item()) if is_match else -1)
+                    # Append all GTs and scores
                     all_gts.append(cls)
-                    all_scores.append(pred_scores[best_j].item() if is_match else 0.0)
+                    # Append all scores
+                    all_scores.append(
+                        (orientation_probs[b, best_j, cls].item() if is_match else 0.0)
+                    )
                     all_preds.append(
                         int(pred_labels[best_j].item()) if is_match else -1
                     )

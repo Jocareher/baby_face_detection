@@ -237,7 +237,7 @@ def infer_with_rotated_nms(
 
         # Filter purely on face presence
         keep_mask = face_scores_b > conf_thres
-        keep_mask &= orient_conf > conf_thres 
+        keep_mask &= orient_conf > conf_thres
         if not keep_mask.any():
             outputs.append(
                 {

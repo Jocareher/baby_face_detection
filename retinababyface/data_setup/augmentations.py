@@ -233,6 +233,13 @@ class RandomRotateOBB:
 
         sample["image"] = rotated_image  # Updates the rotated image in the sample.
         sample["target"] = target  # Updates the target in the sample.
+        
+        # Add a valid mask
+        num = target["boxes"].shape[0]
+        # Create a valid mask for the boxes
+        target["valid_mask"] = torch.ones(num, dtype=torch.bool, device=boxes.device)
+        # If there are no boxes, set the valid mask to False
+        sample["target"] = target
         return sample
 
 
@@ -316,7 +323,7 @@ class RandomScaleTranslateOBB:
             # No boxes to transform
             target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
             target["angles"] = torch.empty((0,), dtype=torch.float32)
-            target["class_idx"] = torch.tensor([5], dtype=torch.long)
+            target["class_idx"] = torch.empty((0,),   dtype=torch.long)
         else:
             # Vectorized transform
             N = boxes.shape[0]
@@ -361,6 +368,14 @@ class RandomScaleTranslateOBB:
 
         # Updates the target in the sample.
         sample["image"] = transformed_image
+        sample["target"] = target
+        
+        
+        # Add a valid mask
+        num = target["boxes"].shape[0]
+        # Create a valid mask for the boxes
+        target["valid_mask"] = torch.ones(num, dtype=torch.bool, device=boxes.device)
+        # If there are no boxes, set the valid mask to False
         sample["target"] = target
         return sample
 

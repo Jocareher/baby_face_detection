@@ -46,8 +46,7 @@ python main.py \
     --run_name="dense_10obb" \
     --record_metrics \
     --batch_size=32 \
-    --no_freeze_backbone \
-    --checkpoint_path="dense_10obb.pt" \
+    --freeze_backbone \
     --clip_value=1.0 \
     --weight_decay=0.0005 \
     --lambda_face=1 \

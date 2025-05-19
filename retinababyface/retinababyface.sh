@@ -39,6 +39,7 @@ echo "Environment is ready!"
 python main.py \
     --root_dir="/home/jreyes/obbabyface_rot" \
     --backbone="densenet121" \
+    --run_name="dense" \
     --epochs=100 \
     --lr=0.001 \
     --scheduler="OneCycle" \
@@ -52,5 +53,3 @@ python main.py \
     --lambda_rot=10 \
     --lambda_cls=10 \
     --lambda_obb=10 \
-    --inference_results="dense_10lambda_all" \
-    --predictions_dir="pred_dense_10lambda_all" \

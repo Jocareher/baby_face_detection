@@ -132,7 +132,7 @@ def parse_args():
 
     # Inference
     parser.add_argument("--split", type=str, default="test", help="Split to evaluate.")
-    parser.add_argument("--conf_thres", type=float, default=0.25)
+    parser.add_argument("--conf_thres", type=float, default=0.5)
     parser.add_argument("--iou_thres", type=float, default=0.5)
     parser.add_argument("--grid_rows", type=int, default=3)
     parser.add_argument("--grid_cols", type=int, default=3)

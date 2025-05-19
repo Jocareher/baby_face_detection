@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import os
 import argparse
+from pathlib import Path
+
 import torch
 import matplotlib.pyplot as plt
-
 from torch.utils.data import DataLoader
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
@@ -28,10 +29,10 @@ def parse_args():
         "--root_dir", type=str, required=True, help="Path to dataset root directory."
     )
     parser.add_argument(
-        "--pred_dir",
+        "--output_dir",
         type=str,
-        default="predictions",
-        help="Directory to save individual prediction's results.",
+        default="inferece_results",
+        help="Directory to save inference results.",
     )
     parser.add_argument(
         "--backbone",
@@ -65,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--conf_thres",
         type=float,
-        default=0.25,
+        default=0.5,
         help="Confidence threshold for detections (default: 0.25).",
     )
     parser.add_argument(
@@ -100,6 +101,15 @@ def main():
     args = parse_args()
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    figures_dir = output_dir / "figures"
+    predictions_dir = output_dir / "predictions"
+
+    figures_dir.mkdir(exist_ok=True)
+    predictions_dir.mkdir(exist_ok=True)
 
     # 1. Load test dataset and dataloader
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
@@ -168,28 +178,16 @@ def main():
     )
 
     # 5. Save output figures
-    os.makedirs(args.inference_results, exist_ok=True)
+    # Save all figures
+    figures["pr_figure"].savefig(figures_dir / "precision_recall.png", dpi=150)
+    figures["confusion_figure"].savefig(figures_dir / "confusion_matrix.png", dpi=150)
+    figures["grid_figure"].savefig(figures_dir / "grid_examples.png", dpi=150)
+    figures["iou_boxplot_figure"].savefig(figures_dir / "iou_boxplot.png", dpi=150)
+    figures["angle_boxplot_figure"].savefig(figures_dir / "angle_boxplot.png", dpi=150)
+    figures["f1_threshold_figure"].savefig(figures_dir / "f1_threshold.png", dpi=150)
 
-    figures["pr_figure"].savefig(
-        os.path.join(args.inference_results, "precision_recall.png"), dpi=150
-    )
-    figures["confusion_figure"].savefig(
-        os.path.join(args.inference_results, "confusion_matrix.png"), dpi=150
-    )
-    figures["grid_figure"].savefig(
-        os.path.join(args.inference_results, "grid_examples.png"), dpi=150
-    )
-    figures["iou_boxplot_figure"].savefig(
-        os.path.join(args.inference_results, "iou_boxplot_figure.png"), dpi=150
-    )
-    figures["angle_boxplot_figure"].savefig(
-        os.path.join(args.inference_results, "angle_boxplot_figure.png"), dpi=150
-    )
-    figures["f1_threshold_figure"].savefig(
-        os.path.join(args.inference_results, "f1_threshold_figure.png"), dpi=150
-    )
-
-    print(f"[INFO] Inference results saved to '{args.inference_results}/'")
+    print(f"[INFO] All figures saved to {figures_dir}")
+    print(f"[INFO] All predictions saved to {predictions_dir}")
 
 
 if __name__ == "__main__":

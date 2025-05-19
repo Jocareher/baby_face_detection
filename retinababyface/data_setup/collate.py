@@ -52,7 +52,7 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         )  # Pad the bounding boxes tensor.
         padded_angles.append(F.pad(angles, (0, pad_size)))  # Pad the angles tensor.
         padded_classes.append(
-            F.pad(classes, (0, pad_size), value=0)
+            F.pad(classes, (0, pad_size), value=-100)
         )  # Pad the class indices tensor.
 
         mask = torch.zeros(max_num_objs, dtype=torch.bool)  # Create a mask tensor.

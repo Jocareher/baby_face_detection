@@ -164,7 +164,7 @@ def main():
         model=model,
         checkpoint_path=args.checkpoint,  # used internally for compatibility
         test_loader=test_loader,
-        output_dir=args.pred_dir,
+        output_dir=args.output_dir,
         device=device,
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,

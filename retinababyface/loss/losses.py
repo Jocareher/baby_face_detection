@@ -412,8 +412,8 @@ class MultiTaskLoss(nn.Module):
 
             # Hard Negative Mining
             if num_pos > 0:
-                # Select 3x negative samples for each positive sample
-                num_neg = min(neg_idx.numel(), num_pos * 3)
+                # Select 5x negative samples for each positive sample
+                num_neg = min(neg_idx.numel(), num_pos * 5)
 
                 # If there are negative samples, randomly select them
                 # If there are no negative samples, use all positive samples

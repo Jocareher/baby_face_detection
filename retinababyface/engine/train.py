@@ -219,12 +219,12 @@ def infer_with_rotated_nms(
     # Unpack the new face/no-face head output
     (
         orient_logits,
-        face_scores,
+        face_logits,
         deltas,
         pred_angles,
     ) = model(images)
 
-    face_scores = face_scores.squeeze(-1)  # (B, N, 1) → (B, N)
+    face_scores = torch.sigmoid(face_logits.squeeze(-1))  # (B, N, 1) → (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
     outputs = []
 
@@ -691,7 +691,7 @@ def train_step(
     grad_clip_mode: str,
     scheduler: lr_scheduler._LRScheduler,
     device: torch.device,
-    anchors: torch.Tensor,
+    anchors: Tuple[torch.Tensor, torch.Tensor],
 ) -> Tuple[float, float, float, float, float]:
     """
     Performs a single training step for the model.
@@ -897,7 +897,7 @@ def val_step(
         all_gt_boxes,
         all_gt_labels,
         iou_thr=0.5,
-        num_classes=6,
+        num_classes=5,
     )
 
     return avg_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_angular_loss, mAP
@@ -1091,8 +1091,10 @@ def train(
                 anchors=anchors_tuple,
             )  # Perform a testing step.
 
-            if scheduler is not None and isinstance(
-                scheduler, lr_scheduler.ReduceLROnPlateau
+            if (
+                scheduler is not None
+                and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau)
+                or isinstance(scheduler, lr_scheduler.CosineAnnealingLR)
             ):
                 scheduler.step(
                     test_total_loss

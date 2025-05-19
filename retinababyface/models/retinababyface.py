@@ -36,8 +36,9 @@ class FaceHead(nn.Module):
         self.conv = nn.Conv2d(in_ch, config.NUM_ANCHORS * 1, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # sigmoid to map to [0,1] probability, view into (B, N, 1)
-        prob = torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous())
+        prob = (
+            self.conv(x).permute(0, 2, 3, 1).contiguous()
+        )  # (B, H * W * num_anchors, 1)
         return prob.view(x.size(0), -1, 1)
 
 

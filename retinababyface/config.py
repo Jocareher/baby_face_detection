@@ -48,17 +48,26 @@ PRECOMPUTED_OBB_STATS = {
 # =======================
 # Anchor Generation Params
 # =======================
-SCALE_FACTORS = [0.5, 1.0, 1.5]
-RATIO_FACTORS = [1.1851]
+SCALE_FACTORS = [
+    0.19,
+    0.37,
+    0.59,
+    0.70,
+]  # Values obtained from k-means clustering on the training set
+RATIO_FACTORS = [
+    0.7,
+    1.08,
+    1.15,
+]  # Values obtained from k-means clustering on the training set
 ANGLES = [
-    -math.pi / 2,
-    -math.pi / 3,
-    -math.pi / 6,
-    0.0,
-    math.pi / 6,
-    math.pi / 3,
-    math.pi / 2,
-]
+    -1.4548,  # ≈ -83.35°
+    -0.6445,  # ≈ -36.93°
+    -0.1704,  # ≈ -9.76°
+    0.0830,  # ≈  4.75°
+    0.5354,  # ≈ 30.68°
+    1.4058,  # ≈ 80.55°
+    -0.0706,  # ≈ 175.93° → –0.07 rad
+]  # Values obtained from k-means clustering on the training set
 NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 
 

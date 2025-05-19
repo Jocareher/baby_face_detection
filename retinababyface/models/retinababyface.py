@@ -150,7 +150,7 @@ class RetinaBabyFace(nn.Module):
 
     def __init__(
         self,
-        backbone_name: str = "mobilenetv1",
+        backbone_name: str = "densenet121",
         out_channel: int = 64,
         pretrained: bool = True,
     ):

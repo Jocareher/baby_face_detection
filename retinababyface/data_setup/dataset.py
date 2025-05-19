@@ -1,11 +1,14 @@
 import os
-import cv2
 from typing import List, Optional, Callable, Dict, Any, Tuple
 
 import torch
 from torch.utils.data import Dataset
+from sklearn.cluster import KMeans
+import cv2
+import numpy as np
 
 from .augmentations import Resize, wrap_to_pi
+from loss.utils import xyxyxyxy2xywhr
 
 
 class BabyFacesDataset(Dataset):
@@ -302,3 +305,87 @@ def calculate_average_obb_dimensions(dataset: Dataset, img_size) -> Dict[str, fl
         "avg_ratio": sum(ratios)
         / len(ratios),  # Calculates the average OBB aspect ratio.
     }
+
+
+def compute_wh_kmeans_clusters(
+    dataset: Dataset, img_size: Tuple[int, int] = (640, 640), n_clusters: int = 5
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Computes K-Means clustering over normalized width and height values extracted from oriented bounding boxes (OBBs).
+
+    Args:
+        dataset (torch.utils.data.Dataset): Dataset containing samples with target OBBs in 'boxes'.
+        img_size (Tuple[int, int]): Size of the image (width, height) used to normalize box dimensions.
+        n_clusters (int): Number of clusters to form.
+
+    Returns:
+        Tuple:
+            - clusters (np.ndarray): Array of shape (n_clusters, 2) with normalized (w, h) centroids.
+            - scale_factors (np.ndarray): Array of scale factors (sqrt(w * h)) per cluster.
+            - ratio_factors (np.ndarray): Array of aspect ratios (h / w) per cluster.
+    """
+    all_wh: List[torch.Tensor] = []
+
+    for sample in dataset:
+        obbs = sample["target"]["boxes"]  # Tensor of shape (N_i, 8)
+        _, _, ws, hs, _ = xyxyxyxy2xywhr(
+            obbs,
+            torch.zeros(obbs.size(0), device=obbs.device),  # dummy angles
+            image_size=img_size,
+        ).unbind(1)
+
+        norm_ws = ws / img_size[0]
+        norm_hs = hs / img_size[1]
+        all_wh.append(torch.stack([norm_ws, norm_hs], dim=1).cpu())
+
+    all_wh_np = torch.cat(all_wh, dim=0).numpy()
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=0).fit(all_wh_np)
+    clusters = kmeans.cluster_centers_
+
+    ratio_factors = clusters[:, 1] / clusters[:, 0]
+    scale_factors = np.sqrt(clusters[:, 0] * clusters[:, 1])
+
+    print("Normalized width-height centroids:\n", clusters)
+    print("Aspect ratios (h/w):", ratio_factors)
+    print("Scales (sqrt(w*h)):", scale_factors)
+
+    return clusters, scale_factors, ratio_factors
+
+
+def compute_angle_centroids_kmeans(dataset: Dataset, n_angles: int = 7) -> np.ndarray:
+    """
+    Computes angle centroids using K-Means clustering on unit vectors derived from ground truth angles.
+
+    Args:
+        dataset (torch.utils.data.Dataset): Dataset containing samples with target angles and valid masks.
+        n_angles (int): Number of angle clusters (i.e., centroids) to compute.
+
+    Returns:
+        np.ndarray: Sorted array of centroid angles in radians.
+    """
+    all_angles: List[np.ndarray] = []
+
+    for sample in dataset:
+        angles = sample["target"]["angles"][sample["target"]["valid_mask"]]  # (N_i,)
+        all_angles.append(angles.cpu().numpy())
+
+    angles_array = np.concatenate(all_angles)  # Shape: (Total_GT,)
+
+    # Project angles onto unit circle
+    angle_points = np.stack(
+        [np.cos(angles_array), np.sin(angles_array)], axis=1
+    )  # (N, 2)
+
+    # K-Means clustering on unit circle
+    kmeans = KMeans(n_clusters=n_angles, random_state=0).fit(angle_points)
+    centers = kmeans.cluster_centers_
+
+    # Convert back to angles in radians
+    angle_centroids = np.arctan2(centers[:, 1], centers[:, 0])
+    angle_centroids = np.sort(angle_centroids)
+
+    print("Recommended angle centroids (radians):", angle_centroids)
+    print("Recommended angle centroids (degrees):", np.degrees(angle_centroids))
+
+    return angle_centroids

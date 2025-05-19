@@ -223,19 +223,15 @@ def infer_with_rotated_nms(
         deltas,
         pred_angles,
     ) = model(images)
-    assert face_scores.shape[-1] == 1
+
     face_scores = face_scores.squeeze(-1)  # (B, N, 1) → (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
     outputs = []
-    
-    print("  face_scores min/max:", face_scores.min().item(), face_scores.max().item())
-    print("  orient_logits shape:", orient_logits.shape)
 
     for b in range(B):
         # Get the per-anchor orientation labels & confidences
         orient_conf, orient_labels = orientation_probs[b].max(-1)
 
-        
         # Extract face score per-anchor
         face_scores_b = face_scores[b]  # (N,)
 
@@ -251,9 +247,8 @@ def infer_with_rotated_nms(
                 }
             )
             continue
-        
+
         keep_mask = face_scores[b] > conf_thres
-        print(f"  image {b}: {keep_mask.sum().item()} positive anchors out of {keep_mask.numel()}")
 
         # 1) Get original indices of kept proposals
         idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)  # (N_valid,)
@@ -285,10 +280,6 @@ def infer_with_rotated_nms(
 
         # 6) Map back to original indices in logits/predictions
         sel_final = sel[keep_nms]  # Final selection
-        
-        # 3) After NMS & before appending:
-        print("  final labels:", orient_labels[sel_final].unique(), 
-            "  any == -1?", (orient_labels[sel_final] < 0).any().item())
 
         # 7) Prepare output
         outputs.append(

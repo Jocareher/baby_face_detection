@@ -39,17 +39,18 @@ echo "Environment is ready!"
 python main.py \
     --root_dir="/home/jreyes/obbabyface_rot" \
     --backbone="densenet121" \
-    --run_name="dense" \
     --epochs=100 \
     --lr=0.001 \
     --scheduler="OneCycle" \
     --patience=10 \
-    --run_name="densenet121_10lambda_all" \
+    --run_name="dense_10obb" \
     --record_metrics \
     --batch_size=32 \
-    --checkpoint_path="dense_10lambda_all.pt" \
+    --no_freeze_backbone \
+    --checkpoint_path="dense_10obb.pt" \
     --clip_value=1.0 \
-    --weight_decay=0 \
-    --lambda_rot=10 \
-    --lambda_cls=10 \
+    --weight_decay=0.0005 \
+    --lambda_face=1 \
+    --lambda_rot=1 \
+    --lambda_cls=1 \
     --lambda_obb=10 \

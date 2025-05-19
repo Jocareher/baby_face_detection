@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--conf_thres",
         type=float,
-        default=0.5,
+        default=0.25,
         help="Confidence threshold for detections (default: 0.25).",
     )
     parser.add_argument(
@@ -74,6 +74,12 @@ def parse_args():
         type=float,
         default=0.5,
         help="IoU threshold for matching (default: 0.5).",
+    )
+    parser.add_argument(
+        "--class_thres",
+        type=float,
+        default=0.6,
+        help="Class confidence threshold for matching (default: 0.6).",
     )
     parser.add_argument(
         "--grid_rows",
@@ -172,6 +178,7 @@ def main():
         obb_stats_by_size=config.PRECOMPUTED_OBB_STATS,
         conf_thres=args.conf_thres,
         iou_thres=args.iou_thres,
+        class_thres=args.class_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,

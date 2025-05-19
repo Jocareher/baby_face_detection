@@ -117,6 +117,7 @@ def run_inference(
     resize_size: Tuple[int, int],
     conf_thres: float,
     iou_thres: float,
+    class_thres: float,
     device: torch.device,
     labels_map: Dict[int, str],
 ) -> Dict[str, Any]:
@@ -130,6 +131,7 @@ def run_inference(
         resize_size (Tuple[int, int]): Size to which images are resized.
         conf_thres (float): Confidence threshold for filtering detections.
         iou_thres (float): IoU threshold for determining TP/FP.
+        class_thres (float): Class score threshold for filtering detections.
         device (torch.device): Computation device (e.g. 'cuda' or 'cpu').
         labels_map (Dict[int, str]): Mapping from class indices to readable labels.
 
@@ -161,7 +163,7 @@ def run_inference(
 
             # Get predictions using rotated NMS
             outputs = infer_with_rotated_nms(
-                model, imgs, anchors_xy, resize_size, conf_thres, iou_thres
+                model, imgs, anchors_xy, resize_size, conf_thres, iou_thres, class_thres
             )
 
             orient_logits, _, _, _ = model(imgs)
@@ -801,6 +803,7 @@ def inference(
     obb_stats_by_size: Dict[Tuple[int, int], Dict[str, float]],
     conf_thres: float = 0.25,
     iou_thres: float = 0.5,
+    class_thres: float = 0.5,
     grid_shape: Tuple[int, int] = (3, 3),
     mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
     std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
@@ -826,6 +829,7 @@ def inference(
         obb_stats_by_size (Dict): Precomputed OBB stats per resize size.
         conf_thres (float): Confidence threshold for filtering predictions.
         iou_thres (float): IoU threshold to match GT with predictions.
+        class_thres (float): Class score threshold for filtering predictions.
         grid_shape (Tuple[int, int]): Rows x Columns in qualitative grid.
         mean (Tuple): Image normalization mean.
         std (Tuple): Image normalization std.
@@ -863,6 +867,7 @@ def inference(
         resize_size=resize_size,
         conf_thres=conf_thres,
         iou_thres=iou_thres,
+        class_thres=class_thres,
         device=device,
         labels_map=labels_map,
     )

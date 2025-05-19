@@ -191,6 +191,7 @@ def infer_with_rotated_nms(
     image_size: Tuple[int, int],  # (W, H)
     conf_thres: float = 0.25,
     iou_thres: float = 0.45,
+    class_thres: float = 0.6,
     pre_nms_topk: int = 1000,
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
@@ -205,6 +206,7 @@ def infer_with_rotated_nms(
         image_size (Tuple[int, int]): Size of input images (W, H).
         conf_thres (float): Confidence threshold to filter low-score predictions.
         iou_thres (float): IoU threshold for rotated NMS.
+        class_thres (float): Class confidence threshold to filter low-score predictions.
         pre_nms_topk (int): Max number of top scoring predictions before NMS.
         max_det (int): Max number of final predictions per image.
 
@@ -237,7 +239,7 @@ def infer_with_rotated_nms(
 
         # Filter purely on face presence
         keep_mask = face_scores_b > conf_thres
-        keep_mask &= orient_conf > conf_thres
+        keep_mask &= orient_conf > class_thres
         if not keep_mask.any():
             outputs.append(
                 {

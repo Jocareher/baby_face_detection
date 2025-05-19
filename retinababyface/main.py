@@ -132,8 +132,9 @@ def parse_args():
 
     # Inference
     parser.add_argument("--split", type=str, default="test", help="Split to evaluate.")
-    parser.add_argument("--conf_thres", type=float, default=0.5)
+    parser.add_argument("--conf_thres", type=float, default=0.25)
     parser.add_argument("--iou_thres", type=float, default=0.5)
+    parser.add_argument("--class_thres", type=float, default=0.6)
     parser.add_argument("--grid_rows", type=int, default=3)
     parser.add_argument("--grid_cols", type=int, default=3)
 
@@ -335,6 +336,7 @@ def main():
         obb_stats_by_size=config.PRECOMPUTED_OBB_STATS,
         conf_thres=args.conf_thres,
         iou_thres=args.iou_thres,
+        class_thres=args.class_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,

@@ -61,6 +61,17 @@ class AnchorGeneratorOBB(nn.Module):
                 wh_list.append((w, h))
         wh = torch.tensor(wh_list, dtype=torch.float32)
 
+        # Compute rotation matrices for each angle
+        # The rotation matrix is given by:
+        # R = [[cos(theta), -sin(theta)],
+        #      [sin(theta), cos(theta)]]
+        # where theta is the angle of rotation.
+        # The rotation matrix is used to rotate the anchor rectangle around the origin.
+        Rs = []
+        for theta in angles:
+            c, s = math.cos(theta), math.sin(theta)
+            Rs.append(torch.tensor([[c, -s], [s, c]], dtype=torch.float32))
+
         # For each (w, h) and rotation angle, compute the rotated anchor corners
         offsets = []
         for w, h in wh:
@@ -83,9 +94,8 @@ class AnchorGeneratorOBB(nn.Module):
             rect = torch.tensor(
                 [[-dx, -dy], [dx, -dy], [dx, dy], [-dx, dy]], dtype=torch.float32
             )  # (4, 2)
-            for theta in angles:
-                c, s = math.cos(theta), math.sin(theta)
-                R = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)  # (2, 2)
+            for R in Rs:
+                # Rotate the rectangle corners by the rotation matrix
                 rot = rect @ R.T
                 offsets.append(rot.reshape(-1))  # (8,)
         offsets = torch.stack(offsets, dim=0)  # (A, 8)

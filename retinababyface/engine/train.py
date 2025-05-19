@@ -218,13 +218,13 @@ def infer_with_rotated_nms(
     B = images.size(0)
     # Unpack the new face/no-face head output
     (
-        logits,
+        orient_logits,
         face_scores,
         deltas,
         pred_angles,
     ) = model(images)
     face_scores = face_scores.squeeze(-1)  # (B, N, 1) → (B, N)
-    orientation_probs = F.softmax(logits, dim=-1)  # (B, N, 5)
+    orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
     outputs = []
 
     for b in range(B):

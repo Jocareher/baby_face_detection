@@ -251,16 +251,16 @@ class RandomScaleTranslateOBB:
 
     def __init__(
         self,
-        scale_range: Tuple[float, float] = (0.9, 1.1),
-        translate_range: Tuple[float, float] = (-0.2, 0.2),
+        scale_range: Tuple[float, float] = (0.85, 1.15),
+        translate_range: Tuple[float, float] = (-0.1, 0.1),
         prob: float = 0.5,
     ):
         """
         Initializes the RandomScaleTranslateOBB transform.
 
         Args:
-            scale_range (Tuple[float, float]): The range of scaling factors. Defaults to (0.9, 1.1).
-            translate_range (Tuple[float, float]): The range of translation factors. Defaults to (-0.2, 0.2).
+            scale_range (Tuple[float, float]): The range of scaling factors. Defaults to (0.85, 1.15).
+            translate_range (Tuple[float, float]): The range of translation factors. Defaults to (-0.1, 0.1).
             prob (float): The probability of applying the transform. Defaults to 0.5.
         """
         self.scale_range = scale_range
@@ -270,10 +270,8 @@ class RandomScaleTranslateOBB:
     def __call__(self, sample: dict) -> dict:
         """
         Applies the random scale and translate transform to the given sample.
-
         Args:
             sample (dict): A dictionary containing the image and target information.
-
         Returns:
             dict: The transformed sample.
         """
@@ -283,92 +281,78 @@ class RandomScaleTranslateOBB:
 
         # Extracts the image and target from the sample.
         image, target = sample["image"], sample["target"]
+        # Gets the height and width of the image.
         h, w = image.shape[:2]
-
-        # Randomly generates scale and translation factors.
+        # Generates a random scaling factor and translation factors.
         scale = random.uniform(*self.scale_range)
-        # Calculates the translation factors based on the image dimensions.
+        # Calculates the translation factors based on the scaling factor.
         tx = random.uniform(*self.translate_range) * w
         ty = random.uniform(*self.translate_range) * h
 
-        # Calculates the new width and height of the canvas.
+        # Calculates the new width and height of the image.
         new_w = int(w * scale + abs(tx))
         new_h = int(h * scale + abs(ty))
+        # Calculates the center of the image.
+        shift_x = max(tx, -tx)
+        shift_y = max(ty, -ty)
+        # Creates the transformation matrix for scaling and translation.
+        M = np.array([[scale, 0, shift_x], [0, scale, shift_y]], dtype=np.float32)
 
-        # Calculates the translation matrix.
-        M = np.array(
-            [[scale, 0, tx if tx > 0 else -tx], [0, scale, ty if ty > 0 else -ty]],
-            dtype=np.float32,
-        )
-
-        # Applies the translation to the rotation matrix.
+        # Applies the transformation matrix to the image.
         transformed_image = cv2.warpAffine(
             image, M, (new_w, new_h), flags=cv2.INTER_LINEAR
         )
-
-        # Adjusts the translation matrix for the new canvas size.
+        # Adjusts the boxes: since the coordinates are in pixels,
+        # we multiply by the scaling factor in each axis.
         boxes = target["boxes"]
         angles = target["angles"]
         class_idxs = target["class_idx"]
 
-        # Vectorized transform
+        # If there are no boxes, return the transformed image and target.
         if boxes.shape[0] == 0:
-            # No boxes to transform
-            target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
-            target["angles"] = torch.empty((0,), dtype=torch.float32)
-            target["class_idx"] = torch.empty((0,), dtype=torch.long)
-        else:
-            # Vectorized transform
-            N = boxes.shape[0]
-            boxes_np = boxes.view(N, 4, 2).cpu().numpy()  # (N, 4, 2)
-            ones = np.ones((N, 4, 1), dtype=np.float32)
-            boxes_hom = np.concatenate([boxes_np, ones], axis=2)  # (N, 4, 3)
-            transformed_boxes = np.matmul(boxes_hom, M.T)  # (N, 4, 2)
+            sample["image"], sample["target"] = transformed_image, target
+            return sample
 
-            # Check validity mask (all 4 points must lie inside the new canvas)
-            x_in_bounds = (0 <= transformed_boxes[:, :, 0]) & (
-                transformed_boxes[:, :, 0] < new_w
-            )
-            y_in_bounds = (0 <= transformed_boxes[:, :, 1]) & (
-                transformed_boxes[:, :, 1] < new_h
-            )
-            is_valid = (x_in_bounds & y_in_bounds).all(axis=1)  # (N,)
+        # Vectorized rotation of all boxes
+        N = boxes.shape[0]
+        # Creates a copy of the bounding boxes tensor.
+        pts = boxes.view(N, 4, 2).cpu().numpy()  # (N,4,2)
+        ones = np.ones((N, 4, 1), dtype=np.float32)
+        hom = np.concatenate([pts, ones], axis=2)  # (N,4,3)
+        pts_t = hom @ M.T  # (N,4,2)
 
-            # Reshape to (N, 8) and filter out invalid boxes
-            valid_boxes = transformed_boxes[is_valid].reshape(-1, 8)
-            valid_angles = angles[is_valid]
-            valid_class_idxs = class_idxs[is_valid]
+        # Clip the points to the new image size
+        pts_t[..., 0] = np.clip(pts_t[..., 0], 0, new_w - 1)
+        pts_t[..., 1] = np.clip(pts_t[..., 1], 0, new_h - 1)
 
-            # If no boxes are valid, assign empty tensors
-            if valid_boxes.shape[0] == 0:
-                # No valid boxes
-                target["boxes"] = torch.empty((0, 8), dtype=torch.float32)
-                # No valid angles
-                target["angles"] = torch.empty((0,), dtype=torch.float32)
-                # No valid class indices
-                target["class_idx"] = torch.empty((0,), dtype=torch.long)
-            else:
-                # Assign valid boxes, angles, and class indices
-                # Reshape valid boxes to (N, 8)
-                # and convert to tensor
-                # Convert valid angles to tensor
-                # and valid class indices to tensor
-                target["boxes"] = torch.tensor(
-                    valid_boxes, dtype=torch.float32, device=boxes.device
-                )
-                target["angles"] = valid_angles
-                target["class_idx"] = valid_class_idxs
+        # Check if any points are inside the new image size
+        inside_x = (0 <= pts_t[..., 0]) & (pts_t[..., 0] < new_w)
+        inside_y = (0 <= pts_t[..., 1]) & (pts_t[..., 1] < new_h)
+        valid = (inside_x | inside_y).any(axis=1)
 
-        # Updates the target in the sample.
-        sample["image"] = transformed_image
-        sample["target"] = target
+        # If no points are valid, return the transformed image and target
+        if not valid.any():
+            return sample
 
-        # Add a valid mask
-        num = target["boxes"].shape[0]
-        # Create a valid mask for the boxes
-        target["valid_mask"] = torch.ones(num, dtype=torch.bool, device=boxes.device)
-        # If there are no boxes, set the valid mask to False
-        sample["target"] = target
+        # Keep only the valid points
+        keep_pts = pts_t[valid]
+        # Keep only the valid angles
+        keep_angles = wrap_to_pi(angles[valid] - 0)
+        # Keep only the valid class indices
+        keep_classes = class_idxs[valid]
+
+        # Reshape the points to (N,8)
+        target["boxes"] = torch.tensor(
+            keep_pts.reshape(-1, 8), dtype=torch.float32, device=boxes.device
+        )
+        target["angles"] = keep_angles
+        target["class_idx"] = keep_classes
+        target["valid_mask"] = torch.ones(
+            len(keep_classes), dtype=torch.bool, device=boxes.device
+        )
+
+        # Update the target with the new boxes, angles, and class indices
+        sample["image"], sample["target"] = transformed_image, target
         return sample
 
 

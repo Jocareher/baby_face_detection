@@ -1092,14 +1092,11 @@ def train(
                 anchors=anchors_tuple,
             )  # Perform a testing step.
 
-            if (
-                scheduler is not None
-                and isinstance(scheduler, lr_scheduler.ReduceLROnPlateau)
-                or isinstance(scheduler, lr_scheduler.CosineAnnealingLR)
-            ):
-                scheduler.step(
-                    test_total_loss
-                )  # Update learning rate scheduler if ReduceLROnPlateau.
+            if scheduler is not None:
+                if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                    scheduler.step(test_total_loss)
+                elif isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
+                    scheduler.step()
 
             epoch_time = time.time() - epoch_start
             print(

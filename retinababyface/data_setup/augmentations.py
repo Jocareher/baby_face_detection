@@ -390,7 +390,9 @@ class ColorJitterOBB:
         brightness: float = 0.2,
         contrast: float = 0.2,
         saturation: float = 0.2,
-        prob: float = 0.5,
+        hue: float = 0.05,
+        gamma: float = 0.1,           
+        prob: float = 0.8,
     ):
         """
         Initializes the ColorJitterOBB transform.
@@ -399,11 +401,15 @@ class ColorJitterOBB:
             brightness (float): The brightness adjustment factor. Defaults to 0.2.
             contrast (float): The contrast adjustment factor. Defaults to 0.2.
             saturation (float): The saturation adjustment factor. Defaults to 0.2.
-            prob (float): The probability of applying the transform. Defaults to 0.5.
+            hue (float): The hue adjustment factor. Defaults to 0.05.
+            gamma (float): The gamma adjustment factor. Defaults to 0.1.
+            prob (float): The probability of applying the transform. Defaults to 0.8.
         """
         self.brightness = brightness
         self.contrast = contrast
         self.saturation = saturation
+        self.hue = hue
+        self.gamma = gamma
         self.prob = prob
 
     def __call__(self, sample: dict) -> dict:
@@ -460,6 +466,26 @@ class ColorJitterOBB:
             image = np.clip(image, 0, 255).astype(
                 np.uint8
             )  # Ensures the image is valid if saturation not applied.
+        
+        # Hue (only affects HSV, so convert to HSV)
+        if self.hue > 0:
+            # Convert to HSV
+            delta = random.uniform(-self.hue*180, self.hue*180)
+            hsv[...,0] = (hsv[...,0] + delta) % 180               
+        image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+        
+        # Gamma
+        if self.gamma > 0:   
+            # Apply gamma correction
+            # Generate a random gamma factor
+            # between (1-gamma, 1+gamma)
+            # and apply it to the image   
+            # to simulate low-quality or motion blur                                 
+            gamma_factor = 1.0 + random.uniform(-self.gamma, self.gamma)
+            inv = 1.0 / gamma_factor
+            table = np.array([(i/255.0)**inv * 255 for i in np.arange(256)]).astype("uint8")
+            image = cv2.LUT(image.astype(np.uint8), table)             
+
 
         sample["image"] = image  # Updates the image in the sample.
         return sample

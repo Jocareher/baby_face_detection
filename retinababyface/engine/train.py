@@ -634,12 +634,12 @@ def create_scheduler(
     """
     if which_scheduler == "ReduceLR":
         return lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.8, patience=5, min_lr=1e-5
+            optimizer, mode="min", factor=0.8, patience=3, min_lr=1e-5
         )
     elif which_scheduler == "OneCycle":
         return lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate * 10,
+            max_lr=learning_rate * 5,
             epochs=epochs,
             steps_per_epoch=len(train_dataloader),
         )

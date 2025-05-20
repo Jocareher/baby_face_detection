@@ -243,13 +243,6 @@ class RandomRotateOBB:
         return sample
 
 
-def normalize_angle(angle_rad: float) -> float:
-    """
-    Normalizes an angle in radians to the range [0, 2π).
-    """
-    return angle_rad % (2 * math.pi)  # Calcula el ángulo normalizado.
-
-
 class RandomScaleTranslateOBB:
     """
     Randomly scales and translates the image and its OBBs.
@@ -391,7 +384,7 @@ class ColorJitterOBB:
         contrast: float = 0.2,
         saturation: float = 0.2,
         hue: float = 0.05,
-        gamma: float = 0.1,           
+        gamma: float = 0.1,
         prob: float = 0.8,
     ):
         """
@@ -466,26 +459,27 @@ class ColorJitterOBB:
             image = np.clip(image, 0, 255).astype(
                 np.uint8
             )  # Ensures the image is valid if saturation not applied.
-        
+
         # Hue (only affects HSV, so convert to HSV)
         if self.hue > 0:
             # Convert to HSV
-            delta = random.uniform(-self.hue*180, self.hue*180)
-            hsv[...,0] = (hsv[...,0] + delta) % 180               
+            delta = random.uniform(-self.hue * 180, self.hue * 180)
+            hsv[..., 0] = (hsv[..., 0] + delta) % 180
         image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
-        
+
         # Gamma
-        if self.gamma > 0:   
+        if self.gamma > 0:
             # Apply gamma correction
             # Generate a random gamma factor
             # between (1-gamma, 1+gamma)
-            # and apply it to the image   
-            # to simulate low-quality or motion blur                                 
+            # and apply it to the image
+            # to simulate low-quality or motion blur
             gamma_factor = 1.0 + random.uniform(-self.gamma, self.gamma)
             inv = 1.0 / gamma_factor
-            table = np.array([(i/255.0)**inv * 255 for i in np.arange(256)]).astype("uint8")
-            image = cv2.LUT(image.astype(np.uint8), table)             
-
+            table = np.array([(i / 255.0) ** inv * 255 for i in np.arange(256)]).astype(
+                "uint8"
+            )
+            image = cv2.LUT(image.astype(np.uint8), table)
 
         sample["image"] = image  # Updates the image in the sample.
         return sample
@@ -668,6 +662,43 @@ class RandomOcclusionOBB:
             y0 : y0 + occ_h, x0 : x0 + occ_w
         ] = 0  # Applies the occlusion to the image.
         sample["image"] = image  # Updates the image in the sample.
+        return sample
+
+
+class RandomGrayOBB:
+    """
+    Converts the image to grayscale with a certain probability.
+    """
+
+    def __init__(self, prob=0.1):
+        """
+        Initializes the RandomGrayOBB transform.
+        Args:
+            prob (float): The probability of applying the transform. Defaults to 0.1.
+        """
+        # Checks if the transform should be applied.
+        self.prob = prob
+        self.prob = prob
+
+    def __call__(self, sample):
+        """
+        Applies the random gray transform to the given sample.
+        Args:
+            sample (dict): A dictionary containing the image and target information.
+        Returns:
+            dict: The transformed sample.
+        1) Converts the image to grayscale with a certain probability.
+        2) Stacks the grayscale image to create a 3-channel image.
+        3) Updates the image in the sample.
+        """
+        # Checks if the transform should be applied.
+        # If the probability is greater than a random number, apply the transform.
+        # Otherwise, return the sample without any changes.
+        if random.random() > self.prob:
+            return sample
+        img = sample["image"]
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        sample["image"] = np.stack([gray] * 3, axis=-1)
         return sample
 
 

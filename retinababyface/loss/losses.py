@@ -298,7 +298,7 @@ class MultiTaskLoss(nn.Module):
         lambda_rot (float): Weight for the angle regression loss.
         lambda_face (float): Weight for the face classification loss.
         pos_iou_thresh (float): IoU threshold to consider an anchor as positive.
-        neg_samples_ratio (float): Ratio of negative samples to positive samples for face classification loss.
+        neg_samples_ratio (int): Ratio of negative samples to positive samples for face classification loss.
         alpha (List[float]): Class-balancing weights for focal loss.
         gamma (float): Focusing parameter for focal loss.
 
@@ -324,7 +324,7 @@ class MultiTaskLoss(nn.Module):
         pos_iou_thresh: float = config.POS_IOU_THRESH,
         alpha: List[float] = config.ALPHA,
         gamma: float = config.GAMMA,
-        neg_samples_ratio: float = config.NEG_SAMPLES_RATIO,
+        neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
     ) -> None:
         super().__init__()
         self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")

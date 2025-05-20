@@ -104,7 +104,6 @@ def get_train_transform(
     if use_augmentation:
         return transforms.Compose(
             [
-                Resize(img_size),
                 RandomHorizontalFlipOBB(prob=0.5),
                 RandomRotateOBB(max_angle=30, prob=0.3),
                 RandomScaleTranslateOBB(
@@ -124,6 +123,7 @@ def get_train_transform(
                     hue=0.05,
                     gamma=0.1,
                 ),
+                Resize(img_size),
                 norm,
             ]
         )
@@ -146,8 +146,3 @@ def get_val_transform(img_size=(640, 640), mean=IMAGENET_MEAN, std=IMAGENET_STD)
             ToTensorNormalize(mean=mean, std=std),
         ]
     )
-
-
-# RandomScaleTranslateOBB(
-#     scale_range=(0.8, 1.1), translate_range=(-0.2, 0.2), prob=0.3
-# ),

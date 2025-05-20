@@ -326,7 +326,6 @@ class MultiTaskLoss(nn.Module):
         gamma: float = config.GAMMA,
         neg_samples_ratio: float = config.NEG_SAMPLES_RATIO,
     ) -> None:
-        
         super().__init__()
         self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
         self.bce_loss = nn.BCEWithLogitsLoss(reduction="mean")

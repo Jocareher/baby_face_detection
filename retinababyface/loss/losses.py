@@ -298,6 +298,7 @@ class MultiTaskLoss(nn.Module):
         lambda_rot (float): Weight for the angle regression loss.
         lambda_face (float): Weight for the face classification loss.
         pos_iou_thresh (float): IoU threshold to consider an anchor as positive.
+        neg_samples_ratio (float): Ratio of negative samples to positive samples for face classification loss.
         alpha (List[float]): Class-balancing weights for focal loss.
         gamma (float): Focusing parameter for focal loss.
 
@@ -323,7 +324,9 @@ class MultiTaskLoss(nn.Module):
         pos_iou_thresh: float = config.POS_IOU_THRESH,
         alpha: List[float] = config.ALPHA,
         gamma: float = config.GAMMA,
-    ):
+        neg_samples_ratio: float = config.NEG_SAMPLES_RATIO,
+    ) -> None:
+        
         super().__init__()
         self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
         self.bce_loss = nn.BCEWithLogitsLoss(reduction="mean")
@@ -334,6 +337,7 @@ class MultiTaskLoss(nn.Module):
         self.lambda_rot = lambda_rot
         self.lambda_face = lambda_face
         self.pos_iou_thr = pos_iou_thresh
+        self.neg_samples_ratio = neg_samples_ratio
 
     def forward(
         self,
@@ -412,8 +416,8 @@ class MultiTaskLoss(nn.Module):
 
             # Hard Negative Mining
             if num_pos > 0:
-                # Select 5x negative samples for each positive sample
-                num_neg = min(neg_idx.numel(), num_pos * 5)
+                # Select n negative samples for each positive sample
+                num_neg = min(neg_idx.numel(), num_pos * self.neg_samples_ratio)
 
                 # If there are negative samples, randomly select them
                 # If there are no negative samples, use all positive samples

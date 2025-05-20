@@ -5,6 +5,7 @@ from data_setup.augmentations import (
     RandomHorizontalFlipOBB,
     RandomRotateOBB,
     RandomScaleTranslateOBB,
+    RandomGrayOBB,
     ColorJitterOBB,
     RandomNoiseOBB,
     RandomBlurOBB,
@@ -103,13 +104,21 @@ def get_train_transform(
     if use_augmentation:
         return transforms.Compose(
             [
+                Resize(img_size),
                 RandomHorizontalFlipOBB(prob=0.5),
                 RandomRotateOBB(max_angle=30, prob=0.3),
-                ColorJitterOBB(brightness=0.2, contrast=0.2, saturation=0.2, prob=0.5),
-                RandomNoiseOBB(std=10, prob=0.5),
-                RandomBlurOBB(ksize=(5, 5), prob=0.3),
-                RandomOcclusionOBB(max_size_ratio=0.3, prob=0.3),
-                Resize(img_size),
+                RandomOcclusionOBB(max_size_ratio=0.5, prob=0.3),
+                RandomNoiseOBB(std=10, prob=0.7),
+                RandomBlurOBB(ksize=(5, 5), prob=0.7),
+                RandomGrayOBB(prob=0.3),
+                ColorJitterOBB(
+                    brightness=0.2,
+                    contrast=0.2,
+                    saturation=0.2,
+                    prob=0.7,
+                    hue=0.05,
+                    gamma=0.1,
+                ),
                 norm,
             ]
         )

@@ -85,27 +85,6 @@ def get_covariance_matrix(boxes: torch.Tensor):
     return a * cos2 + b * sin2, a * sin2 + b * cos2, (a - b) * cos * sin
 
 
-def compute_obb_iou_matrix_xywhr(
-    anchors_xywhr: torch.Tensor, gt_xywhr: torch.Tensor
-) -> torch.Tensor:
-    """
-    Computes the pairwise probabilistic IoU (pIoU) between two sets of oriented bounding boxes in xywhr format.
-
-    This implementation is based on the probabilistic IoU from:
-    "Learning Probabilistic Oriented Object Detection via Gaussian Distribution" (CVPR 2021).
-
-    Args:
-        anchors_xywhr (torch.Tensor): Tensor of shape (M, 5) with predicted OBBs in (x, y, w, h, θ) format.
-        gt_xywhr (torch.Tensor): Tensor of shape (N, 5) with ground truth OBBs in (x, y, w, h, θ) format.
-
-    Returns:
-        torch.Tensor: IoU similarity matrix of shape (N, M) where entry (i, j) is the similarity between
-                      gt i and anchor j.
-    """
-
-    return batch_probiou(anchors_xywhr, gt_xywhr)
-
-
 def batch_probiou(
     obb1: torch.Tensor, obb2: torch.Tensor, eps: float = 1e-7
 ) -> torch.Tensor:
@@ -170,7 +149,8 @@ def match_anchors_to_targets(
     gt_boxes_xy: torch.Tensor,  # (M, 8) — Ground truth OBBs in 4-point (x1y1...x4y4) format
     gt_angles: torch.Tensor,  # (M,)   — Rotation angles in radians
     image_size: Tuple[int, int],  # (W, H)
-    iou_thr: float = 0.5,  # IoU threshold for positive match
+    pos_iou_thr: float = 0.5,  # IoU threshold for positive match
+    neg_iou_thr: float = 0.4,  # IoU threshold for negative match
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Matches precomputed anchors to ground truth oriented bounding boxes using pIoU.
@@ -183,35 +163,42 @@ def match_anchors_to_targets(
         gt_boxes_xy (torch.Tensor): Ground truth boxes in xyxyxyxy format, shape (M, 8).
         gt_angles (torch.Tensor): Rotation angles for GT boxes in radians, shape (M,).
         image_size (Tuple[int, int]): Size of the image (width, height).
-        iou_thr (float, optional): IoU threshold to determine positive matches. Default is 0.5.
+        pos_iou_thr (float): IoU threshold for positive match.
+        neg_iou_thr (float): IoU threshold for negative match.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]:
-            - A boolean tensor of shape (N,) indicating which anchors are matched (positive).
-            - A tensor of shape (N,) with the index of the best GT box for each anchor.
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            - pos_mask (torch.Tensor): Positive matches, shape (N,).
+            - neg_mask (torch.Tensor): Negative matches, shape (N,).
+            - best_gt (torch.Tensor): Indices of the best matching GT for each anchor, shape (N,).
     """
-    # Check if anchors are empty
+    # Ensure input tensors are on the same device
+    N = anchors_xywhr.size(0)
+
+    # Check if there are no ground truth boxes
     if gt_boxes_xy.numel() == 0:
-        # No ground truth boxes, return empty tensors
-        # Create empty tensors with the same device as anchors_xywhr
-        # and the same number of rows as anchors_xywhr
-        # pos_mask: (N,) boolean tensor indicating positive matches
-        # best_gt: (N,) tensor with the index of the best GT box for each anchor
-        # Both tensors are initialized to zero
-        # and have the same device as anchors_xywhr
-        N = anchors_xywhr.size(0)
+        # If no GT boxes, return empty masks
         return (
-            torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # pos_mask
+            torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # pos
+            torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # neg
             torch.zeros(N, dtype=torch.long, device=anchors_xywhr.device),  # best_gt
         )
+
+    # Get the image size
     W, H = image_size
+    # Convert anchors to xywhr format
     gt_xywhr = xyxyxyxy2xywhr(gt_boxes_xy, gt_angles, (W, H))
 
     # Compute pairwise pIoU between anchors and GT boxes
-    iou_matrix = compute_obb_iou_matrix_xywhr(anchors_xywhr, gt_xywhr)
-    iou, best_gt = iou_matrix.max(dim=1)  # Best match for each anchor
+    iou_matrix = batch_probiou(anchors_xywhr, gt_xywhr)
+    # Find the best matching GT for each anchor
+    best_iou, best_gt = iou_matrix.max(dim=1)
+    # Find the best matching anchor for each GT
+    pos_mask = best_iou > pos_iou_thr  # Positive if IoU is greater than threshold
+    neg_mask = best_iou <= neg_iou_thr  # Negative if IoU is less than threshold
 
-    return iou > iou_thr, best_gt
+    # Return masks and best GT indices
+    return pos_mask, neg_mask, best_gt
 
 
 def probiou(

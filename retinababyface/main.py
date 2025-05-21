@@ -28,7 +28,7 @@ from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping
 from engine.inference import inference
 from loss.losses import MultiTaskLoss
-from utils.visualize import visualize_and_save_dataset_in_script
+from utils.visualize import visualize_and_save_dataset_in_script, create_training_gif
 import config
 
 
@@ -498,6 +498,12 @@ def main():
 
     print(f"[INFO] All figures saved to {figures_dir}")
     print(f"[INFO] All predictions saved to {predictions_dir}")
+    print(f"[INFO] All done! Check {output_dir} for results.")
+
+    # # Create a GIF of the training process
+    # create_training_gif(image_folder=inference_preview, output_path=output_dir / "training.gif")
+    # print(f"[INFO] Training GIF saved to {output_dir / 'training.gif'}")
+    # print(f"[INFO] All done! Check {output_dir} for results.")
 
 
 if __name__ == "__main__":

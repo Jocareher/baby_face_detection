@@ -1,5 +1,6 @@
 import math
 import random
+import re
 import os
 from typing import Optional, Tuple
 
@@ -349,21 +350,25 @@ def create_training_gif(
         font_size = int(title_height * 0.3)
 
         # --- Font loading ---
-        font = None
-        if font_path and os.path.exists(font_path):
-            font = ImageFont.truetype(font_path, font_size)
-        else:
-            try:
-                font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
-            except:
+        # Font loading with robust fallback
+        try:
+            if font_path and os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, font_size)
+            else:
                 try:
-                    font = ImageFont.truetype(
-                        "/System/Library/Fonts/Supplemental/Arial Bold.ttf", font_size
-                    )
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
                 except:
-                    raise RuntimeError(
-                        "[ERROR] No valid TTF font found. Please provide --font_path."
-                    )
+                    try:
+                        font = ImageFont.truetype(
+                            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                            font_size,
+                        )
+                    except:
+                        raise RuntimeError(
+                            "[ERROR] No valid TTF font found. Please provide --font_path."
+                        )
+        except Exception as e:
+            raise RuntimeError(f"[ERROR] Font loading failed: {e}")
 
         # --- Text and placement ---
         text = f"EPOCH : {epoch}"

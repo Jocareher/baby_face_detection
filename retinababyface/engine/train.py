@@ -1174,7 +1174,7 @@ def train(
                 )
 
             # every 5 epochs, save grid.jpg
-            if (epoch + 1) % 5 == 0 and inference_preview is not None:
+            if (epoch + 1) % 2 == 0 and inference_preview is not None:
                 out_path = inference_preview / f"{run_name}_epoch{epoch+1}.jpg"
                 in_training_inference(
                     model,

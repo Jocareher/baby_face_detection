@@ -85,6 +85,12 @@ LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0
 LAMBDA_ROT = 1.0
 
+# =======================
+# Inference Parameters
+# =======================
+CONF_THRESH = 0.5
+IOU_THRESH = 0.3
+CLASS_THRESH = 0.6
 
 # =======================
 # WandB Configuration

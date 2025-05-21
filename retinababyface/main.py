@@ -32,6 +32,10 @@ from utils.visualize import visualize_and_save_dataset_in_script
 import config
 
 
+import argparse
+import config
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train and evaluate RetinaBabyFace model"
@@ -42,7 +46,7 @@ def parse_args():
         "--root_dir",
         type=str,
         required=True,
-        help="Path to the dataset root directory.",
+        help="Path to the dataset root directory (containing train/val/test subfolders).",
     )
 
     # Model & input settings
@@ -51,92 +55,226 @@ def parse_args():
         type=int,
         nargs=2,
         default=[640, 640],
-        help="Input image size as (width height).",
+        help="Input image size as two integers: width height (e.g. --img_size 640 640).",
     )
     parser.add_argument(
         "--backbone",
         type=str,
         default="densenet121",
         choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit"],
-        help="Backbone architecture.",
+        help="Backbone architecture to use.",
     )
     parser.add_argument(
         "--out_channel",
         type=int,
         default=64,
-        help="Number of output channels for feature maps.",
+        help="Number of output channels for the FPN feature maps.",
     )
     parser.add_argument(
         "--use_pretrained",
         action="store_true",
         default=True,
-        help="Use pretrained weights for the backbone.",
+        help="Load pretrained weights for the backbone.",
     )
     parser.add_argument(
         "--freeze_backbone",
         action="store_true",
         default=True,
-        help="Freeze the backbone during training.",
+        help="Freeze backbone parameters during training.",
     )
     parser.add_argument(
         "--no_freeze_backbone",
         action="store_false",
         dest="freeze_backbone",
-        help="Do not freeze the backbone.",
+        help="Do not freeze the backbone (override --freeze_backbone).",
     )
 
     # Training hyperparameters
-    parser.add_argument("--epochs", type=int, default=config.DEFAULT_EPOCHS)
-    parser.add_argument("--lr", type=float, default=config.DEFAULT_LR)
-    parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
     parser.add_argument(
-        "--weight_decay", type=float, default=config.DEFAULT_WEIGHT_DECAY
+        "--epochs",
+        type=int,
+        default=config.DEFAULT_EPOCHS,
+        help=f"Number of training epochs (default: {config.DEFAULT_EPOCHS}).",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=config.DEFAULT_LR,
+        help=f"Initial learning rate (default: {config.DEFAULT_LR}).",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=config.DEFAULT_BATCH_SIZE,
+        help=f"Batch size for training and validation (default: {config.DEFAULT_BATCH_SIZE}).",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=config.DEFAULT_WEIGHT_DECAY,
+        help=f"Weight decay (L2) regularization coefficient (default: {config.DEFAULT_WEIGHT_DECAY}).",
     )
     parser.add_argument(
         "--optimizer",
         type=str,
         default=config.DEFAULT_OPTIMIZER,
         choices=["ADAM", "SGD"],
+        help="Optimizer to use: ADAM or SGD.",
     )
     parser.add_argument(
         "--scheduler",
         type=str,
         default=config.DEFAULT_SCHEDULER,
         choices=[None, "ReduceLR", "OneCycle", "Cosine"],
+        help="Learning rate scheduler: None, ReduceLR, OneCycle, or Cosine.",
     )
-    parser.add_argument("--clip_value", type=float, default=config.DEFAULT_CLIP_VALUE)
+    parser.add_argument(
+        "--clip_value",
+        type=float,
+        default=config.DEFAULT_CLIP_VALUE,
+        help="Gradient clipping value (None to disable).",
+    )
     parser.add_argument(
         "--grad_clip_mode",
         type=str,
         default=config.DEFAULT_GRAD_CLIP_MODE,
         choices=["Norm", "Value"],
+        help="Gradient clipping mode: Norm or Value.",
     )
-    parser.add_argument("--patience", type=int, default=config.DEFAULT_PATIENCE)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=config.DEFAULT_PATIENCE,
+        help=f"EarlyStopping patience in epochs (default: {config.DEFAULT_PATIENCE}).",
+    )
 
     # Loss weighting
-    parser.add_argument("--lambda_cls", type=float, default=config.LAMBDA_CLS)
-    parser.add_argument("--lambda_face", type=float, default=config.LAMBDA_FACE)
-    parser.add_argument("--lambda_obb", type=float, default=config.LAMBDA_OBB)
-    parser.add_argument("--lambda_rot", type=float, default=config.LAMBDA_ROT)
+    parser.add_argument(
+        "--lambda_cls",
+        type=float,
+        default=config.LAMBDA_CLS,
+        help="Weight for the orientation classification (focal) loss.",
+    )
+    parser.add_argument(
+        "--lambda_face",
+        type=float,
+        default=config.LAMBDA_FACE,
+        help="Weight for the face/no-face (BCE) loss.",
+    )
+    parser.add_argument(
+        "--lambda_obb",
+        type=float,
+        default=config.LAMBDA_OBB,
+        help="Weight for the oriented bounding box regression loss.",
+    )
+    parser.add_argument(
+        "--lambda_rot",
+        type=float,
+        default=config.LAMBDA_ROT,
+        help="Weight for the rotation angle regression loss.",
+    )
+    parser.add_argument(
+        "--pos_iou_thr",
+        type=float,
+        default=config.POS_IOU_THRESH,
+        help="Positive IoU threshold for anchor matching (default: 0.5).",
+    )
+    parser.add_argument(
+        "--neg_iou_thr",
+        type=float,
+        default=config.NEG_IOU_THRESH,
+        help="Negative IoU threshold (band-of-ignore) for anchor matching (default: 0.4).",
+    )
+    parser.add_argument(
+        "--neg_samples_ratio",
+        type=int,
+        default=config.NEG_SAMPLES_RATIO,
+        help="Hard negative mining ratio: negatives per positive (default: 3).",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        nargs="+",
+        default=config.ALPHA,
+        help="Alpha class weights for Focal Loss, one per orientation class.",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=config.GAMMA,
+        help="Gamma (focusing parameter) for Focal Loss.",
+    )
 
     # Data augmentation
-    parser.add_argument("--use_augmentation", action="store_true", default=True)
     parser.add_argument(
-        "--no_augmentation", action="store_false", dest="use_augmentation"
+        "--use_augmentation",
+        action="store_true",
+        default=True,
+        help="Enable data augmentation in the training pipeline.",
+    )
+    parser.add_argument(
+        "--no_augmentation",
+        action="store_false",
+        dest="use_augmentation",
+        help="Disable data augmentation (override --use_augmentation).",
     )
 
     # Logging & tracking
-    parser.add_argument("--record_metrics", action="store_true")
-    parser.add_argument("--project", type=str, default=config.PROJECT_NAME)
-    parser.add_argument("--run_name", type=str, default=config.RUN_NAME)
+    parser.add_argument(
+        "--record_metrics",
+        action="store_true",
+        help="Log training metrics to Weights & Biases.",
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        default=config.PROJECT_NAME,
+        help=f"Weights & Biases project name (default: {config.PROJECT_NAME}).",
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=config.RUN_NAME,
+        help=f"Weights & Biases run name (default: {config.RUN_NAME}).",
+    )
 
     # Inference
-    parser.add_argument("--split", type=str, default="test", help="Split to evaluate.")
-    parser.add_argument("--conf_thres", type=float, default=0.25)
-    parser.add_argument("--iou_thres", type=float, default=0.5)
-    parser.add_argument("--class_thres", type=float, default=0.6)
-    parser.add_argument("--grid_rows", type=int, default=3)
-    parser.add_argument("--grid_cols", type=int, default=3)
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="test",
+        help="Dataset split to evaluate at inference time (train/val/test).",
+    )
+    parser.add_argument(
+        "--conf_thres",
+        type=float,
+        default=config.CONF_THRESH,
+        help=f"Face confidence threshold for inference (default: {config.CONF_THRESH}).",
+    )
+    parser.add_argument(
+        "--iou_thres",
+        type=float,
+        default=config.IOU_THRESH,
+        help=f"IoU threshold for rotated NMS (default: {config.IOU_THRESH}).",
+    )
+    parser.add_argument(
+        "--class_thres",
+        type=float,
+        default=config.CLASS_THRESH,
+        help=f"Orientation confidence threshold for inference (default: {config.CLASS_THRESH}).",
+    )
+    parser.add_argument(
+        "--grid_rows",
+        type=int,
+        default=3,
+        help="Number of rows in the qualitative mosaic grid.",
+    )
+    parser.add_argument(
+        "--grid_cols",
+        type=int,
+        default=3,
+        help="Number of columns in the qualitative mosaic grid.",
+    )
 
     return parser.parse_args()
 
@@ -249,7 +387,15 @@ def main():
     )
 
     multitask_loss = MultiTaskLoss(
-        args.lambda_cls, args.lambda_obb, args.lambda_rot, args.lambda_face
+        args.lambda_cls,
+        args.lambda_obb,
+        args.lambda_rot,
+        args.lambda_face,
+        args.pos_iou_thr,
+        args.neg_iou_thr,
+        args.alpha,
+        args.gamma,
+        args.neg_samples_ratio,
     )
     earlystopping = EarlyStopping(
         args.patience, verbose=True, delta=0.001, path=ckpt_path

@@ -164,24 +164,26 @@ def nms_rotated(
     """
     # Sort boxes by descending score
     order = scores.argsort(descending=True)
-    boxes = boxes[order]
-    scores = scores[order]
+    keep = []
 
-    # Compute full pairwise IoU matrix (NxN)
-    ious = batch_probiou(boxes, boxes)
-    mask = ious >= threshold
-    mask.fill_diagonal_(False)  # Avoid suppressing self
+    # Iterate until no boxes left
+    while order.numel() > 0:
+        # Select the box with the highest score
+        i = order[0].item()
+        keep.append(i)
+        # Remove the selected box from the order
+        if order.numel() == 1:
+            break
+        # Compute IoU with the remaining boxes
+        rest = order[1:]
+        # Compute pairwise IoU using batch_probiou
+        ious = batch_probiou(boxes[i : i + 1], boxes[rest]).squeeze(0)
+        # Suppress boxes with IoU >= threshold
+        order = rest[ious < threshold]
 
-    # Initialize all boxes as "to keep"
-    keep = torch.ones_like(scores, dtype=torch.bool)
-
-    # For each box, suppress any lower-scored box with high IoU
-    for i in range(scores.size(0)):
-        if keep[i]:
-            keep &= ~(mask[i] & (scores < scores[i]))
-
-    # Return the indices relative to the original input
-    return order[keep]
+        # Keep only boxes with IoU < threshold
+        # and remove the current box from the order
+    return torch.tensor(keep, device=boxes.device, dtype=torch.long)
 
 
 def infer_with_rotated_nms(

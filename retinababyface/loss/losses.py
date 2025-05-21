@@ -297,7 +297,7 @@ class MultiTaskLoss(nn.Module):
         lambda_obb (float): Weight for the oriented bounding box regression loss.
         lambda_rot (float): Weight for the angle regression loss.
         lambda_face (float): Weight for the face classification loss.
-        pos_iou_thresh (float): IoU threshold to consider an anchor as positive.
+        pos_iou_thr (float): IoU threshold to consider an anchor as positive.
         neg_samples_ratio (int): Ratio of negative samples to positive samples for face classification loss.
         alpha (List[float]): Class-balancing weights for focal loss.
         gamma (float): Focusing parameter for focal loss.
@@ -321,7 +321,8 @@ class MultiTaskLoss(nn.Module):
         lambda_obb: float = 1.0,
         lambda_rot: float = 1.0,
         lambda_face: float = 1.0,
-        pos_iou_thresh: float = config.POS_IOU_THRESH,
+        pos_iou_thr: float = config.POS_IOU_THRESH,
+        neg_iou_thr: float = config.NEG_IOU_THRESH,
         alpha: List[float] = config.ALPHA,
         gamma: float = config.GAMMA,
         neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
@@ -335,7 +336,8 @@ class MultiTaskLoss(nn.Module):
         self.lambda_obb = lambda_obb
         self.lambda_rot = lambda_rot
         self.lambda_face = lambda_face
-        self.pos_iou_thr = pos_iou_thresh
+        self.pos_iou_thr = pos_iou_thr
+        self.neg_iou_thr = neg_iou_thr
         self.neg_samples_ratio = neg_samples_ratio
 
     def forward(
@@ -382,60 +384,59 @@ class MultiTaskLoss(nn.Module):
 
         for b in range(B):
             # Step 1: Match anchors to GT using IoU
-            pos_mask, best_gt = match_anchors_to_targets(
+            pos_mask, neg_mask, best_gt = match_anchors_to_targets(
                 anchors_xywhr,
                 targets["boxes"][b],
                 targets["angle"][b].squeeze(-1),
                 image_sizes[b],
-                iou_thr=self.pos_iou_thr,
+                pos_iou_thr=self.pos_iou_thr,
+                neg_iou_thr=self.neg_iou_thr,
             )
+            # Step 2: Compute face classification loss
+            # Select positive and negative indices
+            # pos_mask: (N,) boolean mask for positive anchors
+            # neg_mask: (N,) boolean mask for negative anchors
+            pos_idx = pos_mask.nonzero(as_tuple=False).squeeze(1)
+            neg_idx = neg_mask.nonzero(as_tuple=False).squeeze(1)
+            # Select positive and negative face logits
+            num_pos = pos_idx.numel()
+            if num_pos > 0:
+                # Get the number of negative samples
+                num_neg = min(neg_idx.numel(), num_pos * self.neg_samples_ratio)
+                if num_neg > 0:
+                    # Randomly sample negative indices
+                    perm = torch.randperm(neg_idx.numel(), device=neg_idx.device)[
+                        :num_neg
+                    ]
+                    # Sampled negative indices
+                    sampled_neg = neg_idx[perm]
+                    # Concatenate positive and sampled negative indices
+                    sel_idx = torch.cat([pos_idx, sampled_neg], dim=0)
+                else:
+                    # No negative samples, use only positive indices
+                    sel_idx = pos_idx
+                # Select the face logits for the selected indices
+                tgt_face = pos_mask.float().unsqueeze(1)[sel_idx]
+                #  Select the face logits for the selected indices
+                face_logits_sel = face_logits[b][sel_idx]
+                # Compute the face classification loss
+                face_loss += self.bce_loss(face_logits_sel, tgt_face)
 
-            # Step 2a: Classification loss using focal loss
-            # Select positive samples
+            # Step 2: Compute classification loss
+            # Fill with ignore_index
             tgt_cls = torch.full(
                 (N,),
                 fill_value=self.focal_loss.ignore_index,
                 dtype=torch.long,
                 device=orient_logits.device,
             )
-            # Assign class labels to positive samples
+            # Select the positive indices
             tgt_cls[pos_mask] = targets["class_idx"][b][best_gt[pos_mask]]
-            # Assign class labels to negative samples
+
             cls_loss += self.focal_loss(
                 orient_logits[b].unsqueeze(0),
                 tgt_cls.unsqueeze(0),
             )
-
-            # Step 2b: Face/no-face BCE loss with Hard Negative Mining
-            # Select positive and negative samples
-            pos_idx = torch.nonzero(pos_mask, as_tuple=False).squeeze(1)
-            neg_idx = torch.nonzero(~pos_mask, as_tuple=False).squeeze(1)
-            # Select positive samples
-            num_pos = pos_idx.numel()
-
-            # Hard Negative Mining
-            if num_pos > 0:
-                # Select n negative samples for each positive sample
-                num_neg = min(neg_idx.numel(), num_pos * self.neg_samples_ratio)
-
-                # If there are negative samples, randomly select them
-                # If there are no negative samples, use all positive samples
-                # If there are no positive samples, use all negative samples
-                if num_neg > 0:
-                    perm = torch.randperm(neg_idx.numel(), device=neg_idx.device)[
-                        :num_neg
-                    ]
-                    sampled_neg = neg_idx[perm]
-                    sel_idx = torch.cat([pos_idx, sampled_neg], dim=0)
-                else:
-                    sel_idx = pos_idx
-
-                # Select the corresponding face logits and target face labels
-                # for the selected indices
-                if sel_idx.numel() > 0:
-                    tgt_face_sel = pos_mask.float().unsqueeze(1)[sel_idx]
-                    face_logits_sel = face_logits[b][sel_idx]
-                    face_loss += self.bce_loss(face_logits_sel, tgt_face_sel)
 
             # Step 3: OBB regression loss (only for positives)
             if pos_mask.any():

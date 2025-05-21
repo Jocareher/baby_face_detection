@@ -376,15 +376,22 @@ def main():
                 m.bias.requires_grad = False
 
     reset_heads(model)
-    summary(
-        model,
-        input_size=(1, 3, img_size[1], img_size[0]),
-        col_names=["input_size", "output_size", "num_params", "trainable"],
-        row_settings=["var_names"],
-        col_width=20,
-        depth=2,
-        device=device.type,
-    )
+
+    with open(output_dir / "model_summary.txt", "w") as f:
+        f.write(
+            str(
+                summary(
+                    model,
+                    input_size=(1, 3, img_size[1], img_size[0]),
+                    col_names=["input_size", "output_size", "num_params", "trainable"],
+                    row_settings=["var_names"],
+                    col_width=20,
+                    depth=2,
+                    device=device.type,
+                )
+            )
+        )
+    print(f"[INFO] Model summary saved to {output_dir / 'model_summary.txt'}")
 
     multitask_loss = MultiTaskLoss(
         args.lambda_cls,

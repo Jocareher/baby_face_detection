@@ -362,10 +362,12 @@ def main():
     # ------------------------------------------------------------------------
     # IV. Model and loss setup
     # ------------------------------------------------------------------------
+    # Load the model
     model = RetinaBabyFace(
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
 
+    # Load the pretrained weights if specified
     if args.freeze_backbone:
         for p in model.backbone.parameters():
             p.requires_grad = False
@@ -374,9 +376,9 @@ def main():
                 m.eval()
                 m.weight.requires_grad = False
                 m.bias.requires_grad = False
+    reset_heads(model)  # reset classification/regression heads
 
-    reset_heads(model)
-
+    # Print model summary
     with open(output_dir / "model_summary.txt", "w") as f:
         f.write(
             str(
@@ -393,6 +395,14 @@ def main():
         )
     print(f"[INFO] Model summary saved to {output_dir / 'model_summary.txt'}")
 
+    if device.type == "cuda":
+        print("[INFO] Compiling model with torch.compile...")
+        model = torch.compile(
+            model
+        )  # torch.compile is only available in PyTorch 2.0 and later
+        print("[INFO] Model compilation complete.")
+
+    # Load the loss function
     multitask_loss = MultiTaskLoss(
         args.lambda_cls,
         args.lambda_obb,

@@ -173,16 +173,28 @@ def parse_args():
         help="Weight for the rotation angle regression loss.",
     )
     parser.add_argument(
-        "--pos_iou_thr",
+        "--pos_iou_thr_1",
         type=float,
-        default=config.POS_IOU_THRESH,
-        help="Positive IoU threshold for anchor matching (default: 0.5).",
+        default=config.POS_IOU_THRESH_1,
+        help="Positive IoU threshold for 1-stage anchor matching (default: 0.7).",
     )
     parser.add_argument(
-        "--neg_iou_thr",
+        "--neg_iou_thr_1",
         type=float,
-        default=config.NEG_IOU_THRESH,
-        help="Negative IoU threshold (band-of-ignore) for anchor matching (default: 0.4).",
+        default=config.NEG_IOU_THRESH_1,
+        help="Negative IoU threshold (band-of-ignore) for 1-stage anchor matching (default: 0.3).",
+    )
+    parser.add_argument(
+        "--pos_iou_thr_2",
+        type=float,
+        default=config.POS_IOU_THRESH_2,
+        help="Positive IoU threshold for 2-stage anchor matching (default: 0.5).",
+    )
+    parser.add_argument(
+        "--neg_iou_thr_2",
+        type=float,
+        default=config.NEG_IOU_THRESH_2,
+        help="Negative IoU threshold (band-of-ignore) for 2-stage anchor matching (default: 0.4).",
     )
     parser.add_argument(
         "--neg_samples_ratio",
@@ -407,8 +419,10 @@ def main():
         args.lambda_obb,
         args.lambda_rot,
         args.lambda_face,
-        args.pos_iou_thr,
-        args.neg_iou_thr,
+        args.pos_iou_thr_1,
+        args.neg_iou_thr_1,
+        args.pos_iou_thr_2,
+        args.neg_iou_thr_2,
         args.alpha,
         args.gamma,
         args.neg_samples_ratio,

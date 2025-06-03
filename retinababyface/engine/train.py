@@ -555,7 +555,7 @@ def generate_anchors_for_training(
     # Optionally save a preview of a sample of anchors
     if anchor_preview_path is not None and not os.path.exists(anchor_preview_path):
         all_anc = anchors_xy.cpu().numpy()  # (N, 8)
-        K = min(200, all_anc.shape[0])  # Sample K anchors for visualization
+        K = min(500, all_anc.shape[0])  # Sample K anchors for visualization
         idxs = random.sample(range(all_anc.shape[0]), K)
 
         # Use HSV colormap for diverse colors

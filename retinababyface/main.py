@@ -22,7 +22,6 @@ from torchinfo import summary
 
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
-from models.mobilenet import MobileNetV1
 from models.retinababyface import RetinaBabyFace, reset_heads
 from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping

@@ -484,8 +484,6 @@ def generate_anchors_for_training(
     model: nn.Module,
     resize_size: Tuple[int, int],
     device: torch.device,
-    base_size: float,
-    base_ratio: float,
     scale_factors: List[float],
     ratio_factors: List[float],
     anchor_preview_path: Optional[Union[str, Path]] = None,
@@ -496,15 +494,13 @@ def generate_anchors_for_training(
 
     This function infers the feature map sizes from the model's architecture given a specified input
     resolution. It then uses an OBB anchor generator to create rotated anchor boxes in both
-    vertex-based (xyxyxyxy) and parameterized (xywhr) formats. A visual preview of the anchors
+    vertex-based (xyxyxyxy) and parameterized (cx, cy, w, h, angle) formats. A visual preview of the anchors
     is optionally saved as an image.
 
     Args:
         model (nn.Module): The model from which to extract the feature map shapes.
         resize_size (Tuple[int, int]): The target input image size as (width, height).
         device (torch.device): Device on which tensors are created (CPU or GPU).
-        base_size (float): Base size of the anchor generator (scales the default anchors).
-        base_ratio (float): Base aspect ratio of the anchors.
         scale_factors (List[float]): List of scale multipliers to generate anchors of various sizes.
         ratio_factors (List[float]): List of aspect ratio multipliers to create anchors of different shapes.
         anchor_preview_path (Optional[Union[str, Path]]): Path to save a preview of the generated anchors.
@@ -514,35 +510,47 @@ def generate_anchors_for_training(
             - anchors_xy (torch.Tensor): Anchor boxes in vertex format (N, 8).
             - anchors_xywhr (torch.Tensor): Anchor boxes in (cx, cy, w, h, angle) format (N, 5).
     """
-
-    # Unpack target input size (W, H)
-    H, W = resize_size[1], resize_size[0]
-
     # Get the output feature map shapes for each FPN level from the model
-    feature_shapes = get_feature_map_shapes(model, input_shape=(1, 3, H, W))
+    feature_shapes = get_feature_map_shapes(
+        model, input_shape=(1, 3, resize_size[1], resize_size[0])
+    )
 
     # Compute the stride (downsampling factor) for each feature map
-    strides = [int(round(H / h)) for (h, _w) in feature_shapes]
+    strides = [int(round(resize_size[1] / h)) for (h, w) in feature_shapes]
 
     # Initialize the oriented bounding box anchor generator
-    anchor_gen = AnchorGeneratorOBB(
-        base_size=base_size,
-        base_ratio=base_ratio,
-        scale_factors=scale_factors,
-        ratio_factors=ratio_factors,
-        angles=config.ANGLES,  # List of fixed rotation angles
-    )
+    anchors_per_level = []
+    for lvl_idx, ((h, w), stride) in enumerate(zip(feature_shapes, strides)):
+        base = config.BASE_ANCHOR_SIZES[
+            lvl_idx
+        ]  # Base anchor size for the current level
 
-    # Generate anchor boxes in xyxyxyxy format (8 points per box)
-    anchors_xy = anchor_gen.generate_anchors(
-        feature_map_shapes=feature_shapes,
-        strides=strides,
-        device=device,
-    )
+        # Create an anchor generator for the current level
+        level_gen = AnchorGeneratorOBB(
+            base_size=base,
+            base_ratio=1.0,
+            scale_factors=scale_factors,  # Scale multipliers for anchor sizes
+            ratio_factors=ratio_factors,  # Aspect ratio multipliers for anchor shapes
+            angles=config.ANGLES,  # List of rotation angles for anchors
+        )
+
+        # Generate anchors for the current feature map level
+        anc_i = level_gen.generate_anchors(
+            feature_map_shapes=[(h, w)],
+            strides=[stride],
+            device=device,
+        )  # → Tensor (h * w * num_anchors_per_cell, 8)
+
+        anchors_per_level.append(anc_i)
+
+    # Concatenate anchors from all feature map levels
+    anchors_xy = torch.cat(
+        anchors_per_level, dim=0
+    )  # (∑ h_i*w_i*num_anchors_per_cell, 8)
 
     # Convert the anchors to parameterized (cx, cy, w, h, angle) format
     zeros = torch.zeros(len(anchors_xy), device=device)  # No angle during generation
-    anchors_xywhr = xyxyxyxy2xywhr(anchors_xy, zeros, (W, H))
+    anchors_xywhr = xyxyxyxy2xywhr(anchors_xy, zeros, (resize_size[0], resize_size[1]))
 
     # Optionally save a preview of a sample of anchors
     if anchor_preview_path is not None and not os.path.exists(anchor_preview_path):
@@ -553,8 +561,8 @@ def generate_anchors_for_training(
         # Use HSV colormap for diverse colors
         cmap = plt.cm.get_cmap("hsv", K)
         fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-        ax.set_xlim(0, W)
-        ax.set_ylim(H, 0)
+        ax.set_xlim(0, resize_size[0])
+        ax.set_ylim(resize_size[1], 0)
         ax.set_title("Anchor preview")
         ax.axis("off")
 

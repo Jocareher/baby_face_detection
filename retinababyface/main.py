@@ -392,7 +392,7 @@ def main():
                 )
             )
         )
-    print(f"[INFO] Model summary saved to {output_dir / 'model_summary.txt'}")
+    print(f"[INFO] Model summary saved to {output_dir / 'model_summary.xt'}")
 
     if device.type == "cuda":
         print("[INFO] Compiling model with torch.compile...")
@@ -440,7 +440,6 @@ def main():
         args.run_name,
         config.SCALE_FACTORS,
         config.RATIO_FACTORS,
-        config.PRECOMPUTED_OBB_STATS,
         csv_path=csv_path,
         anchor_preview_path=anchor_preview_path,
         inference_preview=inference_preview,

@@ -62,7 +62,6 @@ def prepare_anchors(
     device: torch.device,
     scale_factors: List[float],
     ratio_factors: List[float],
-    obb_stats: Dict[Tuple[int, int], Dict[str, float]],
 ) -> Tuple[Tuple[int, int], torch.Tensor, torch.Tensor]:
     """
     Prepares anchors for inference using the base OBB statistics and given scale/ratio factors.
@@ -73,8 +72,6 @@ def prepare_anchors(
         device (torch.device): Device for tensor creation (usually 'cuda' or 'cpu').
         scale_factors (List[float]): List of scaling factors for anchor generation.
         ratio_factors (List[float]): List of aspect ratio factors for anchors.
-        obb_stats (Dict[Tuple[int, int], Dict[str, float]]): Dictionary with average OBB stats per image size.
-
     Returns:
         Tuple containing:
             - resize_size (Tuple[int, int]): Target size used to resize images.
@@ -84,16 +81,11 @@ def prepare_anchors(
     # Get target resize size from the dataset
     resize_size = get_resize_size(loader)
 
-    # Extract base average size and aspect ratio from precomputed stats
-    base_size, base_ratio = get_base_obb_stats(resize_size, obb_stats)
-
     # Generate anchors in both formats
     anchors_xy, anchors_xywhr = generate_anchors_for_training(
         model=model,
         resize_size=resize_size,
         device=device,
-        base_size=base_size,
-        base_ratio=base_ratio,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
     )

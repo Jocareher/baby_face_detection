@@ -933,7 +933,6 @@ def train(
     run_name: str = "My_Run",
     scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
-    obb_stats_by_size: Optional[Dict[Tuple[int, int], Dict[str, float]]] = None,
     grid_shape: Tuple[int, int] = (3, 3),
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
@@ -968,7 +967,6 @@ def train(
         run_name (str, optional): Weights & Biases run name.
         scale_factors (List[float], optional): Scale factors for anchor generation.
         ratio_factors (List[float], optional): Ratio factors for anchor generation.
-        obb_stats_by_size (Dict[Tuple[int, int], Dict[str, float]], optional): Precomputed OBB statistics by size.
         csv_path (Union[str, Path], optional): Path to save training metrics CSV.
         anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
         grid_shape (Tuple[int, int], optional): Grid shape for anchor generation.
@@ -1037,15 +1035,12 @@ def train(
 
     ## Get the resize size from the dataloader
     resize_size = get_resize_size(train_dataloader)
-    base_size, base_ratio = get_base_obb_stats(resize_size, obb_stats_by_size)
 
     # Generate anchors for training
     anchors_xy, anchors_xywhr = generate_anchors_for_training(
         model=model,
         resize_size=resize_size,
         device=device,
-        base_size=base_size,
-        base_ratio=base_ratio,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
         anchor_preview_path=anchor_preview_path,

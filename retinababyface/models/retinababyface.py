@@ -212,9 +212,14 @@ class RetinaBabyFace(nn.Module):
             # Load the ResNet50 model with pretrained weights
             model = resnet50(weights=weights)
             # Extract the feature extractor from the model
-            return_layers = {"layer2": "feat1", "layer3": "feat2", "layer4": "feat3"}
+            return_layers = {
+                "layer1": "feat1",  # C2
+                "layer2": "feat2",  # C3
+                "layer3": "feat3",  # C4
+                "layer4": "feat4",  # C5
+            }
             # Define the channels for each returned feature map
-            in_channels_list = [512, 1024, 2048]
+            in_channels_list = [256, 512, 1024, 2048]
             # Create the feature extractor
             # The return layers are the last layers of each block in ResNet50
             # The output names are "feat1", "feat2", and "feat3"
@@ -230,9 +235,14 @@ class RetinaBabyFace(nn.Module):
             # The return layers are the convolutional layers of the model
             # The output names are "feat1", "feat2", and "feat3"
             # corresponding to the output of the last conv layer in each block
-            return_layers = {"16": "feat1", "23": "feat2", "30": "feat3"}
+            return_layers = {
+                "4": "feat1",  # C2
+                "9": "feat2",  # C3
+                "16": "feat3",  # C4
+                "23": "feat4",  # C5
+            }
             # Define the channels for each returned feature map
-            in_channels_list = [256, 512, 512]
+            in_channels_list = [128, 256, 512, 512]
             # Create the feature extractor
             feat_ext = create_feature_extractor(model, return_layers)
 
@@ -247,12 +257,13 @@ class RetinaBabyFace(nn.Module):
             # corresponding to the output of the dense blocks
             # The return_layers dictionary maps the dense block names to output names
             return_layers = {
-                "denseblock2": "feat1",
-                "denseblock3": "feat2",
-                "denseblock4": "feat3",
+                "denseblock1": "feat1",  # C2: channels=256
+                "denseblock2": "feat2",  # C3: channels=512
+                "denseblock3": "feat3",  # C4: channels=1024
+                "denseblock4": "feat4",  # C5: channels=1024
             }
             # Define the channels for each returned feature map
-            in_channels_list = [512, 1024, 1024]
+            in_channels_list = [256, 512, 1024, 1024]
             feat_ext = create_feature_extractor(model, return_layers)
 
         elif name == "vit":
@@ -265,12 +276,13 @@ class RetinaBabyFace(nn.Module):
             # The output names are "feat1", "feat2", and "feat3"
             # corresponding to the output of the last transformer encoder layers
             return_layers = {
-                "encoder.layers.encoder_layer_2": "feat1",
-                "encoder.layers.encoder_layer_5": "feat2",
-                "encoder.layers.encoder_layer_8": "feat3",
+                "encoder.layers.encoder_layer_2": "feat1",  # C2
+                "encoder.layers.encoder_layer_5": "feat2",  # C3
+                "encoder.layers.encoder_layer_8": "feat3",  # C4
+                "encoder.layers.encoder_layer_11": "feat4",  # C5
             }
             # Define the channels for each returned feature map
-            in_channels_list = [768, 768, 768]
+            in_channels_list = [768, 768, 768, 768]
             # Create the feature extractor
             # The return layers are the last layers of each block in ViT
             feat_seq = create_feature_extractor(vit, return_layers)
@@ -284,8 +296,13 @@ class RetinaBabyFace(nn.Module):
             # Using MobileNetV1 as backbone
             # Extract the feature extractor from the model
             # The return layers are the last layers of each block in MobileNetV1
-            return_layers = {"stage1": "feat1", "stage2": "feat2", "stage3": "feat3"}
-            in_channels_list = [64, 128, 256]
+            return_layers = {
+                "stage1": "feat1",  # C2:  channels=32
+                "stage2": "feat2",  # C3:  channels=64
+                "stage3": "feat3",  # C4:  channels=128
+                "stage4": "feat4",  # C5:  channels=256
+            }
+            in_channels_list = [32, 64, 128, 256]
             feat_ext = create_feature_extractor(model, return_layers)
 
         return feat_ext, return_layers, in_channels_list

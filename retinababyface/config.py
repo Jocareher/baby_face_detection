@@ -49,26 +49,45 @@ PRECOMPUTED_OBB_STATS = {
 # =======================
 # Anchor Generation Params
 # =======================
+# SCALE_FACTORS = [
+#     0.19,
+#     0.37,
+#     0.59,
+#     0.70,
+# ]  # Values obtained from k-means clustering on the training set
+# RATIO_FACTORS = [
+#     0.7,
+#     1.08,
+#     1.15,
+# ]  # Values obtained from k-means clustering on the training set
+# ANGLES = [
+#     -1.4548,  # ≈ -83.35°
+#     -0.6445,  # ≈ -36.93°
+#     -0.1704,  # ≈ -9.76°
+#     0.0830,  # ≈  4.75°
+#     0.5354,  # ≈ 30.68°
+#     1.4058,  # ≈ 80.55°
+#     -0.0706,  # ≈ 175.93° → –0.07 rad
+# ]  # Values obtained from k-means clustering on the training set
+# The following values are used in the RetinaFace paper
+# and are not based on k-means clustering.
+# They are included for reference and can be used if desired.
+
+BASE_ANCHOR_SIZES = [
+    16.0,  # P2  (stride=4)
+    32.0,  # P3  (stride=8)
+    64.0,  # P4  (stride=16)
+    128.0,  # P5  (stride=32)
+    256.0,  # P6  (stride=64)
+]  # Base anchor sizes for different feature map levels (P2 to P6)
+
 SCALE_FACTORS = [
-    0.19,
-    0.37,
-    0.59,
-    0.70,
-]  # Values obtained from k-means clustering on the training set
-RATIO_FACTORS = [
-    0.7,
-    1.08,
-    1.15,
-]  # Values obtained from k-means clustering on the training set
-ANGLES = [
-    -1.4548,  # ≈ -83.35°
-    -0.6445,  # ≈ -36.93°
-    -0.1704,  # ≈ -9.76°
-    0.0830,  # ≈  4.75°
-    0.5354,  # ≈ 30.68°
-    1.4058,  # ≈ 80.55°
-    -0.0706,  # ≈ 175.93° → –0.07 rad
-]  # Values obtained from k-means clustering on the training set
+    2 ** (0 / 3),  # = 1.0
+    2 ** (1 / 3),  # ≈ 1.2599
+    2 ** (2 / 3),  # ≈ 1.5874
+]  # Values from RetinaFace paper
+RATIO_FACTORS = [1.0]
+ANGLES = [0.0]
 NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 
 

@@ -384,7 +384,7 @@ def reset_heads(model: nn.Module) -> None:
     Returns:
         None
     """
-    for head in [model.obb_head, model.angle_head, model.class_head]:
+    for head in [model.obb_head, model.angle_head, model.class_head, model.face_head]:
         for layer in head.modules():
             if isinstance(layer, nn.Conv2d):
                 # Apply Kaiming-He initialization for convolution weights

@@ -755,7 +755,12 @@ def save_individual_predictions(
             coords = pts.view(4, 2).numpy()
             ax.add_patch(
                 patches.Polygon(
-                    coords, closed=True, fill=False, edgecolor="green", linewidth=2, linestyle="--"
+                    coords,
+                    closed=True,
+                    fill=False,
+                    edgecolor="green",
+                    linewidth=2,
+                    linestyle="--",
                 )
             )
             ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=2)

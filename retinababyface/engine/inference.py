@@ -677,7 +677,7 @@ def plot_qualitative_grid(
                 cen[0],
                 cen[1],
                 f"{labels_map[int(cls)]}: {math.degrees(angle):.1f}°",
-                color="blue",
+                color="green",
                 fontsize=6,
                 fontweight="bold",
                 ha="center",
@@ -706,7 +706,7 @@ def plot_qualitative_grid(
                 cen[0],
                 cen[1],
                 f"{labels_map[int(lbl)]}: {ang:.1f}°/{score:.2f}",
-                color="green",
+                color="blue",
                 fontsize=5,
                 ha="center",
                 va="center",
@@ -755,15 +755,15 @@ def save_individual_predictions(
             coords = pts.view(4, 2).numpy()
             ax.add_patch(
                 patches.Polygon(
-                    coords, closed=True, fill=False, edgecolor="blue", linewidth=2
+                    coords, closed=True, fill=False, edgecolor="green", linewidth=2, linestyle="--"
                 )
             )
-            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="red", linewidth=2)
+            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=2)
             ax.text(
                 coords[:, 0].mean(),
                 coords[:, 1].mean(),
                 f"{labels_map[int(lbl)]}: {math.degrees(float(ang)):.1f}°",
-                color="blue",
+                color="green",
                 fontsize=6,
                 fontweight="bold",
                 ha="center",
@@ -780,18 +780,17 @@ def save_individual_predictions(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="green",
+                    edgecolor="blue",
                     linewidth=1.5,
-                    linestyle="--",
                 )
             )
-            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=1.5)
+            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="reed", linewidth=1.5)
             ang_pred = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
                 coords[:, 0].mean(),
                 coords[:, 1].mean(),
                 f"{labels_map[int(lbl)]}: {ang_pred:.1f}°/{score:.2f}",
-                color="green",
+                color="blue",
                 fontsize=5,
                 ha="center",
                 va="center",

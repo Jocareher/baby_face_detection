@@ -124,7 +124,7 @@ def parse_args():
         "--scheduler",
         type=str,
         default=config.DEFAULT_SCHEDULER,
-        choices=[None, "ReduceLR", "OneCycle", "Cosine"],
+        choices=["ReduceLR", "OneCycle", "Cosine"],
         help="Learning rate scheduler: None, ReduceLR, OneCycle, or Cosine.",
     )
     parser.add_argument(

@@ -649,7 +649,7 @@ def create_scheduler(
     elif which_scheduler == "OneCycle":
         return lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate * 5,
+            max_lr=learning_rate * 2,
             epochs=epochs,
             steps_per_epoch=len(train_dataloader),
         )
@@ -937,6 +937,7 @@ def train(
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
     inference_preview: Optional[Union[str, Path]] = None,
+    show_every_epoch: int = 5,
 ) -> Dict[str, List[float]]:
     """
     Trains the model and optionally records metrics.
@@ -970,6 +971,8 @@ def train(
         csv_path (Union[str, Path], optional): Path to save training metrics CSV.
         anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
         grid_shape (Tuple[int, int], optional): Grid shape for anchor generation.
+        inference_preview (Union[str, Path], optional): Path to save inference preview image.
+        show_every_epoch (int, optional): Frequency of showing inference previews during training.
 
     Returns:
         Dict[str, List[float]]: Dictionary containing lists of training and testing losses.
@@ -1177,7 +1180,7 @@ def train(
                 )
 
             # every 5 epochs, save grid.jpg
-            if (epoch + 1) % 2 == 0 and inference_preview is not None:
+            if (epoch + 1) % show_every_epoch == 0 and inference_preview is not None:
                 out_path = inference_preview / f"{run_name}_epoch{epoch+1}.jpg"
                 in_training_inference(
                     model,

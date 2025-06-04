@@ -17,6 +17,7 @@ import tqdm.auto as tqdm_auto
 from torch.nn import functional as F
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon
+from sklearn.metrics import average_precision_score
 
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
@@ -309,107 +310,113 @@ def compute_map_rotated(
     num_classes: int = 5,
 ) -> float:
     """
-    Computes the mean Average Precision (mAP) for rotated bounding boxes across all non-background classes.
-
-    This implementation uses a Pascal VOC-style 11-point interpolation method and supports
-    rotated bounding boxes in (cx, cy, w, h, θ) format. IoU is computed using a probabilistic
-    IoU function (batch_probiou), and background class is excluded from mAP computation.
+    Computes the mean Average Precision (mAP) for rotated bounding boxes using
+    continuous interpolation (scikit-learn).
 
     Args:
-        all_pred_boxes (List[Tensor]): List of (N_i, 5) tensors with predicted boxes for each image.
-        all_pred_scores (List[Tensor]): List of (N_i,) tensors with confidence scores per prediction.
-        all_pred_labels (List[Tensor]): List of (N_i,) tensors with predicted class indices.
-        all_gt_boxes (List[Tensor]): List of (M_i, 5) tensors with ground truth boxes for each image.
-        all_gt_labels (List[Tensor]): List of (M_i,) tensors with ground truth class indices.
-        iou_thr (float): IoU threshold to consider a prediction a true positive.
-        num_classes (int): Total number of classes
+        all_pred_boxes (List[Tensor]): List of (N_i, 5) tensors containing predicted boxes [(cx, cy, w, h, θ)].
+        all_pred_scores (List[Tensor]): List of (N_i,) tensors containing scores for each prediction.
+        all_pred_labels (List[Tensor]): List of (N_i,) tensors containing predicted class labels for each box.
+        all_gt_boxes (List[Tensor]): List of (M_i, 5) tensors containing ground truth boxes [(cx, cy, w, h, θ)].
+        all_gt_labels (List[Tensor]): List of (M_i,) tensors containing ground truth labels for each box.
+        iou_thr (float): IoU threshold to consider a True Positive (TP).
+        num_classes (int): Total number of classes of interest (excluding background).
 
     Returns:
-        float: The computed mean Average Precision (mAP) over all foreground classes.
+        float: mAP (mean Average Precision averaged over classes 0..num_classes-1).
     """
-    # 0) If there are no predictions at all, return mAP = 0.0
+    # If there are no predictions at all
     if len(all_pred_scores) == 0:
         return 0.0
 
     device = all_pred_scores[0].device
-    APs: List[torch.Tensor] = []
+    APs: List[float] = []
 
-    # Compute AP for each class (excluding background)
     for c in range(num_classes):
-        # 1) Collect all predictions for class `c` across all images
+        # 1) Collect all predictions for class c
         preds = []
         for img_i in range(len(all_pred_boxes)):
             mask = all_pred_labels[img_i] == c
             for box, score in zip(
                 all_pred_boxes[img_i][mask], all_pred_scores[img_i][mask]
             ):
-                preds.append({"img": img_i, "box": box, "score": score})
-        preds.sort(
-            key=lambda x: x["score"].item(), reverse=True
-        )  # Sort descending by score
+                preds.append(
+                    {"img": img_i, "box": box.cpu(), "score": score.cpu().item()}
+                )
+        # Sort predictions by descending score
+        preds.sort(key=lambda x: x["score"], reverse=True)
 
-        # 2) Collect ground truth boxes for class `c` per image
-        gt_per_img = {
-            i: all_gt_boxes[i][all_gt_labels[i] == c].clone().to(device)
-            for i in range(len(all_gt_boxes))
-        }
+        # 2) Collect ground truth for class c per image
+        gt_per_img: Dict[int, torch.Tensor] = {}
+        for i in range(len(all_gt_boxes)):
+            mask = all_gt_labels[i] == c
+            if mask.any():
+                gt_per_img[i] = all_gt_boxes[i][mask].cpu().clone()  # (M_i_c, 5)
+
         npos = sum(
-            len(v) for v in gt_per_img.values()
-        )  # Total number of GT boxes for this class
-
-        # If no GT boxes exist for this class
+            gt.shape[0] for gt in gt_per_img.values()
+        )  # Total number of GT for class c
+        # If there are no GT for this class:
         if npos == 0:
-            APs.append(torch.tensor(1.0 if not preds else 0.0, device=device))
+            # If there are also no predictions -> AP = 1.0
+            APs.append(1.0 if len(preds) == 0 else 0.0)
             continue
 
-        # 3) Initialize true positive (TP) and false positive (FP) vectors
-        tp = torch.zeros(len(preds), device=device)
-        fp = torch.zeros(len(preds), device=device)
+        y_true_list = []
+        y_scores_list = []
+        # Track which GT has already been detected per image
         detected = {
-            i: torch.zeros(len(gt_per_img[i]), dtype=torch.bool, device=device)
-            for i in gt_per_img
+            i: torch.zeros(gt_per_img[i].shape[0], dtype=torch.bool) for i in gt_per_img
         }
 
-        # 4) Match predictions to GT using probabilistic IoU
-        for idx, p in enumerate(preds):
+        # 3) Iterate over each prediction (sorted by score) and decide TP/FP
+        for p in preds:
             img_i = p["img"]
-            gt_boxes = gt_per_img[img_i]
+            box_pred = p["box"].unsqueeze(0)  # (1, 5)
+            score_pred = p["score"]
 
-            # No GTs in this image for this class → count as FP
-            if gt_boxes.numel() == 0:
-                fp[idx] = 1
+            if img_i not in gt_per_img or gt_per_img[img_i].numel() == 0:
+                # No GT of this class in the image → FP
+                y_true_list.append(0)
+                y_scores_list.append(score_pred)
                 continue
 
-            # Compute IoUs between prediction and all GTs for this image
-            ious = batch_probiou(p["box"].unsqueeze(0), gt_boxes)  # shape: (1, M)
+            gt_boxes_img = gt_per_img[img_i]  # (M_i_c, 5)
+            # Compute IoUs between predicted box and all GT
+            ious = batch_probiou(
+                box_pred.to(device), gt_boxes_img.to(device)
+            )  # (1, M_i_c)
             best_iou, best_j = ious[0].max(dim=0)
 
             if best_iou >= iou_thr and not detected[img_i][best_j]:
-                tp[idx] = 1
-                detected[img_i][best_j] = True  # Mark GT as matched
+                # Valid match → TP
+                y_true_list.append(1)
+                y_scores_list.append(score_pred)
+                detected[img_i][best_j] = True
             else:
-                fp[idx] = 1
+                # Either IoU < threshold or already detected → FP
+                y_true_list.append(0)
+                y_scores_list.append(score_pred)
 
-        # 5) Compute precision and recall curves
-        tp_cum = torch.cumsum(tp, dim=0)
-        fp_cum = torch.cumsum(fp, dim=0)
-        recall = tp_cum / (npos + 1e-6)
-        precision = tp_cum / (tp_cum + fp_cum + 1e-6)
+        # 4) If there were no predictions for this class but there are GT, AP=0
+        if len(y_true_list) == 0:
+            APs.append(0.0)
+            continue
 
-        # 6) Compute 11-point interpolated average precision
-        ap = torch.tensor(0.0, device=device)
-        for t in torch.linspace(0, 1, 11, device=device):
-            mask = recall >= t
-            if mask.any():
-                ap += precision[mask].max() / 11.0
-        APs.append(ap)
+        # 5) Compute AP using average_precision_score from sklearn
+        try:
+            ap_c = average_precision_score(
+                np.array(y_true_list), np.array(y_scores_list)
+            )
+        except ValueError:
+            # Edge case: if sklearn throws an error (e.g., only negatives), AP=0
+            ap_c = 0.0
+        APs.append(ap_c)
 
-    # If no classes were processed (edge case), return 0
+    # 6) mAP = average of the obtained APs
     if len(APs) == 0:
         return 0.0
-
-    # Return the mean of all per-class APs
-    return torch.stack(APs).mean().item()
+    return float(np.mean(APs))
 
 
 def get_resize_size(dataloader: DataLoader) -> Tuple[int, int]:

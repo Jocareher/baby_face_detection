@@ -23,7 +23,6 @@ from sklearn.metrics import (
 from engine.train import (
     infer_with_rotated_nms,
     get_resize_size,
-    get_base_obb_stats,
     generate_anchors_for_training,
     xyxyxyxy2xywhr,
     batch_probiou,
@@ -539,22 +538,23 @@ def plot_f1_vs_threshold(
     sigma: float = 2.0,
 ) -> plt.Figure:
     """
-    Plots F1 Score vs. confidence threshold for each class.
+    Plots F1 Score vs. confidence threshold for each class, reconstructing
+    predictions from all_scores and all_preds at each threshold.
 
     Args:
-        all_gts (List[int]): Ground truth class labels.
-        all_scores (List[float]): Prediction confidence scores.
-        all_preds (List[int]): Predicted class labels.
-        labels_map (Dict[int, str]): Class index to name mapping.
-        default_th (float): Default threshold to highlight.
-        n_steps (int): Number of threshold steps between [0, 1].
-        sigma (float): Smoothing factor for the F1 curve.
+        all_gts      : List of true labels (integers).
+        all_scores   : List of scores (float) associated with each prediction.
+        all_preds    : List of originally predicted labels (but the previous threshold will be ignored).
+        labels_map   : Dict[int, str] mapping index→class name.
+        default_th   : “default” threshold (used only to show it as a reference).
+        n_steps      : Number of equally spaced points in [0,1] to evaluate F1.
+        sigma        : Smoothing factor for the curve.
 
     Returns:
-        matplotlib.figure.Figure: F1 vs. threshold plot.
+        matplotlib.figure.Figure with F1 vs threshold curves per class.
     """
     thresholds = np.linspace(0.0, 1.0, n_steps)
-    y_true = np.array(all_gts)
+    y_true = np.array(all_gts, dtype=int)
     classes = list(labels_map.keys())
 
     fig, ax = plt.subplots(figsize=(9, 6))
@@ -563,11 +563,14 @@ def plot_f1_vs_threshold(
     for cls in classes:
         f1s = []
         for t in thresholds:
-            # Convert confidence to prediction using threshold
-            y_pred = [lbl if sc >= t else -1 for sc, lbl in zip(all_scores, all_preds)]
-            # Compute F1 score for the current class
+            # For each prediction: if score >= t, assign the original label;
+            # if score < t, assign -1 (background)
+            y_pred_t = [
+                (lbl if sc >= t else -1) for sc, lbl in zip(all_scores, all_preds)
+            ]
+            # Compute F1 with zero_division=0
             f1_val = f1_score(
-                y_true, y_pred, labels=classes, average=None, zero_division=0
+                y_true, y_pred_t, labels=classes, average=None, zero_division=0
             )
             f1s.append(f1_val[classes.index(cls)])
 
@@ -575,10 +578,30 @@ def plot_f1_vs_threshold(
         f1_s = smooth_curve(f1s, sigma)
         ax.plot(thresholds, f1_s, lw=2, label=f"{labels_map[cls]} {f1_s.mean():.3f}")
 
-        # Mark the best point
+        # Mark the optimal F1 point for this class
         best_i = f1_s.argmax()
-        ax.axvline(thresholds[best_i], linestyle="--", lw=1)
-        ax.scatter([thresholds[best_i]], [f1_s[best_i]], s=50, zorder=3)
+        ax.axvline(
+            thresholds[best_i],
+            linestyle="--",
+            lw=1,
+            color=ax.get_lines()[-1].get_color(),
+        )
+        ax.scatter(
+            [thresholds[best_i]],
+            [f1_s[best_i]],
+            s=50,
+            zorder=3,
+            color=ax.get_lines()[-1].get_color(),
+        )
+
+    # Reference to the default threshold
+    ax.axvline(
+        default_th,
+        color="gray",
+        linestyle=":",
+        linewidth=1.0,
+        label=f"default_th={default_th}",
+    )
 
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
@@ -586,10 +609,10 @@ def plot_f1_vs_threshold(
     ax.set_ylabel("F1 Score", fontsize=11)
     ax.set_xticks(np.arange(0, 1.01, 0.2))
     ax.set_yticks(np.arange(0, 1.01, 0.2))
-    ax.tick_params(axis="x", labelsize=14)
-    ax.tick_params(axis="y", labelsize=14)
+    ax.tick_params(axis="x", labelsize=12)
+    ax.tick_params(axis="y", labelsize=12)
 
-    ax.legend(loc="upper left", bbox_to_anchor=(1.04, 1.0), fontsize=12, frameon=False)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.04, 1.0), fontsize=10, frameon=False)
     plt.tight_layout()
     print("[INFO] F1 vs. threshold curve plotted.")
     return fig
@@ -640,10 +663,15 @@ def plot_qualitative_grid(
             pts_np = pts.view(4, 2).numpy()
             ax.add_patch(
                 patches.Polygon(
-                    pts_np, closed=True, fill=False, edgecolor="blue", linewidth=2
+                    pts_np,
+                    closed=True,
+                    fill=False,
+                    edgecolor="green",
+                    linewidth=2,
+                    linestyle="--",
                 )
             )
-            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="red", linewidth=2)
+            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="orange", linewidth=2)
             cen = pts_np.mean(axis=0)
             ax.text(
                 cen[0],
@@ -667,12 +695,11 @@ def plot_qualitative_grid(
                     pts_np,
                     closed=True,
                     fill=False,
-                    edgecolor="green",
+                    edgecolor="blue",
                     linewidth=1.5,
-                    linestyle="--",
                 )
             )
-            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="orange", linewidth=1.5)
+            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="red", linewidth=1.5)
             cen = pts_np.mean(axis=0)
             ang = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
@@ -792,7 +819,6 @@ def inference(
     labels_map: Dict[int, str],
     scale_factors: List[float],
     ratio_factors: List[float],
-    obb_stats_by_size: Dict[Tuple[int, int], Dict[str, float]],
     conf_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.5,
@@ -848,7 +874,6 @@ def inference(
         device=device,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
-        obb_stats=obb_stats_by_size,
     )
 
     print("[STEP 3] Running inference...")

@@ -508,7 +508,6 @@ def main():
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,
         ratio_factors=config.RATIO_FACTORS,
-        obb_stats_by_size=config.PRECOMPUTED_OBB_STATS,
         conf_thres=args.conf_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,

@@ -789,7 +789,7 @@ def save_individual_predictions(
                     linewidth=1.5,
                 )
             )
-            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="reed", linewidth=1.5)
+            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="red", linewidth=1.5)
             ang_pred = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
                 coords[:, 0].mean(),
@@ -816,7 +816,6 @@ def save_individual_predictions(
 
 def inference(
     model: torch.nn.Module,
-    checkpoint_path: str,
     test_loader: DataLoader,
     output_dir: Union[str, Path],
     device: torch.device,
@@ -832,16 +831,14 @@ def inference(
 ) -> Dict[str, Any]:
     """
     Complete inference pipeline:
-    1. Loads model checkpoint
-    2. Prepares anchors
-    3. Runs inference and collects predictions
-    4. Computes evaluation metrics
-    5. Plots visualizations (PR, F1, confusion matrix, boxplots)
-    6. Generates qualitative grids and saves per-image results
+    1. Prepares anchors
+    2. Runs inference and collects predictions
+    3. Computes evaluation metrics
+    4. Plots visualizations (PR, F1, confusion matrix, boxplots)
+    5. Generates qualitative grids and saves per-image results
 
     Args:
         model (torch.nn.Module): Initialized model architecture.
-        checkpoint_path (str): Path to trained checkpoint file (.pt or .pth).
         test_loader (DataLoader): Dataloader for test set.
         output_dir (str): Directory to store output visualizations.
         device (torch.device): Computation device.
@@ -868,10 +865,7 @@ def inference(
     pred_dir = output_dir / "predictions"
     pred_dir.mkdir(exist_ok=True)
 
-    print("[STEP 1] Loading checkpoint...")
-    load_model_checkpoint(model, checkpoint_path, device)
-
-    print("[STEP 2] Preparing anchors...")
+    print("[STEP 1] Preparing anchors...")
     resize_size, anchors_xy, _ = prepare_anchors(
         model=model,
         loader=test_loader,
@@ -880,7 +874,7 @@ def inference(
         ratio_factors=ratio_factors,
     )
 
-    print("[STEP 3] Running inference...")
+    print("[STEP 2] Running inference...")
     results = run_inference(
         model=model,
         loader=test_loader,
@@ -893,7 +887,7 @@ def inference(
         labels_map=labels_map,
     )
 
-    print("[STEP 4] Computing metrics and plots...")
+    print("[STEP 3] Computing metrics and plots...")
     mAP, APs = compute_map_and_pr(results["per_true"], results["per_score"])
 
     fig_pr = plot_precision_recall(
@@ -951,7 +945,7 @@ def inference(
         std=std,
     )
 
-    print("[STEP 5] Saving individual prediction images...")
+    print("[STEP 4] Saving individual prediction images...")
     save_individual_predictions(results["samples"], labels_map, pred_dir, mean, std)
 
     print("[DONE] Inference and reporting completed.")

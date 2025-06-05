@@ -501,7 +501,6 @@ def main():
 
     figures = inference(
         trained_model,
-        checkpoint_path=ckpt_path,
         test_loader=test_loader,
         output_dir=predictions_dir,
         device=device,

@@ -113,50 +113,60 @@ def run_inference(
     labels_map: Dict[int, str],
 ) -> Dict[str, Any]:
     """
-    Performs inference on the given dataset using the model and rotated NMS.
+    Runs inference on a dataset and collects predictions, ground truths, and metrics.
 
     Args:
-        model (torch.nn.Module): The trained model to evaluate.
-        loader (DataLoader): DataLoader providing batches of test data.
-        anchors_xy (torch.Tensor): Anchors in (x, y) format used for predictions.
-        resize_size (Tuple[int, int]): Size to which images are resized.
-        conf_thres (float): Confidence threshold for filtering detections.
-        iou_thres (float): IoU threshold for determining TP/FP.
-        class_thres (float): Class score threshold for filtering detections.
-        device (torch.device): Computation device (e.g. 'cuda' or 'cpu').
-        labels_map (Dict[int, str]): Mapping from class indices to readable labels.
+        model (torch.nn.Module): The trained model to use for inference.
+        loader (DataLoader): DataLoader providing the test dataset.
+        anchors_xy (torch.Tensor): Precomputed anchors in (x, y) format.
+        resize_size (Tuple[int, int]): Target size used to resize images.
+        conf_thres (float): Confidence threshold for filtering predictions.
+        iou_thres (float): IoU threshold for matching predictions to ground truths.
+        class_thres (float): Class score threshold for filtering predictions.
+        device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
+        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
 
     Returns:
         Dict[str, Any]: A dictionary containing:
-            - detection and angle errors
-            - per-class true/score pairs for PR/mAP
-            - confusion matrix data
-            - qualitative samples for visualization
+            - per_true: Binary ground truth (1 for TP, 0 for FP) per class.
+            - per_score: Confidence scores of predictions per class.
+            - iou_errs: IoU errors per class.
+            - angle_errs: Angle errors per class.
+            - stats: TP, FP, FN counts per class.
+            - y_true: Ground truth labels for confusion matrix.
+            - y_pred: Predicted labels for confusion matrix.
+            - all_gts: Ground truth labels for F1 vs. threshold.
+            - all_preds: Predicted labels for F1 vs. threshold.
+            - all_scores: Prediction scores for F1 vs. threshold.
+            - samples: List of qualitative samples for visualization.
     """
-
-    # Initialize structures for metrics
-    per_true, per_score = {c: [] for c in labels_map}, {c: [] for c in labels_map}
-    iou_errs, angle_errs = {c: [] for c in labels_map}, {c: [] for c in labels_map}
+    # Initialize data structures for metrics and qualitative results
+    per_true = {c: [] for c in labels_map}
+    per_score = {c: [] for c in labels_map}
     stats = {c: {"tp": 0, "fp": 0, "fn": 0} for c in labels_map}
-
     y_true, y_pred = [], []
-    all_scores, all_preds, all_gts = [], [], []
+    iou_errs = {c: [] for c in labels_map}
+    angle_errs = {c: [] for c in labels_map}
     samples = []
+
+    # Additional lists for F1 vs. threshold computation
+    all_gts = []  # Ground truth labels
+    all_preds = []  # Predicted labels
+    all_scores = []  # Prediction scores
 
     dataset = loader.dataset
     global_idx = 0
 
-    model.eval()
+    model.eval()  # Set model to evaluation mode
     with torch.inference_mode():
         for batch in tqdm(loader, desc="Inference"):
             imgs = batch["image"].to(device)
             targets = batch["target"]
 
-            # Get predictions using rotated NMS
+            # Perform inference with rotated NMS
             outputs = infer_with_rotated_nms(
                 model, imgs, anchors_xy, resize_size, conf_thres, iou_thres, class_thres
             )
-
             orient_logits, _, _, _ = model(imgs)
             orientation_probs = F.softmax(orient_logits, dim=-1)
 
@@ -165,18 +175,113 @@ def run_inference(
                 fname = dataset.file_list[global_idx]
                 global_idx += 1
 
-                # Extract valid GT elements
+                # Extract valid ground truths
                 valid_mask = targets["valid_mask"][b]
                 gt_boxes = targets["boxes"][b][valid_mask]
                 gt_angles = targets["angles"][b][valid_mask].view(-1)
                 gt_labels = targets["class_idx"][b][valid_mask]
+                num_gt = gt_boxes.size(0)
 
-                # Convert to xywhr format
                 gt_xywhr = xyxyxyxy2xywhr(
                     gt_boxes, gt_angles.unsqueeze(-1), resize_size
                 ).to(device)
+                gt_matched = torch.zeros(num_gt, dtype=torch.bool, device=device)
 
-                # Store CPU copy for qualitative visualization
+                # Extract predictions
+                pred_boxes = outputs[b]["boxes"].to(device)  # (N_pred, 5)
+                pred_scores = outputs[b]["scores"].to(device)  # (N_pred,)
+                pred_labels = outputs[b]["labels"].to(device)  # (N_pred,)
+                num_pred = pred_boxes.size(0)
+
+                # Handle case where no predictions are made
+                if num_pred == 0:
+                    for i in range(num_gt):
+                        cls_gt = int(gt_labels[i].item())
+                        stats[cls_gt]["fn"] += 1
+                        # Confusion matrix: (row=cls_gt, col=BG)
+                        y_true.append(cls_gt)
+                        y_pred.append(-1)
+                    samples.append(
+                        (
+                            imgs[b].cpu(),
+                            {k: v.cpu().detach() for k, v in outputs[b].items()},
+                            fname,
+                            gt_boxes.cpu(),
+                            gt_angles.cpu(),
+                            gt_labels.cpu(),
+                        )
+                    )
+                    continue
+
+                # Compute IoU between all GT and all predictions
+                iou_matrix = batch_probiou(gt_xywhr, pred_boxes)  # (num_gt, num_pred)
+
+                # Process predictions in descending order of confidence score
+                scores_det, idxs_det = torch.sort(pred_scores, descending=True)
+                for det_idx in idxs_det.tolist():
+                    score_det = float(pred_scores[det_idx].item())
+                    cls_det = int(pred_labels[det_idx].item())
+
+                    # Filter GTs of the same class that are not yet matched
+                    mask_same_cls = (gt_labels.to(device) == cls_det) & (~gt_matched)
+                    if mask_same_cls.sum() > 0:
+                        ious_same_cls = iou_matrix[mask_same_cls, det_idx]
+                        best_iou_val, idx_in_mask = torch.max(ious_same_cls, dim=0)
+                        gt_idxs = torch.nonzero(mask_same_cls, as_tuple=False).view(-1)
+                        best_gt_idx = int(gt_idxs[idx_in_mask].item())
+                    else:
+                        best_iou_val = torch.tensor(0.0, device=device)
+                        best_gt_idx = -1
+
+                    if best_iou_val >= iou_thres:
+                        # True Positive
+                        stats[cls_det]["tp"] += 1
+                        gt_matched[best_gt_idx] = True
+
+                        iou_errs[cls_det].append(float(best_iou_val.item()))
+                        raw_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
+                        wrapped = wrap_to_pi(raw_diff)
+                        angle_errs[cls_det].append(
+                            float((wrapped.abs() * 180.0 / math.pi).item())
+                        )
+
+                        # For PR curve: TP = 1
+                        per_true[cls_det].append(1)
+                        per_score[cls_det].append(score_det)
+
+                        # For F1 vs. threshold
+                        all_gts.append(cls_det)  # Ground truth label
+                        all_preds.append(cls_det)  # Predicted label
+                        all_scores.append(score_det)  # Prediction score
+
+                        # For confusion matrix
+                        y_true.append(cls_det)
+                        y_pred.append(cls_det)
+                    else:
+                        # False Positive
+                        stats[cls_det]["fp"] += 1
+                        per_true[cls_det].append(0)
+                        per_score[cls_det].append(score_det)
+
+                        # For F1 vs. threshold
+                        all_gts.append(-1)  # Background
+                        all_preds.append(cls_det)
+                        all_scores.append(score_det)
+
+                        # Confusion matrix: (row=BG, col=cls_det)
+                        y_true.append(-1)
+                        y_pred.append(cls_det)
+
+                # Handle unmatched GTs (False Negatives)
+                for i in range(num_gt):
+                    if not gt_matched[i]:
+                        cls_gt = int(gt_labels[i].item())
+                        stats[cls_gt]["fn"] += 1
+                        # Confusion matrix: (row=cls_gt, col=BG)
+                        y_true.append(cls_gt)
+                        y_pred.append(-1)
+
+                # Save qualitative sample
                 samples.append(
                     (
                         imgs[b].cpu(),
@@ -188,90 +293,7 @@ def run_inference(
                     )
                 )
 
-                # Extract predictions
-                pred_boxes = outputs[b]["boxes"].to(device)
-                pred_scores = outputs[b]["scores"].to(device)
-                pred_labels = outputs[b]["labels"].to(device)
-
-                num_gt, num_pred = gt_xywhr.size(0), pred_boxes.size(0)
-
-                # Compute IoU between GT and predictions
-                iou_matrix = (
-                    batch_probiou(gt_xywhr, pred_boxes)
-                    if num_gt > 0 and num_pred > 0
-                    else torch.zeros(num_gt, num_pred, device=device)
-                )
-                matched = torch.zeros(num_pred, dtype=torch.bool, device=device)
-
-                # Match each GT box to best prediction
-                for i in range(num_gt):
-                    cls = int(gt_labels[i].item())
-
-                    if num_pred == 0:
-                        # No predictions available
-                        stats[cls]["fn"] += 1
-                        for c in labels_map:
-                            per_true[c].append(int(c == cls))
-                            per_score[c].append(0.0)
-                        y_true.append(cls)
-                        y_pred.append(-1)
-                        all_gts.append(cls)
-                        all_scores.append(0.0)
-                        all_preds.append(-1)
-                        continue
-                    # Find the best prediction for the current GT
-                    best_iou, best_j = iou_matrix[i].max(0)
-                    # Check if the best prediction is a match
-                    # and if it belongs to the same class
-
-                    is_match = (best_iou >= iou_thres) and (pred_labels[best_j] == cls)
-
-                    if is_match:
-                        # Update stats for true positive
-                        stats[cls]["tp"] += 1
-                        # Compute IoU and angle error
-                        iou_errs[cls].append(best_iou.item())
-                        # Compute angle error
-                        raw_diff = pred_boxes[best_j, 4] - gt_angles[i]
-                        # Normalize the angle difference to [-pi, pi]
-                        wrapped = wrap_to_pi(raw_diff)
-                        # Convert to degrees
-                        angle_diff = wrapped.abs() * 180.0 / math.pi
-                        # Store the angle error
-                        angle_errs[cls].append(angle_diff.item())
-                        matched[best_j] = True
-                    else:
-                        # Update stats for false negative
-                        stats[cls]["fn"] += 1
-
-                    for c in labels_map:
-                        # Append true/score pairs for PR/mAP
-                        per_true[c].append(int(c == cls))
-                        # Append score for the best prediction
-                        per_score[c].append(
-                            orientation_probs[b, best_j, c].item() if is_match else 0.0
-                        )
-                    # Append true/score pairs for confusion matrix
-                    y_true.append(cls)
-                    # Append predicted label (-1 for background)
-                    y_pred.append(int(pred_labels[best_j].item()) if is_match else -1)
-                    # Append all GTs and scores
-                    all_gts.append(cls)
-                    # Append all scores
-                    all_scores.append(
-                        (orientation_probs[b, best_j, cls].item() if is_match else 0.0)
-                    )
-                    all_preds.append(
-                        int(pred_labels[best_j].item()) if is_match else -1
-                    )
-
-                # Count unmatched predictions as false positives
-                for k in range(num_pred):
-                    if not matched[k]:
-                        cls = int(pred_labels[k].item())
-                        stats[cls]["fp"] += 1
-
-            # Free memory after each batch
+            # Clean up to free memory
             del imgs, outputs, targets
             torch.cuda.empty_cache()
 
@@ -284,9 +306,9 @@ def run_inference(
         "stats": stats,
         "y_true": y_true,
         "y_pred": y_pred,
-        "all_scores": all_scores,
-        "all_preds": all_preds,
         "all_gts": all_gts,
+        "all_preds": all_preds,
+        "all_scores": all_scores,
         "samples": samples,
     }
 
@@ -372,11 +394,11 @@ def plot_precision_recall(
         else:
             prec, rec, _ = precision_recall_curve(y_t, y_s)
 
-        prec_s = smooth_curve(prec, sigma)
-        rec_s = smooth_curve(rec, sigma)
+        # prec_s = smooth_curve(prec, sigma)
+        # rec_s = smooth_curve(rec, sigma)
         ap = average_precision_score(y_t, y_s) if y_t.sum() > 0 else 0.0
 
-        ax.plot(rec_s, prec_s, lw=2, label=f"{labels_map[cls]} {ap:.3f}")
+        ax.plot(rec, prec, lw=2, label=f"{labels_map[cls]} {ap:.3f}")
 
     # Plot global PR curve
     all_true = np.concatenate([per_true[c] for c in classes])

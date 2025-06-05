@@ -310,110 +310,133 @@ def compute_map_rotated(
     num_classes: int = 5,
 ) -> float:
     """
-    Computes the mean Average Precision (mAP) for rotated bounding boxes using
-    continuous interpolation (scikit-learn).
+    Computes the mean Average Precision (mAP) at a given IoU threshold for rotated bounding boxes (OBBs),
+    following the VOC/COCO evaluation protocol.
 
     Args:
-        all_pred_boxes (List[Tensor]): List of (N_i, 5) tensors containing predicted boxes [(cx, cy, w, h, θ)].
-        all_pred_scores (List[Tensor]): List of (N_i,) tensors containing scores for each prediction.
-        all_pred_labels (List[Tensor]): List of (N_i,) tensors containing predicted class labels for each box.
-        all_gt_boxes (List[Tensor]): List of (M_i, 5) tensors containing ground truth boxes [(cx, cy, w, h, θ)].
-        all_gt_labels (List[Tensor]): List of (M_i,) tensors containing ground truth labels for each box.
-        iou_thr (float): IoU threshold to consider a True Positive (TP).
-        num_classes (int): Total number of classes of interest (excluding background).
+        all_pred_boxes (List[torch.Tensor]): List of predicted boxes for each image, in (cx, cy, w, h, θ) format.
+        all_pred_scores (List[torch.Tensor]): List of confidence scores for each predicted box.
+        all_pred_labels (List[torch.Tensor]): List of predicted class labels for each box.
+        all_gt_boxes (List[torch.Tensor]): List of ground truth boxes for each image, in (cx, cy, w, h, θ) format.
+        all_gt_labels (List[torch.Tensor]): List of ground truth class labels for each box.
+        iou_thr (float): IoU threshold for determining true positives (default: 0.5).
+        num_classes (int): Number of classes in the dataset.
 
     Returns:
-        float: mAP (mean Average Precision averaged over classes 0..num_classes-1).
+        float: The mean Average Precision (mAP) across all classes.
     """
-    # If there are no predictions at all
+    # ------------- 1) Handle trivial cases -------------
     if len(all_pred_scores) == 0:
-        return 0.0
+        return 0.0  # If there are no predictions, return mAP = 0.0
 
+    APs: List[float] = []  # List to store AP for each class
     device = all_pred_scores[0].device
-    APs: List[float] = []
 
+    # --------- 2) Iterate over each class separately ---------
     for c in range(num_classes):
-        # 1) Collect all predictions for class c
-        preds = []
+        # 2.1) Collect all detections for class c
+        preds = []  # List of {img: index, box: Tensor(5), score: float}
         for img_i in range(len(all_pred_boxes)):
             mask = all_pred_labels[img_i] == c
-            for box, score in zip(
-                all_pred_boxes[img_i][mask], all_pred_scores[img_i][mask]
-            ):
+            boxes_i = all_pred_boxes[img_i][mask]  # (N_i_c, 5)
+            scores_i = all_pred_scores[img_i][mask]  # (N_i_c,)
+            for b, s in zip(boxes_i, scores_i):
                 preds.append(
-                    {"img": img_i, "box": box.cpu(), "score": score.cpu().item()}
+                    {
+                        "img": img_i,
+                        "box": b.cpu(),  # Move to CPU to avoid GPU memory overload
+                        "score": float(s.cpu().item()),
+                    }
                 )
-        # Sort predictions by descending score
+
+        # 2.2) Sort detections by descending score
         preds.sort(key=lambda x: x["score"], reverse=True)
 
-        # 2) Collect ground truth for class c per image
+        # 2.3) Collect all ground truths for class c, grouped by image
         gt_per_img: Dict[int, torch.Tensor] = {}
-        for i in range(len(all_gt_boxes)):
-            mask = all_gt_labels[i] == c
-            if mask.any():
-                gt_per_img[i] = all_gt_boxes[i][mask].cpu().clone()  # (M_i_c, 5)
+        for img_i in range(len(all_gt_boxes)):
+            mask_gt = all_gt_labels[img_i] == c
+            if mask_gt.any():
+                # Store only ground truths of class c for image img_i
+                gt_per_img[img_i] = all_gt_boxes[img_i][mask_gt].cpu().clone()
 
-        npos = sum(
-            gt.shape[0] for gt in gt_per_img.values()
-        )  # Total number of GT for class c
-        # If there are no GT for this class:
+        # 2.4) Count the total number of ground truths for class c
+        npos = sum(gt_per_img[i].shape[0] for i in gt_per_img)
         if npos == 0:
-            # If there are also no predictions -> AP = 1.0
-            APs.append(1.0 if len(preds) == 0 else 0.0)
+            # If there are no ground truths for this class:
+            # - If there are no detections either, AP = 1.0 (perfect score, nothing to detect)
+            # - If there are detections, they are all false positives → AP = 0.0
+            APs.append(1.0 if (len(preds) == 0) else 0.0)
             continue
 
-        y_true_list = []
-        y_scores_list = []
-        # Track which GT has already been detected per image
-        detected = {
+        # 2.5) For each image, create a "detected" vector to track which GTs have been matched
+        detected: Dict[int, torch.Tensor] = {
             i: torch.zeros(gt_per_img[i].shape[0], dtype=torch.bool) for i in gt_per_img
         }
 
-        # 3) Iterate over each prediction (sorted by score) and decide TP/FP
-        for p in preds:
-            img_i = p["img"]
-            box_pred = p["box"].unsqueeze(0)  # (1, 5)
-            score_pred = p["score"]
+        # ------------- 3) Process all detections (in confidence order) -------------
+        tp_list = []  # List to store 1 for TP, 0 for FP
+        fp_list = []  # List to store 1 for FP, 0 for TP
 
-            if img_i not in gt_per_img or gt_per_img[img_i].numel() == 0:
-                # No GT of this class in the image → FP
-                y_true_list.append(0)
-                y_scores_list.append(score_pred)
+        for det in preds:
+            img_i = det["img"]
+            box_pred = det["box"].unsqueeze(0).to(device)  # (1, 5)
+            score_pred = det["score"]
+
+            # 3.1) If there are no GTs for class c in this image → pure FP
+            if img_i not in gt_per_img:
+                tp_list.append(0)
+                fp_list.append(1)
                 continue
 
-            gt_boxes_img = gt_per_img[img_i]  # (M_i_c, 5)
-            # Compute IoUs between predicted box and all GT
-            ious = batch_probiou(
-                box_pred.to(device), gt_boxes_img.to(device)
-            )  # (1, M_i_c)
+            # 3.2) Compute IoU with all GTs of class c in this image
+            gt_boxes_img = gt_per_img[img_i].to(device)  # (M_i_c, 5)
+            ious = batch_probiou(box_pred, gt_boxes_img)  # (1, M_i_c)
             best_iou, best_j = ious[0].max(dim=0)
 
-            if best_iou >= iou_thr and not detected[img_i][best_j]:
-                # Valid match → TP
-                y_true_list.append(1)
-                y_scores_list.append(score_pred)
+            # 3.3) If it's a valid match (IoU ≥ threshold) and the GT is not already matched:
+            if (best_iou >= iou_thr) and (not detected[img_i][best_j]):
+                tp_list.append(1)
+                fp_list.append(0)
                 detected[img_i][best_j] = True
             else:
-                # Either IoU < threshold or already detected → FP
-                y_true_list.append(0)
-                y_scores_list.append(score_pred)
+                # Either IoU is too low, or the GT is already matched → FP
+                tp_list.append(0)
+                fp_list.append(1)
 
-        # 4) If there were no predictions for this class but there are GT, AP=0
-        if len(y_true_list) == 0:
+        # 4) If there are no predictions for this class, and there are GTs, AP = 0.0
+        if len(tp_list) == 0:
             APs.append(0.0)
             continue
 
-        # 5) Compute AP using average_precision_score from sklearn
-        try:
-            ap_c = average_precision_score(
-                np.array(y_true_list), np.array(y_scores_list)
-            )
-        except ValueError:
-            # Edge case: if sklearn throws an error (e.g., only negatives), AP=0
-            ap_c = 0.0
+        # ------------- 5) Compute the Precision–Recall curve -------------
+
+        tp_cum = np.cumsum(tp_list)  # Cumulative sum of true positives
+        fp_cum = np.cumsum(fp_list)  # Cumulative sum of false positives
+
+        # precision_k = TP_cum[k] / (TP_cum[k] + FP_cum[k])
+        precisions = tp_cum / (tp_cum + fp_cum)
+
+        # recall_k = TP_cum[k] / npos
+        recalls = tp_cum / float(npos)
+
+        # 5.1) Add (0,1) at the start and (1,0) at the end, then apply precision envelope
+        recalls = np.concatenate(([0.0], recalls, [1.0]))
+        precisions = np.concatenate(([1.0], precisions, [0.0]))
+
+        # Ensure precision is non-increasing
+        for i in range(len(precisions) - 1, 0, -1):
+            if precisions[i - 1] < precisions[i]:
+                precisions[i - 1] = precisions[i]
+
+        # 5.2) Compute the area under the curve (AP) using the trapezoidal rule
+        ap_c = 0.0
+        for i in range(1, len(recalls)):
+            ap_c += (recalls[i] - recalls[i - 1]) * precisions[i]
+
         APs.append(ap_c)
 
-    # 6) mAP = average of the obtained APs
+    # 6) Compute mAP as the mean of all APs across classes
     if len(APs) == 0:
         return 0.0
     return float(np.mean(APs))

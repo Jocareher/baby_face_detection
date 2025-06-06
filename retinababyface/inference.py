@@ -151,8 +151,26 @@ def main():
     reset_heads(model)  # reset classification/regression heads
 
     print(f"[INFO] Loading weights from: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
+    # Load the saved model weights from the checkpoint file
+    raw_weights = torch.load(args.checkpoint, map_location=device)
+
+    # Extract the state dictionary from the checkpoint
+    state_dict = raw_weights.get("model_state_dict", raw_weights)
+
+    # Check if the state dictionary contains keys prefixed with "_orig_mod."
+    # This happens when the model was wrapped with torch.compile during training
+    if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        stripped = {}
+        # Remove the "_orig_mod." prefix from the keys
+        for k, v in state_dict.items():
+            if k.startswith("_orig_mod."):
+                stripped[k[len("_orig_mod.") :]] = v
+            else:
+                stripped[k] = v
+        state_dict = stripped
+
+    # Load the state dictionary into the model
+    model.load_state_dict(state_dict)
     model.eval()
 
     # 3. Define label names (without background class)
@@ -168,7 +186,6 @@ def main():
     print("[INFO] Running inference...")
     figures = inference(
         model=model,
-        checkpoint_path=args.checkpoint,  # used internally for compatibility
         test_loader=test_loader,
         output_dir=args.output_dir,
         device=device,

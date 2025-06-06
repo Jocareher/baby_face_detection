@@ -492,11 +492,30 @@ def main():
     trained_model = RetinaBabyFace(
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
+
     print(f"[INFO] Loading weights from: {ckpt_path}")
-    state = torch.load(ckpt_path, map_location=device)
-    trained_model.load_state_dict(
-        state["model_state_dict"] if "model_state_dict" in state else state
-    )
+    # Load the saved model weights from the checkpoint file
+    raw_weights = torch.load(ckpt_path, map_location=device)
+
+    # Extract the state dictionary from the checkpoint
+    state_dict = raw_weights.get("model_state_dict", raw_weights)
+
+    # Check if the state dictionary contains keys prefixed with "_orig_mod."
+    # This happens when the model was wrapped with torch.compile during training
+    if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        stripped = {}
+        # Remove the "_orig_mod." prefix from the keys
+        for k, v in state_dict.items():
+            if k.startswith("_orig_mod."):
+                stripped[k[len("_orig_mod.") :]] = v
+            else:
+                stripped[k] = v
+        state_dict = stripped
+
+    # Load the state dictionary into the model
+    trained_model.load_state_dict(state_dict)
+
+    # Set the model to evaluation mode
     trained_model.eval()
 
     figures = inference(

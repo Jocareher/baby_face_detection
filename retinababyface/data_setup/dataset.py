@@ -389,3 +389,35 @@ def compute_angle_centroids_kmeans(dataset: Dataset, n_angles: int = 7) -> np.nd
     print("Recommended angle centroids (degrees):", np.degrees(angle_centroids))
 
     return angle_centroids
+
+
+def compute_class_alpha(dataset: Dataset, num_classes: int) -> torch.Tensor:
+    """
+    Iterates through all samples in the `dataset`, counts the number of ground truth (GT) instances for each class,
+    and returns an alpha tensor of weights for FocalLoss calculated as:
+        alpha[c] = median(counts) / counts[c]
+
+    Args:
+        dataset (Dataset): Instance of BabyFacesDataset.
+        num_classes (int): Number of classes (excluding background).
+
+    Returns:
+        torch.Tensor: Alpha tensor of shape (num_classes,), dtype float32.
+    """
+    # Initialize the counter
+    counts = torch.zeros(num_classes, dtype=torch.long)
+    for sample in dataset:
+        # sample["target"]["class_idx"] contains all the labels for the image
+        labels: torch.Tensor = sample["target"]["class_idx"]
+        for c in labels.tolist():
+            counts[c] += 1
+
+    # Calculate the median of the counts
+    counts_f = counts.float()
+    med = counts_f.median()
+
+    # Avoid division by zero
+    eps = 1e-6
+    alpha = med / (counts_f + eps)
+
+    return alpha

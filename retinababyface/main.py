@@ -387,6 +387,7 @@ def main():
                 m.eval()
                 m.weight.requires_grad = False
                 m.bias.requires_grad = False
+
     reset_heads(model)  # reset classification/regression heads
 
     # Print model summary

@@ -476,3 +476,49 @@ def reset_heads(model: nn.Module) -> None:
                 # Initialize bias to zero if present
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0)
+
+
+def set_backbone_frozen(
+    model: nn.Module,
+    freeze: bool,
+    fine_tuning: bool,
+    last_block_tokens=(
+        "layer4",
+        "denseblock4",
+        "stage4",
+        "encoder.layers.encoder_layer_11",
+    ),
+):
+    """
+    - freeze=False                    → todo trainable.
+    - freeze=True, fine_tuning=False  → todo congelado (conv+BN).
+    - freeze=True, fine_tuning=True   → todo congelado salvo el último bloque (conv+BN).
+    """
+
+    # 1) Congela o descongela **todos** los parámetros del backbone
+    for name, p in model.backbone.named_parameters():
+        p.requires_grad = not freeze
+
+    # 2) Si estamos en fine-tuning, re-activa los parámetros del último bloque
+    if freeze and fine_tuning:
+        for name, p in model.backbone.named_parameters():
+            if any(tok in name for tok in last_block_tokens):
+                p.requires_grad = True
+
+    # 3) Ahora, si freeze==True, ponemos TODOS los BN en modo eval y congelamos sus affine
+    if freeze:
+        for module in model.backbone.modules():
+            if isinstance(module, nn.BatchNorm2d):
+                module.eval()
+                module.weight.requires_grad = False
+                module.bias.requires_grad = False
+
+        # 4) Pero si fine-tuning, re-activamos los BN del último bloque
+        if fine_tuning:
+            for name, module in model.backbone.named_modules():
+                if isinstance(module, nn.BatchNorm2d) and any(
+                    tok in name for tok in last_block_tokens
+                ):
+                    module.train()
+                    module.weight.requires_grad = True
+                    module.bias.requires_grad = True

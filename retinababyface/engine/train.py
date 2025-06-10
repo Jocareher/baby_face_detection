@@ -688,7 +688,7 @@ def create_scheduler(
     elif which_scheduler == "OneCycle":
         return lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate * 2,
+            max_lr=learning_rate * 5,
             epochs=epochs,
             steps_per_epoch=len(train_dataloader),
         )
@@ -839,6 +839,9 @@ def val_step(
     loss_fn: nn.Module,
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
+    conf_thres: float = 0.25,
+    iou_thres: float = 0.5,
+    class_thres: float = 0.6,
 ) -> Tuple[float, float, float, float, float, float]:
     """
     Runs one full evaluation loop on the test dataset, computing predictions, losses, and rotated mAP.
@@ -851,6 +854,9 @@ def val_step(
         anchors (Tuple[Tensor, Tensor]): A tuple containing:
             - anchors_xy (Tensor): Tensor of base anchor vertices (N, 8).
             - anchors_xywhr (Tensor): Tensor of anchors in (cx, cy, w, h, θ) format (N, 5).
+        conf_thres (float): Confidence threshold for filtering predictions.
+        iou_thres (float): IoU threshold for rotated NMS.
+        class_thres (float): Class confidence threshold for filtering predictions.
 
     Returns:
         Tuple[float, float, float, float, float]: A tuple containing:
@@ -878,53 +884,56 @@ def val_step(
     # Disable gradient computation for faster inference and lower memory usage
     with torch.inference_mode():
         for batch in val_dataloader:
-            # Move image tensors to the specified device
             images = batch["image"].to(device)
-
-            # Extract raw targets and prepare them for multitask loss
             targets_raw = batch["target"]
             targets = build_multitask_targets(targets_raw, device)
 
-            # Unpack anchors for decoding and loss computation
             anchors_xy, anchors_xywhr = anchors
             batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
-            # Run inference + NMS to get filtered predictions
+            # 2) Inferencia + NMS con los mismos umbrales que en run_inference
             outputs = infer_with_rotated_nms(
                 model,
                 images,
                 anchors_xy,
-                image_size=(images.shape[3], images.shape[2]),  # (W, H)
+                image_size=(images.shape[3], images.shape[2]),
+                conf_thres=conf_thres,
+                iou_thres=iou_thres,
+                class_thres=class_thres,
             )
 
-            # Accumulate predictions and ground truths for evaluation
+            # 3) Por cada imagen del batch, acumulamos predicciones y GT
             for b, out in enumerate(outputs):
-                all_pred_boxes.append(out["boxes"])  # Predicted rotated boxes
-                all_pred_scores.append(out["scores"])  # Prediction scores
-                all_pred_labels.append(out["labels"])  # Predicted class labels
+                # 3.a) Predicciones retenidas por NMS en (cx,cy,w,h,θ)
+                all_pred_boxes.append(out["boxes"].cpu().detach())
+                all_pred_scores.append(out["scores"].cpu().detach())
+                all_pred_labels.append(out["labels"].cpu().detach().long())
 
-                # Select valid targets and convert to (cx, cy, w, h, θ)
+                # 3.b) Ground truth: filtramos por valid_mask y convertimos a (cx,cy,w,h,θ)
                 keep = targets["valid_mask"][b]
-                gt_xywhr = xyxyxyxy2xywhr(
-                    targets["boxes"][b][keep],
-                    targets["angle"][b][keep].squeeze(-1),
-                    (images.shape[3], images.shape[2]),
-                )
-                all_gt_boxes.append(gt_xywhr)
-                all_gt_labels.append(targets["class_idx"][b][keep])
+                if keep.any():
+                    gt_polygons = targets["boxes"][b][keep]  # (M_gt, 8)
+                    gt_angles = targets["angle"][b][keep].squeeze(-1)  # (M_gt,)
+                    gt_labels = targets["class_idx"][b][keep]  # (M_gt,)
 
-            # Forward pass for raw output (needed for computing loss)
+                    gt_xywhr = xyxyxyxy2xywhr(
+                        gt_polygons,
+                        gt_angles.unsqueeze(-1),
+                        (images.shape[3], images.shape[2]),
+                    )
+                    all_gt_boxes.append(gt_xywhr.cpu().detach())
+                    all_gt_labels.append(gt_labels.cpu().detach().long())
+                else:
+                    # Si no hay GT en esta imagen, pasamos tensor vacío
+                    all_gt_boxes.append(torch.zeros((0, 5), dtype=torch.float32))
+                    all_gt_labels.append(torch.zeros((0,), dtype=torch.long))
+
+            # 4) Calculamos la loss EXACTAMENTE igual que antes
             pred = model(images)
-
-            # Generate image size tuples (one per image in batch)
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
-
-            # Compute multitask loss and individual components
             loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
                 pred, targets, batch_anchors, anchors_xywhr, image_sizes
             )
-
-            # Accumulate loss values
             total_loss += loss.item()
             class_loss_sum += loss_class
             face_loss_sum += loss_face
@@ -932,25 +941,25 @@ def val_step(
             angular_loss_sum += loss_angle
             total_batches += 1
 
-    # Compute average losses across all batches
+    # 5) Sacamos promedios de las pérdidas
     avg_loss = total_loss / total_batches
     avg_class_loss = class_loss_sum / total_batches
     avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
-    avg_angular_loss = angular_loss_sum / total_batches
+    avg_ang_loss = angular_loss_sum / total_batches
 
-    # Compute rotated mean Average Precision (mAP) using Pascal VOC 11-point interpolation
+    # 6) Finalmente, calculamos el mAP con las 5 listas
     mAP = compute_map_rotated(
         all_pred_boxes,
         all_pred_scores,
         all_pred_labels,
         all_gt_boxes,
         all_gt_labels,
-        iou_thr=0.5,
-        num_classes=5,
+        iou_thr=iou_thres,
+        num_classes=5,  # o len(labels_map) si lo tienes definido
     )
 
-    return avg_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_angular_loss, mAP
+    return avg_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_ang_loss, mAP
 
 
 def train(

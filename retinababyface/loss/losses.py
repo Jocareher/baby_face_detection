@@ -335,7 +335,9 @@ class MultiTaskLoss(nn.Module):
     ) -> None:
         super().__init__()
         self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
-        self.bce_loss = nn.BCEWithLogitsLoss(reduction="mean")
+        self.bce_loss = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor(3.0), reduction="mean"
+        )
         self.obb_loss = OBBRegressionLoss()
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls

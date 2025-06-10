@@ -774,7 +774,10 @@ def train_step(
     angular_loss_sum = 0.0
     total_batches = 0
 
-    for batch in train_dataloader:
+    bar = tqdm(
+        train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True
+    )
+    for batch in bar:
         images = batch["image"].to(device)  # Move images to the device.
         targets_raw = batch["target"]
         targets = build_multitask_targets(
@@ -815,6 +818,8 @@ def train_step(
         obb_loss_sum += loss_obb
         angular_loss_sum += loss_angle
         total_batches += 1
+
+    bar.close()
 
     current_lr = optimizer.param_groups[0]["lr"]  # Get current learning rate.
     avg_total_loss = total_loss_sum / total_batches
@@ -883,7 +888,10 @@ def val_step(
 
     # Disable gradient computation for faster inference and lower memory usage
     with torch.inference_mode():
-        for batch in val_dataloader:
+        bar = tqdm(
+            val_dataloader, desc="   Val", unit="batch", leave=False, dynamic_ncols=True
+        )
+        for batch in bar:
             images = batch["image"].to(device)  # Move images to the target device
             targets_raw = batch["target"]
             targets = build_multitask_targets(targets_raw, device)  # Prepare targets
@@ -940,6 +948,8 @@ def val_step(
             obb_loss_sum += loss_obb
             angular_loss_sum += loss_angle
             total_batches += 1
+
+    bar.close()
 
     # Compute average losses
     avg_loss = total_loss / total_batches

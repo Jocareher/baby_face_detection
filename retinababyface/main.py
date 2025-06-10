@@ -22,7 +22,7 @@ from torchinfo import summary
 
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
-from models.retinababyface import RetinaBabyFace, reset_heads
+from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping
 from engine.inference import inference
@@ -86,6 +86,18 @@ def parse_args():
         action="store_false",
         dest="freeze_backbone",
         help="Do not freeze the backbone (override --freeze_backbone).",
+    )
+    parser.add_argument(
+        "--fine_tuning",
+        action="store_true",
+        default=False,
+        help="When freezing, unfreeze only the last block of the backbone.",
+    )
+    parser.add_argument(
+        "--no_fine_tuning",
+        action="store_false",
+        dest="fine_tuning",
+        help="Disable unfreezing of the last backbone block.",
     )
 
     # Training hyperparameters
@@ -378,17 +390,14 @@ def main():
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
 
-    # Load the pretrained weights if specified
-    if args.freeze_backbone:
-        for p in model.backbone.parameters():
-            p.requires_grad = False
-        for m in model.backbone.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                m.eval()
-                m.weight.requires_grad = False
-                m.bias.requires_grad = False
-
-    reset_heads(model)  # reset classification/regression heads
+    # Freeze / (fine-)tune backbone
+    set_backbone_frozen(
+        model,
+        freeze=args.freeze_backbone,
+        fine_tuning=args.fine_tuning,
+    )
+    # Apply Kaiming initialization to the heads
+    reset_heads(model)
 
     # Print model summary
     with open(output_dir / "model_summary.txt", "w") as f:

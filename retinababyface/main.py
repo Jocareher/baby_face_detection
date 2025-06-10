@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--out_channel",
         type=int,
-        default=64,
+        default=config.DEFAULT_OUT_CHANNELS,
         help="Number of output channels for the FPN feature maps.",
     )
     parser.add_argument(
@@ -454,6 +454,9 @@ def main():
         args.run_name,
         config.SCALE_FACTORS,
         config.RATIO_FACTORS,
+        conf_thres=args.conf_thres,
+        iou_thres=args.iou_thres,
+        class_thres=args.class_thres,
         csv_path=csv_path,
         anchor_preview_path=anchor_preview_path,
         inference_preview=inference_preview,

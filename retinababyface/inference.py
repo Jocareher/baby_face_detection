@@ -43,7 +43,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--out_channel", type=int, default=64, help="Number of output channels for FPN"
+        "--out_channel", type=int, default=config.DEFAULT_OUT_CHANNELS, help="Number of output channels for FPN"
     )
     parser.add_argument(
         "--split",
@@ -60,25 +60,25 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=32,
+        default=config.DEFAULT_BATCH_SIZE,
         help="Batch size for inference (default: 32).",
     )
     parser.add_argument(
         "--conf_thres",
         type=float,
-        default=0.25,
-        help="Confidence threshold for detections (default: 0.25).",
+        default=config.CONF_THRESH,
+        help="Confidence threshold for detections (default: 0.5).",
     )
     parser.add_argument(
         "--iou_thres",
         type=float,
-        default=0.5,
-        help="IoU threshold for matching (default: 0.5).",
+        default=config.IOU_THRESH,
+        help="IoU threshold for matching (default: 0.3).",
     )
     parser.add_argument(
         "--class_thres",
         type=float,
-        default=0.6,
+        default=config.CLASS_THRESH,
         help="Class confidence threshold for matching (default: 0.6).",
     )
     parser.add_argument(

@@ -844,11 +844,11 @@ def val_step(
     class_thres: float = 0.6,
 ) -> Tuple[float, float, float, float, float, float]:
     """
-    Runs one full evaluation loop on the test dataset, computing predictions, losses, and rotated mAP.
+    Runs one full evaluation loop on the validation dataset, computing predictions, losses, and rotated mAP.
 
     Args:
         model (nn.Module): The trained model to evaluate.
-        val_dataloader (DataLoader): DataLoader that provides batches of test data.
+        val_dataloader (DataLoader): DataLoader that provides batches of validation data.
         loss_fn (nn.Module): Multi-task loss function that returns total and sub-losses.
         device (torch.device): The device (CPU/GPU) on which computation will be performed.
         anchors (Tuple[Tensor, Tensor]): A tuple containing:
@@ -859,8 +859,8 @@ def val_step(
         class_thres (float): Class confidence threshold for filtering predictions.
 
     Returns:
-        Tuple[float, float, float, float, float]: A tuple containing:
-            - avg_loss (float): Average total loss across all test batches.
+        Tuple[float, float, float, float, float, float]: A tuple containing:
+            - avg_loss (float): Average total loss across all validation batches.
             - avg_class_loss (float): Average classification loss.
             - avg_face_loss (float): Average face loss.
             - avg_obb_loss (float): Average oriented bounding box (OBB) loss.
@@ -884,14 +884,14 @@ def val_step(
     # Disable gradient computation for faster inference and lower memory usage
     with torch.inference_mode():
         for batch in val_dataloader:
-            images = batch["image"].to(device)
+            images = batch["image"].to(device)  # Move images to the target device
             targets_raw = batch["target"]
-            targets = build_multitask_targets(targets_raw, device)
+            targets = build_multitask_targets(targets_raw, device)  # Prepare targets
 
             anchors_xy, anchors_xywhr = anchors
             batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
-            # 2) Inferencia + NMS con los mismos umbrales que en run_inference
+            # Perform inference and apply rotated NMS
             outputs = infer_with_rotated_nms(
                 model,
                 images,
@@ -902,14 +902,14 @@ def val_step(
                 class_thres=class_thres,
             )
 
-            # 3) Por cada imagen del batch, acumulamos predicciones y GT
+            # Accumulate predictions and ground truths for each image in the batch
             for b, out in enumerate(outputs):
-                # 3.a) Predicciones retenidas por NMS en (cx,cy,w,h,θ)
+                # Predictions retained by NMS in (cx, cy, w, h, θ) format
                 all_pred_boxes.append(out["boxes"].cpu().detach())
                 all_pred_scores.append(out["scores"].cpu().detach())
                 all_pred_labels.append(out["labels"].cpu().detach().long())
 
-                # 3.b) Ground truth: filtramos por valid_mask y convertimos a (cx,cy,w,h,θ)
+                # Ground truth: filter by valid_mask and convert to (cx, cy, w, h, θ)
                 keep = targets["valid_mask"][b]
                 if keep.any():
                     gt_polygons = targets["boxes"][b][keep]  # (M_gt, 8)
@@ -924,11 +924,11 @@ def val_step(
                     all_gt_boxes.append(gt_xywhr.cpu().detach())
                     all_gt_labels.append(gt_labels.cpu().detach().long())
                 else:
-                    # Si no hay GT en esta imagen, pasamos tensor vacío
+                    # If no ground truth exists for this image, pass an empty tensor
                     all_gt_boxes.append(torch.zeros((0, 5), dtype=torch.float32))
                     all_gt_labels.append(torch.zeros((0,), dtype=torch.long))
 
-            # 4) Calculamos la loss EXACTAMENTE igual que antes
+            # Compute loss for the batch
             pred = model(images)
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
             loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
@@ -941,14 +941,14 @@ def val_step(
             angular_loss_sum += loss_angle
             total_batches += 1
 
-    # 5) Sacamos promedios de las pérdidas
+    # Compute average losses
     avg_loss = total_loss / total_batches
     avg_class_loss = class_loss_sum / total_batches
     avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_ang_loss = angular_loss_sum / total_batches
 
-    # 6) Finalmente, calculamos el mAP con las 5 listas
+    # Compute rotated mAP using accumulated predictions and ground truths
     mAP = compute_map_rotated(
         all_pred_boxes,
         all_pred_scores,
@@ -956,7 +956,7 @@ def val_step(
         all_gt_boxes,
         all_gt_labels,
         iou_thr=iou_thres,
-        num_classes=5,  # o len(labels_map) si lo tienes definido
+        num_classes=5,
     )
 
     return avg_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_ang_loss, mAP
@@ -981,6 +981,9 @@ def train(
     run_name: str = "My_Run",
     scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
+    conf_thres: float = 0.25,
+    iou_thres: float = 0.5,
+    class_thres: float = 0.6,
     grid_shape: Tuple[int, int] = (3, 3),
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
@@ -989,18 +992,16 @@ def train(
 ) -> Dict[str, List[float]]:
     """
     Trains the model and optionally records metrics.
-    This function handles the training loop, validation, and logging of metrics.
-    It also generates anchors for the training process and can save a preview of the anchors.
-    The function supports early stopping, learning rate scheduling, and gradient clipping.
-    It also allows for the use of Weights & Biases for tracking metrics and visualizations.
-    The function can save training metrics to a CSV file and optionally save a preview of the anchors.
-    The function also supports the generation of anchors for training and can save a preview of the anchors.
-    It can also save a preview of the inference results.
+
+    This function handles the training loop, validation, and logging of metrics. It supports early stopping,
+    learning rate scheduling, gradient clipping, and anchor generation for training. Additionally, it can
+    save training metrics to a CSV file, generate anchor previews, and perform qualitative inference during
+    training. Optionally, it integrates with Weights & Biases for tracking metrics and visualizations.
 
     Args:
         model (nn.Module): The model to train.
         train_dataloader (DataLoader): DataLoader for the training dataset.
-        val_dataloader (DataLoader): DataLoader for the testing dataset.
+        val_dataloader (DataLoader): DataLoader for the validation dataset.
         loss_fn (nn.Module): Loss function for the model.
         which_optimizer (str): Optimizer to use ('ADAM' or 'SGD').
         weight_decay (float): Weight decay for the optimizer.
@@ -1016,17 +1017,20 @@ def train(
         run_name (str, optional): Weights & Biases run name.
         scale_factors (List[float], optional): Scale factors for anchor generation.
         ratio_factors (List[float], optional): Ratio factors for anchor generation.
+        conf_thres (float, optional): Confidence threshold for filtering predictions.
+        iou_thres (float, optional): IoU threshold for rotated NMS.
+        class_thres (float, optional): Class confidence threshold for filtering predictions.
+        grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
         csv_path (Union[str, Path], optional): Path to save training metrics CSV.
         anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
-        grid_shape (Tuple[int, int], optional): Grid shape for anchor generation.
         inference_preview (Union[str, Path], optional): Path to save inference preview image.
         show_every_epoch (int, optional): Frequency of showing inference previews during training.
 
     Returns:
-        Dict[str, List[float]]: Dictionary containing lists of training and testing losses.
+        Dict[str, List[float]]: Dictionary containing lists of training and validation metrics.
     """
 
-    # CSV file name for logging metrics
+    # Prepare CSV file for logging metrics
     csv_filename = str(csv_path)
     header = [
         "epoch",
@@ -1048,6 +1052,7 @@ def train(
         writer = csv.writer(f)
         writer.writerow(header)
 
+    # Initialize results dictionary to store metrics
     results = {
         "train_total_loss": [],
         "train_class_loss": [],
@@ -1082,9 +1087,9 @@ def train(
         assert grad_clip_mode in [
             "Norm",
             "Value",
-        ], "grad_clip_mode must be 'Norm' or 'Value'"  # Check valid gradient clip mode
+        ], "grad_clip_mode must be 'Norm' or 'Value'"  # Validate gradient clipping mode.
 
-    ## Get the resize size from the dataloader
+    # Get the resize size from the dataloader
     resize_size = get_resize_size(train_dataloader)
 
     # Generate anchors for training
@@ -1096,7 +1101,6 @@ def train(
         ratio_factors=ratio_factors,
         anchor_preview_path=anchor_preview_path,
     )
-    # Convert anchors to xyxy format
     anchors_tuple = (anchors_xy, anchors_xywhr)
 
     start_time = time.time()
@@ -1108,9 +1112,7 @@ def train(
         for epoch in tqdm(range(epochs), desc="Epochs", unit="epoch"):
             epoch_start = time.time()
 
-            train_dataloader_tqdm = tqdm(
-                train_dataloader, desc=f"Train {epoch+1}", leave=False
-            )
+            # Perform a training step
             (
                 train_total_loss,
                 train_class_loss,
@@ -1128,11 +1130,9 @@ def train(
                 scheduler=scheduler,
                 device=device,
                 anchors=anchors_tuple,
-            )  # Perform a training step.
-
-            val_dataloader_tqdm = tqdm(
-                val_dataloader, desc=f"Test {epoch+1}", leave=False
             )
+
+            # Perform a validation step
             (
                 test_total_loss,
                 test_class_loss,
@@ -1146,8 +1146,12 @@ def train(
                 loss_fn=loss_fn,
                 device=device,
                 anchors=anchors_tuple,
-            )  # Perform a testing step.
+                conf_thres=conf_thres,
+                iou_thres=iou_thres,
+                class_thres=class_thres,
+            )
 
+            # Update scheduler if applicable
             if scheduler is not None:
                 if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
                     scheduler.step(test_total_loss)
@@ -1164,12 +1168,6 @@ def train(
             print(
                 f"Test metrics | Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f}| Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f} | mAP: {test_mAP:.4f}"
             )
-
-            # if device.type == "cuda":
-            #     allocated_mem_MB = torch.cuda.memory_allocated(device) / (1024 ** 2)
-            #     max_allocated_mem_MB = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
-            #     print(f"[GPU] Memory used: {allocated_mem_MB:.2f} MB | Max used this epoch: {max_allocated_mem_MB:.2f} MB")
-            #     torch.cuda.reset_peak_memory_stats(device)
 
             if record_metrics:
                 wandb.log(
@@ -1191,6 +1189,7 @@ def train(
                     }
                 )  # Log metrics to Weights & Biases.
 
+            # Update results dictionary
             results["train_total_loss"].append(train_total_loss)
             results["train_class_loss"].append(train_class_loss)
             results["train_face_loss"].append(train_face_loss)
@@ -1204,8 +1203,6 @@ def train(
             results["test_mAP"].append(test_mAP)
 
             # Write metrics to CSV file
-            # Open the CSV file in append mode
-            # and write the metrics for the current epoch
             with open(csv_filename, mode="a", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(
@@ -1227,7 +1224,7 @@ def train(
                     ]
                 )
 
-            # every 5 epochs, save grid.jpg
+            # Save inference preview every few epochs
             if (epoch + 1) % show_every_epoch == 0 and inference_preview is not None:
                 out_path = inference_preview / f"{run_name}_epoch{epoch+1}.jpg"
                 in_training_inference(
@@ -1240,10 +1237,9 @@ def train(
                     grid_shape,
                 )
 
+            # Check early stopping condition
             if early_stopping is not None:
-                early_stopping(
-                    test_total_loss, model
-                )  # Check early stopping condition.
+                early_stopping(test_total_loss, model)
                 if early_stopping.early_stop:
                     print("Early stopping")
                     break

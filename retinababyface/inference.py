@@ -43,7 +43,10 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--out_channel", type=int, default=config.DEFAULT_OUT_CHANNELS, help="Number of output channels for FPN"
+        "--out_channel",
+        type=int,
+        default=config.DEFAULT_OUT_CHANNELS,
+        help="Number of output channels for FPN",
     )
     parser.add_argument(
         "--split",

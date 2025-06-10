@@ -202,6 +202,19 @@ class FPN(nn.Module):
         # Downsampling convolution for generating P6 from P5.
         self.p6_conv = conv_bn(out_channels, out_channels, stride=2, leaky=leaky)
 
+        # Initialize weights for the convolutional layers.
+        for m in self.p6_conv.modules():
+            if isinstance(m, nn.Conv2d):
+                # Initialize the weights using Kaiming normal initialization.
+                # This is suitable for layers with ReLU or LeakyReLU activations.
+                nn.init.kaiming_normal_(
+                    m.weight, mode="fan_out", a=leaky, nonlinearity="leaky_relu"
+                )
+                # Initialize the bias to zero if it exists.
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+                break
+
     def forward(self, c_feats: Dict[str, torch.Tensor]) -> List[torch.Tensor]:
         """
         Forward pass of the FPN module.

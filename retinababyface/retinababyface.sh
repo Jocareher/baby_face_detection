@@ -40,17 +40,18 @@ python main.py \
     --root_dir="/home/jreyes/obbabyface_rot" \
     --backbone="densenet121" \
     --epochs=100 \
-    --lr=0.0001 \
+    --lr=1e-3 \
     --scheduler="OneCycle" \
-    --patience=10 \
-    --run_name="test" \
+    --patience=20 \
+    --run_name="ft_densenet" \
     --record_metrics \
     --batch_size=32 \
     --freeze_backbone \
+    --fine_tuning \
     --clip_value=1.0 \
     --weight_decay=1e-3 \
-    --lambda_face=5 \
-    --lambda_rot=2.5 \
-    --lambda_cls=5 \
-    --lambda_obb=10 \
+    --lambda_face=1 \
+    --lambda_rot=1 \
+    --lambda_cls=1 \
+    --lambda_obb=1 \
     --out_channel=128 \

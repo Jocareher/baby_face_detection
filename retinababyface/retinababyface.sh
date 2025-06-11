@@ -46,8 +46,7 @@ python main.py \
     --run_name="ft_densenet" \
     --record_metrics \
     --batch_size=32 \
-    --freeze_backbone \
-    --fine_tuning \
+    --backbone_mode="fine_tuning" \
     --clip_value=1.0 \
     --weight_decay=1e-3 \
     --lambda_face=1 \

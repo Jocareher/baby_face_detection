@@ -171,3 +171,5 @@ wandb/
 *jpg
 *yaml
 predictions/
+weights/*
+!weights/.gitkeep

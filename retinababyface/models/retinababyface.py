@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Tuple
 import math
+import os
 
 import torch
 import torch.nn as nn
@@ -16,6 +17,7 @@ from torchvision.models import (
 from torchvision.models.feature_extraction import create_feature_extractor
 
 from .context_modules import FPN, SSH, MobileNetV1
+from .vggface_backbone import vggface2_resnet50
 from data_setup.augmentations import wrap_to_pi
 import config
 
@@ -271,6 +273,48 @@ class RetinaBabyFace(nn.Module):
             in_channels_list = [768, 768, 768, 768]
             feat_seq = create_feature_extractor(vit, return_layers)
             feat_ext = ViTFeature2D(feat_seq, patch_size=16)
+
+        elif name == "vggface2":
+            # VGGFace2 ResNet50 backbone
+            model = vggface2_resnet50(
+                include_top=False
+            )  # Load ResNet50 architecture without the top FC layers.
+
+            if pretrained:
+                # Load pretrained weights for VGGFace2 ResNet50 backbone
+                weights_path = os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "weights",
+                    "resnet50_scratch_weight.pth",
+                )
+                weights_path = os.path.abspath(weights_path)  # Convert to absolute path
+                state = torch.load(
+                    weights_path, map_location="cpu"
+                )  # Load weights from file
+                model.load_state_dict(
+                    state, strict=False
+                )  # Load weights, ignoring FC layer weights
+                print(f"[INFO] Loaded VGGFace2 ResNet50 weights from: {weights_path}.")
+
+            # ------------------------------------------------------------------
+            # Map layers for Feature Pyramid Network (FPN)
+            # ------------------------------------------------------------------
+            return_layers = {
+                "layer1": "feat1",  # C2: First feature map
+                "layer2": "feat2",  # C3: Second feature map
+                "layer3": "feat3",  # C4: Third feature map
+                "layer4": "feat4",  # C5: Fourth feature map
+            }
+            in_channels_list = [
+                256,
+                512,
+                1024,
+                2048,
+            ]  # Channel dimensions for each feature map
+            feat_ext = create_feature_extractor(
+                model, return_layers
+            )  # Create feature extractor from backbone
 
         else:
             # MobileNetV1 backbone

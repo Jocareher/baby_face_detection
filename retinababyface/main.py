@@ -67,7 +67,7 @@ def parse_args():
         "--backbone",
         type=str,
         default="densenet121",
-        choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit"],
+        choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit", "vggface2"],
         help="Backbone architecture to use.",
     )
     parser.add_argument(

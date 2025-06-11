@@ -65,9 +65,10 @@ class OBBHead(nn.Module):
         # The 8 values correspond to the 4 vertices of the OBB.
         # The vertices are represented as (Δx1, Δy1, Δx2, Δy2, Δx3, Δy3, Δx4, Δy4)
         # The output is reshaped to (B, N, 8) where N = H × W × num_anchors
-        return torch.tanh(self.conv(x).permute(0, 2, 3, 1).contiguous()).view(
+        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(
             x.size(0), -1, 8
-        )
+        ) # torch.tanh(
+        # self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
 
 
 class AngleHead(nn.Module):

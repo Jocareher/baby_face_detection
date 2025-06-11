@@ -232,7 +232,7 @@ class OBBRegressionLoss(nn.Module):
     def __init__(
         self,
         loss_type: str = "l1",
-        beta: float = 1.0,
+        beta: float = 2.0,
         reduction: str = "mean",
     ):
         """
@@ -338,7 +338,7 @@ class MultiTaskLoss(nn.Module):
         self.bce_loss = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor(3.0), reduction="mean"
         )
-        self.obb_loss = OBBRegressionLoss()
+        self.obb_loss = OBBRegressionLoss(loss_type="smooth_l1", beta=2.0, reduction="mean")
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb

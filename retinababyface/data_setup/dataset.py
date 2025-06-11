@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from collections import Counter
 from typing import List, Optional, Callable, Dict, Any, Tuple
 
@@ -427,29 +428,46 @@ def compute_class_alpha(dataset: Dataset, num_classes: int) -> torch.Tensor:
 
 def make_balanced_sampler(dataset):
     """
-    Creates a balanced sampler for a given dataset to ensure equal representation of classes during sampling.
+    Creates a WeightedRandomSampler for balancing the dataset based on class frequencies.
+
+    This function reads only the .txt label files associated with the dataset, avoiding the need to load images or apply augmentations.
+    It assigns weights inversely proportional to the frequency of the dominant class in each image.
 
     Args:
-        dataset (Dataset): A PyTorch dataset where each sample contains a "target" dictionary
-                           with a "class_idx" tensor representing class indices.
+        dataset (BabyFacesDataset): An instance of the BabyFacesDataset.
 
     Returns:
-        WeightedRandomSampler: A PyTorch sampler that samples elements based on inverse class frequency,
-                               ensuring balanced representation of classes.
-
-    Notes:
-        - The function calculates the frequency of each dominant class across the dataset.
-        - It assigns weights inversely proportional to the frequency of each class.
-        - If a sample does not contain any class indices, it assigns a default value of -1.
+        WeightedRandomSampler: A sampler that balances the dataset based on class frequencies.
     """
-    # 1) Count the dominant classes per image
-    labels_per_img = []
-    for sample in dataset:
-        cls = sample["target"]["class_idx"]
-        # Consider the minority class present in the image
-        labels_per_img.append(cls.unique()[0].item() if len(cls) else -1)
+    # 1) Build a list of paths to the label files
+    #    The dataset exposes root_dir, split, and file_list attributes.
+    labels_dir: Path = Path(dataset.root_dir) / dataset.split / "labels"
+    label_files: List[Path] = [labels_dir / f"{stem}.txt" for stem in dataset.file_list]
 
-    freq = Counter(labels_per_img)
-    weights = [1.0 / freq[l] for l in labels_per_img]
+    # 2) Determine the dominant class for each image
+    #    If no faces are present, assign -1 as the dominant class.
+    dominant: List[int] = []
+    for txt in label_files:
+        if (
+            not txt.exists()
+        ):  # If the label file does not exist, treat as background (-1).
+            dominant.append(-1)
+            continue
+        with open(txt, "r") as f:
+            line = f.readline().strip()  # Read the first line of the label file.
+            if line == "":  # If the file is empty, treat as background (-1).
+                dominant.append(-1)
+            else:
+                cls: int = int(
+                    line.split()[0]
+                )  # Extract the class index from the first line.
+                dominant.append(cls)
 
+    # 3) Compute weights inversely proportional to class frequency
+    freq: Counter = Counter(dominant)  # Count occurrences of each class.
+    weights: torch.Tensor = torch.tensor(
+        [1.0 / freq[c] for c in dominant], dtype=torch.float
+    )  # Assign weights based on inverse frequency.
+
+    # 4) Create the WeightedRandomSampler
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)

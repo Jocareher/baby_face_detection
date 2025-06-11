@@ -688,7 +688,7 @@ def create_scheduler(
     elif which_scheduler == "OneCycle":
         return lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=learning_rate * 5,
+            max_lr=learning_rate * 3,
             epochs=epochs,
             steps_per_epoch=len(train_dataloader),
         )

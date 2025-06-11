@@ -103,11 +103,11 @@ ALPHA = [
     3.16,
 ]  # Values according to dataset's distribution (old_values = [1.5, 1.5, 1.5, 2.5, 2.5])
 GAMMA = 2.0
-POS_IOU_THRESH_1 = 0.7
+POS_IOU_THRESH_1 = 0.6
 NEG_IOU_THRESH_1 = 0.3
 POS_IOU_THRESH_2 = 0.5
 NEG_IOU_THRESH_2 = 0.4
-NEG_SAMPLES_RATIO = 3
+NEG_SAMPLES_RATIO = 5
 LAMBDA_CLS = 1.0
 LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0
@@ -142,11 +142,11 @@ def get_train_transform(
             [
                 RandomHorizontalFlipOBB(prob=0.5),
                 RandomRotateOBB(max_angle=30, prob=0.3),
-                RandomScaleTranslateOBB(
-                    scale_range=(0.85, 1.15),
-                    translate_range=(-0.1, 0.1),
-                    prob=0.3,
-                ),
+                # RandomScaleTranslateOBB(
+                #     scale_range=(0.85, 1.15),
+                #     translate_range=(-0.1, 0.1),
+                #     prob=0.3,
+                # ),
                 RandomOcclusionOBB(max_size_ratio=0.5, prob=0.3),
                 RandomNoiseOBB(std=10, prob=0.7),
                 RandomBlurOBB(ksize=(5, 5), prob=0.7),

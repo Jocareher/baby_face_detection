@@ -414,7 +414,7 @@ def main():
                 )
             )
         )
-    print(f"[INFO] Model summary saved to {output_dir / 'model_summary.xt'}")
+    print(f"[INFO] Model summary saved to {output_dir / 'model_summary.txt'}")
 
     if device.type == "cuda":
         print("[INFO] Compiling model with torch.compile...")

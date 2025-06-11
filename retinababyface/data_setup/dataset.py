@@ -1,4 +1,5 @@
 import os
+from collections import Counter
 from typing import List, Optional, Callable, Dict, Any, Tuple
 
 import torch
@@ -6,6 +7,7 @@ from torch.utils.data import Dataset
 from sklearn.cluster import KMeans
 import cv2
 import numpy as np
+from torch.utils.data import WeightedRandomSampler
 
 from .augmentations import Resize, wrap_to_pi
 from loss.utils import xyxyxyxy2xywhr
@@ -421,3 +423,33 @@ def compute_class_alpha(dataset: Dataset, num_classes: int) -> torch.Tensor:
     alpha = med / (counts_f + eps)
 
     return alpha
+
+
+def make_balanced_sampler(dataset):
+    """
+    Creates a balanced sampler for a given dataset to ensure equal representation of classes during sampling.
+
+    Args:
+        dataset (Dataset): A PyTorch dataset where each sample contains a "target" dictionary
+                           with a "class_idx" tensor representing class indices.
+
+    Returns:
+        WeightedRandomSampler: A PyTorch sampler that samples elements based on inverse class frequency,
+                               ensuring balanced representation of classes.
+
+    Notes:
+        - The function calculates the frequency of each dominant class across the dataset.
+        - It assigns weights inversely proportional to the frequency of each class.
+        - If a sample does not contain any class indices, it assigns a default value of -1.
+    """
+    # 1) Count the dominant classes per image
+    labels_per_img = []
+    for sample in dataset:
+        cls = sample["target"]["class_idx"]
+        # Consider the minority class present in the image
+        labels_per_img.append(cls.unique()[0].item() if len(cls) else -1)
+
+    freq = Counter(labels_per_img)
+    weights = [1.0 / freq[l] for l in labels_per_img]
+
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)

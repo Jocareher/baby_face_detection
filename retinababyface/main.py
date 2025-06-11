@@ -20,7 +20,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
-from data_setup.dataset import BabyFacesDataset
+from data_setup.dataset import BabyFacesDataset, make_balanced_sampler
 from data_setup.collate import custom_collate
 from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device
@@ -46,6 +46,13 @@ def parse_args():
         type=str,
         required=True,
         help="Path to the dataset root directory (containing train/val/test subfolders).",
+    )
+
+    parser.add_argument(
+        "--balanced_sampler",
+        action="store_true",
+        default=False,
+        help="Use a balanced sampler for the training dataset.",
     )
 
     # Model & input settings
@@ -359,15 +366,32 @@ def main():
     )
     visualize_and_save_dataset_in_script(val_dataset, "val", grids_dir, num_images=9)
 
-    # Create data loaders for training and validation datasets
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=custom_collate,
-        num_workers=4,
-        pin_memory=True,
-    )
+    if args.balanced_sampler:
+        sampler = make_balanced_sampler(train_dataset)
+        # Create data loaders for training and validation datasets
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            sampler=sampler,
+            collate_fn=custom_collate,
+            num_workers=4,
+            pin_memory=True,
+        )
+        print(
+            f"[INFO] Using balanced sampler for training dataset with {len(sampler)} samples."
+        )
+
+    else:
+        # Create data loaders for training and validation datasets
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=custom_collate,
+            num_workers=4,
+            pin_memory=True,
+        )
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,

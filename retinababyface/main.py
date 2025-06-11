@@ -75,31 +75,14 @@ def parse_args():
         default=True,
         help="Load pretrained weights for the backbone.",
     )
-    parser.add_argument(
-        "--freeze_backbone",
-        action="store_true",
-        default=True,
-        help="Freeze backbone parameters during training.",
-    )
-    parser.add_argument(
-        "--no_freeze_backbone",
-        action="store_false",
-        dest="freeze_backbone",
-        help="Do not freeze the backbone (override --freeze_backbone).",
-    )
-    parser.add_argument(
-        "--fine_tuning",
-        action="store_true",
-        default=False,
-        help="When freezing, unfreeze only the last block of the backbone.",
-    )
-    parser.add_argument(
-        "--no_fine_tuning",
-        action="store_false",
-        dest="fine_tuning",
-        help="Disable unfreezing of the last backbone block.",
-    )
 
+    parser.add_argument(
+        "--backbone_mode",
+        type=str,
+        default="feature_extractor",
+        choices=["feature_extractor", "fine_tuning", "train_all"],
+        help="How to treat the backbone parameters during training.",
+    )
     # Training hyperparameters
     parser.add_argument(
         "--epochs",
@@ -334,14 +317,23 @@ def main():
     # ------------------------------------------------------------------------
     # II. Setup
     # ------------------------------------------------------------------------
+    # Set random seed for reproducibility
     set_seed(42)
+
+    # Get the default device (CPU or GPU)
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
 
-    norm_mean = config.IMAGENET_MEAN if args.freeze_backbone else config.MEAN
-    norm_std = config.IMAGENET_STD if args.freeze_backbone else config.STD
+    # Determine normalization statistics based on backbone mode
+    if args.backbone_mode == "train_all":
+        norm_mean, norm_std = config.MEAN, config.STD
+    else:
+        norm_mean, norm_std = config.IMAGENET_MEAN, config.IMAGENET_STD
+
+    # Define image size tuple
     img_size = tuple(args.img_size)
 
+    # Configure data augmentation and normalization transforms for training and validation
     train_transform = config.get_train_transform(
         img_size, args.use_augmentation, mean=norm_mean, std=norm_std
     )
@@ -350,6 +342,8 @@ def main():
     # ------------------------------------------------------------------------
     # III. Datasets and loaders
     # ------------------------------------------------------------------------
+
+    # Load training and validation datasets
     train_dataset = BabyFacesDataset(
         args.root_dir, split="train", transform=train_transform
     )
@@ -359,12 +353,13 @@ def main():
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
 
-    # Optional: visualize datasets
+    # Optional: visualize datasets and save sample grids
     visualize_and_save_dataset_in_script(
         train_dataset, "train", grids_dir, num_images=9
     )
     visualize_and_save_dataset_in_script(val_dataset, "val", grids_dir, num_images=9)
 
+    # Create data loaders for training and validation datasets
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -385,21 +380,22 @@ def main():
     # ------------------------------------------------------------------------
     # IV. Model and loss setup
     # ------------------------------------------------------------------------
-    # Load the model
+
+    # Initialize the RetinaBabyFace model with the specified backbone and output channels
     model = RetinaBabyFace(
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
 
-    # Freeze / (fine-)tune backbone
+    # Configure backbone freezing or fine-tuning based on the specified mode
     set_backbone_frozen(
         model,
-        freeze=args.freeze_backbone,
-        fine_tuning=args.fine_tuning,
+        mode=args.backbone_mode,
     )
-    # Apply Kaiming initialization to the heads
+
+    # Apply Kaiming initialization to the model heads
     reset_heads(model)
 
-    # Print model summary
+    # Save and print model summary
     with open(output_dir / "model_summary.txt", "w") as f:
         f.write(
             str(
@@ -416,6 +412,7 @@ def main():
         )
     print(f"[INFO] Model summary saved to {output_dir / 'model_summary.txt'}")
 
+    # Compile the model if using CUDA and PyTorch 2.0 or later
     if device.type == "cuda":
         print("[INFO] Compiling model with torch.compile...")
         model = torch.compile(
@@ -423,7 +420,7 @@ def main():
         )  # torch.compile is only available in PyTorch 2.0 and later
         print("[INFO] Model compilation complete.")
 
-    # Load the loss function
+    # Initialize the multi-task loss function with specified weights and thresholds
     multitask_loss = MultiTaskLoss(
         args.lambda_cls,
         args.lambda_obb,
@@ -437,6 +434,8 @@ def main():
         args.gamma,
         args.neg_samples_ratio,
     )
+
+    # Initialize early stopping mechanism
     earlystopping = EarlyStopping(
         args.patience, verbose=True, delta=0.001, path=ckpt_path
     )
@@ -444,6 +443,7 @@ def main():
     # ------------------------------------------------------------------------
     # V. Training
     # ------------------------------------------------------------------------
+
     print("[INFO] Starting training...")
     train(
         model,
@@ -477,8 +477,10 @@ def main():
     # ------------------------------------------------------------------------
     # VI. Inference
     # ------------------------------------------------------------------------
+
     print("[INFO] Starting inference...")
 
+    # Load test dataset and create data loader
     test_dataset = BabyFacesDataset(
         args.root_dir, split=args.split, transform=val_transform
     )
@@ -491,8 +493,10 @@ def main():
         pin_memory=True,
     )
 
+    # Visualize and save test dataset samples
     visualize_and_save_dataset_in_script(test_dataset, "test", grids_dir, num_images=9)
 
+    # Define label mapping for inference
     labels_map = {
         0: "3/4 Leftside",
         1: "3/4 Rightside",
@@ -531,6 +535,7 @@ def main():
     # Set the model to evaluation mode
     trained_model.eval()
 
+    # Perform inference and save results
     figures = inference(
         trained_model,
         test_loader=test_loader,
@@ -547,7 +552,7 @@ def main():
         std=norm_std,
     )
 
-    # Save all figures
+    # Save all figures generated during inference
     figures["pr_figure"].savefig(figures_dir / "precision_recall.png", dpi=150)
     figures["confusion_figure"].savefig(figures_dir / "confusion_matrix.png", dpi=150)
     figures["grid_figure"].savefig(figures_dir / "grid_examples.png", dpi=150)

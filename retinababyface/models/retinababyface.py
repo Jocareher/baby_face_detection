@@ -65,9 +65,9 @@ class OBBHead(nn.Module):
         # The 8 values correspond to the 4 vertices of the OBB.
         # The vertices are represented as (Δx1, Δy1, Δx2, Δy2, Δx3, Δy3, Δx4, Δy4)
         # The output is reshaped to (B, N, 8) where N = H × W × num_anchors
-        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(
-            x.size(0), -1, 8
-        ) # torch.tanh(
+        return (
+            self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
+        )  # torch.tanh(
         # self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
 
 
@@ -462,7 +462,7 @@ def reset_heads(model: nn.Module) -> None:
     to the model.
 
     Args:
-        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, and `class_head`.
+        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head` and `face_head`.
 
     Returns:
         None
@@ -477,51 +477,70 @@ def reset_heads(model: nn.Module) -> None:
                 # Initialize bias to zero if present
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0)
-                    
+
+
 def set_backbone_frozen(
     model: nn.Module,
-    freeze: bool,
-    fine_tuning: bool,
-    last_block_tokens=("layer4", "denseblock4", "stage4", "encoder.layers.encoder_layer_11"),
+    mode: str = "feature_extract",  # "feature_extract" | "fine_tune" | "train_all"
+    last_block_tokens=(
+        "denseblock4",
+        "layer4",
+        "stage4",
+        "encoder.layers.encoder_layer_11",
+    ),
 ):
     """
-    Adjusts the training state of the backbone parameters in the model.
+    Adjusts which parts of the backbone are trainable.
 
-    This function allows freezing or unfreezing the backbone parameters, with an optional fine-tuning mode
-    that keeps the last block trainable while freezing the rest. Additionally, it handles BatchNorm layers
-    by setting them to evaluation mode and freezing their affine parameters when the backbone is frozen.
+    This function allows for flexible control over the training behavior of the backbone
+    in a neural network model. It supports three modes:
+      - "feature_extract": All backbone layers are frozen, and BatchNorm layers are set to evaluation mode.
+      - "fine_tune": Only the last block of the backbone and its BatchNorm layers are trainable.
+      - "train_all": All backbone layers are trainable, including BatchNorm layers.
 
     Args:
         model (nn.Module): The model containing the backbone.
-        freeze (bool): Whether to freeze the backbone parameters.
-        fine_tuning (bool): Whether to enable fine-tuning mode (keeps the last block trainable).
-        last_block_tokens (tuple[str]): Tokens identifying the last block layers in the backbone.
+        mode (str): Training mode for the backbone. Options are:
+            - "feature_extract": Freeze all layers.
+            - "fine_tune": Train only the last block.
+            - "train_all": Train all layers.
+        last_block_tokens (tuple): Identifiers for the last block layers in the backbone.
+            These tokens are used to determine which layers belong to the last block.
 
     Returns:
         None
     """
-    # 1) Freeze or unfreeze **all** backbone parameters
-    for name, p in model.backbone.named_parameters():
-        p.requires_grad = not freeze
+    assert mode in {
+        "feature_extractor",
+        "fine_tuning",
+        "train_all",
+    }, "Invalid mode. Choose from 'feature_extractor', 'fine_tuning', or 'train_all'."
 
-    # 2) If fine-tuning is enabled, re-activate the parameters of the last block
-    if freeze and fine_tuning:
+    freeze_all = mode in {"feature_extractor", "fine_tuning"}
+
+    # 1) Freeze or unfreeze gradients for backbone parameters
+    for name, p in model.backbone.named_parameters():
+        p.requires_grad = not freeze_all
+
+    # 2) In "fine_tune" mode, re-enable gradients for the last block
+    if mode == "fine_tuning":
         for name, p in model.backbone.named_parameters():
             if any(tok in name for tok in last_block_tokens):
-                p.requires_grad = True
+                p.requires_grad = True  # Enable gradients for convolutional and BatchNorm layers in the last block
 
-    # 3) If freeze is True, set all BatchNorm layers to evaluation mode and freeze their affine parameters
-    if freeze:
-        for module in model.backbone.modules():
-            if isinstance(module, nn.BatchNorm2d):
-                module.train()
-                module.weight.requires_grad = False
-                module.bias.requires_grad = False
-
-        # 4) If fine-tuning is enabled, re-activate BatchNorm layers in the last block
-        if fine_tuning:
-            for name, module in model.backbone.named_modules():
-                if isinstance(module, nn.BatchNorm2d) and any(tok in name for tok in last_block_tokens):
-                    module.train()
-                    module.weight.requires_grad = True
-                    module.bias.requires_grad = True
+    # 3) Handle BatchNorm layers based on the mode
+    for name, m in model.backbone.named_modules():
+        if isinstance(m, nn.BatchNorm2d):
+            if mode == "feature_extract":
+                m.eval()  # Set BatchNorm layers to evaluation mode (fixed statistics)
+                m.weight.requires_grad = False  # Freeze BatchNorm weights
+                m.bias.requires_grad = False  # Freeze BatchNorm biases
+            elif mode == "fine_tuning":
+                if any(tok in name for tok in last_block_tokens):
+                    m.train()  # BatchNorm layers in the last block update statistics
+                else:
+                    m.eval()  # Other BatchNorm layers remain fixed
+                    m.weight.requires_grad = False
+                    m.bias.requires_grad = False
+            else:  # "train_all" mode
+                m.train()  # All BatchNorm layers update statistics and are trainable

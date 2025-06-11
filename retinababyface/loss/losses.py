@@ -338,7 +338,9 @@ class MultiTaskLoss(nn.Module):
         self.bce_loss = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor(3.0), reduction="mean"
         )
-        self.obb_loss = OBBRegressionLoss(loss_type="smooth_l1", beta=2.0, reduction="mean")
+        self.obb_loss = OBBRegressionLoss(
+            loss_type="smooth_l1", beta=2.0, reduction="mean"
+        )
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb
@@ -391,6 +393,7 @@ class MultiTaskLoss(nn.Module):
         obb_loss = 0.0
         rot_loss = 0.0
         valid_batches = 0
+        num_cls_batches = 0
 
         for b in range(B):
             # -------------------------------------
@@ -441,20 +444,31 @@ class MultiTaskLoss(nn.Module):
             # -------------------------------------
             # Stage 1: Classification loss (orient_logits)
             # -------------------------------------
-            # Initialize all as ignore_index
+            # Initialize all targets as ignore_index
             tgt_cls = torch.full(
                 (N,),
-                fill_value=self.focal_loss.ignore_index,
+                self.focal_loss.ignore_index,
                 dtype=torch.long,
                 device=orient_logits.device,
             )
-            # For positives from stage 1, assign class index of matched GT
-            tgt_cls[pos_mask_1] = targets["class_idx"][b][best_gt_1[pos_mask_1]]
-            # Apply focal loss (reshape inputs to (1, N, num_classes))
-            cls_loss += self.focal_loss(
-                orient_logits[b].unsqueeze(0),  # (1, N, num_classes)
-                tgt_cls.unsqueeze(0),  # (1, N)
-            )
+            if num_pos_1 > 0:
+                # Assign ground-truth class labels to positive anchors
+                tgt_cls[pos_idx_1] = targets["class_idx"][b][best_gt_1[pos_idx_1]]
+
+                # ----- Focal loss with the same selection as Face-Head -----
+                sel_idx_1 = torch.cat(
+                    [pos_idx_1, hard_neg_idx], dim=0
+                )  # Combine positive and hard-negative indices
+                logits_sel = orient_logits[b][
+                    sel_idx_1
+                ]  # (P+H, 5) Selected logits for classification
+                tgt_cls_sel = tgt_cls[
+                    sel_idx_1
+                ]  # (P+H,) Corresponding ground-truth labels
+                cls_loss += self.focal_loss(
+                    logits_sel, tgt_cls_sel
+                )  # Compute focal loss
+                num_cls_batches += 1  # Increment batch count for classification
 
             # -------------------------------------
             # Stage 2: Generate provisional OBBs from stage 1 outputs
@@ -520,8 +534,8 @@ class MultiTaskLoss(nn.Module):
         # -------------------------------------
         # Normalize and combine all losses
         # -------------------------------------
-        # Classification loss normalized by number of valid stage-2 batches
-        cls_loss = cls_loss / valid_batches if valid_batches > 0 else 0.0
+        # Classification loss normalized by number of batches
+        cls_loss = cls_loss / max(1, num_cls_batches)
         # Face loss normalized by batch size
         face_loss /= B
         if valid_batches > 0:

@@ -36,6 +36,7 @@ DEFAULT_CLIP_VALUE = None
 DEFAULT_GRAD_CLIP_MODE = "Norm"
 DEFAULT_PATIENCE = 3
 DEFAULT_OUT_CHANNELS = 64
+DEFAULT_BACKBONE_MODE = "feature_extractor"
 
 # =======================
 # Precomputed OBB Statistics

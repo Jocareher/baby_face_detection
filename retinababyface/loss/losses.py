@@ -416,11 +416,12 @@ class MultiTaskLoss(nn.Module):
                 # a) Compute per-candidate negative face loss to select hard negatives
                 neg_logits_all = face_logits[b][neg_idx_1]  # (num_neg_1, 1)
                 neg_targets_all = torch.zeros_like(neg_logits_all)  # (num_neg_1, 1)
-                per_neg_loss = F.binary_cross_entropy_with_logits(
-                    neg_logits_all, neg_targets_all, reduction="none"
-                ).view(
-                    -1
-                )  # (num_neg_1,)
+                with torch.no_grad():
+                    per_neg_loss = F.binary_cross_entropy_with_logits(
+                        neg_logits_all, neg_targets_all, reduction="none"
+                    ).view(
+                        -1
+                    )  # (num_neg_1,)
 
                 # b) Sort negatives by descending loss (hard negatives first)
                 _, hard_order = per_neg_loss.sort(descending=True)

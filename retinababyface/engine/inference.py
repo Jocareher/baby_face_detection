@@ -175,32 +175,48 @@ def run_inference(
                 fname = dataset.file_list[global_idx]
                 global_idx += 1
 
-                # Extract valid ground truths
+                # --------------------- Ground Truth Processing -------------------
                 valid_mask = targets["valid_mask"][b]
-                gt_boxes = targets["boxes"][b][valid_mask]
-                gt_angles = targets["angles"][b][valid_mask].view(-1)
-                gt_labels = targets["class_idx"][b][valid_mask]
+                gt_boxes = targets["boxes"][b][valid_mask]  # GT boxes coordinates
+                gt_angles = targets["angles"][b][valid_mask].view(
+                    -1
+                )  # GT rotation angles
+                gt_labels = targets["class_idx"][b][valid_mask]  # GT class labels
                 num_gt = gt_boxes.size(0)
 
+                # Convert GT boxes to xywhr format for rotated IoU computation
                 gt_xywhr = xyxyxyxy2xywhr(
                     gt_boxes, gt_angles.unsqueeze(-1), resize_size
                 ).to(device)
                 gt_matched = torch.zeros(num_gt, dtype=torch.bool, device=device)
 
-                # Extract predictions
-                pred_boxes = outputs[b]["boxes"].to(device)  # (N_pred, 5)
-                pred_scores = outputs[b]["scores"].to(device)  # (N_pred,)
-                pred_labels = outputs[b]["labels"].to(device)  # (N_pred,)
+                # --------------------- Model Predictions ------------------------
+                pred_boxes = outputs[b]["boxes"].to(
+                    device
+                )  # Predicted boxes (N_pred, 5)
+                pred_scores = outputs[b]["scores"].to(device)  # Confidence scores
+                pred_labels = outputs[b]["labels"].to(device)  # Predicted class labels
                 num_pred = pred_boxes.size(0)
 
-                # Handle case where no predictions are made
-                if num_pred == 0:
-                    for i in range(num_gt):
-                        cls_gt = int(gt_labels[i].item())
-                        stats[cls_gt]["fn"] += 1
-                        # Confusion matrix: (row=cls_gt, col=BG)
-                        y_true.append(cls_gt)
-                        y_pred.append(-1)
+                # ----------------- Handle Images without GT (num_gt==0) ----------
+                if num_gt == 0:
+                    for det_idx in range(num_pred):
+                        cls_det = int(pred_labels[det_idx])
+                        score_det = float(pred_scores[det_idx])
+
+                        # Update PR/F1 metrics
+                        per_true[cls_det].append(0)  # All predictions are FP
+                        per_score[cls_det].append(score_det)
+                        all_gts.append(-1)  # Background class
+                        all_preds.append(cls_det)
+                        all_scores.append(score_det)
+
+                        # Update stats and confusion matrix
+                        stats[cls_det]["fp"] += 1  # Count as False Positive
+                        y_true.append(-1)  # Background row
+                        y_pred.append(cls_det)  # Predicted class column
+
+                    # Store qualitative sample
                     samples.append(
                         (
                             imgs[b].cpu(),
@@ -211,73 +227,96 @@ def run_inference(
                             gt_labels.cpu(),
                         )
                     )
-                    continue
+                    continue  # Next image
+                # ----------------------------------------------------------------
 
-                # Compute IoU between all GT and all predictions
-                iou_matrix = batch_probiou(gt_xywhr, pred_boxes)  # (num_gt, num_pred)
+                # Compute complete IoU matrix (num_gt × num_pred)
+                iou_matrix = batch_probiou(gt_xywhr, pred_boxes)
 
-                # Process predictions in descending order of confidence score
-                scores_det, idxs_det = torch.sort(pred_scores, descending=True)
+                # Sort detections by confidence score (descending)
+                _, idxs_det = torch.sort(pred_scores, descending=True)
+
+                # Process each detection in order of confidence
                 for det_idx in idxs_det.tolist():
-                    score_det = float(pred_scores[det_idx].item())
-                    cls_det = int(pred_labels[det_idx].item())
+                    score_det = float(pred_scores[det_idx])
+                    cls_det = int(pred_labels[det_idx])
 
-                    # 1) Get IoU with all unmatched GT boxes
-                    unmatched_mask = ~gt_matched
+                    # Find best matching GT for this detection
+                    unmatched_mask = ~gt_matched  # Unmatched GT mask
                     ious_all = iou_matrix[
                         :, det_idx
-                    ]  # IoUs with current detection (num_gt,)
-                    ious_all[~unmatched_mask] = -1  # Invalidate already matched GTs
-                    best_iou_val, best_gt_idx = ious_all.max(
-                        0
-                    )  # Get highest IoU and corresponding GT idx
+                    ].clone()  # IoUs with current detection
+                    ious_all[~unmatched_mask] = -1  # Exclude already matched GTs
+
+                    if unmatched_mask.any():
+                        best_iou_val, best_gt_idx = ious_all.max(0)
+                        best_gt_idx = int(best_gt_idx.item())
+                        best_iou_val = float(best_iou_val.item())
+                    else:  # All GTs matched → can only be FP
+                        best_iou_val, best_gt_idx = -1.0, -1
 
                     if best_iou_val >= iou_thres:
-                        true_cls = int(
-                            gt_labels[best_gt_idx]
-                        )  # Class of best matching GT box
+                        true_cls = int(gt_labels[best_gt_idx])
+
                         if cls_det == true_cls:
                             # -------------------- TRUE POSITIVE --------------------
-                            # Update metrics for the correct class prediction
                             stats[true_cls]["tp"] += 1
                             gt_matched[best_gt_idx] = True
 
-                            # Store metrics for PR curve
+                            # Update metrics
                             per_true[true_cls].append(1)
-                            per_score[true_cls].append(float(score_det))
-                            y_true.append(true_cls)  # For confusion matrix diagonal
+                            per_score[true_cls].append(score_det)
+                            y_true.append(true_cls)
                             y_pred.append(true_cls)
 
-                            # Store geometric error metrics
-                            iou_errs[true_cls].append(float(best_iou_val))
+                            # Compute geometric errors
+                            iou_errs[true_cls].append(best_iou_val)
                             angle_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
                             angle_errs[true_cls].append(
-                                float(wrap_to_pi(angle_diff).abs() * 180 / math.pi)
+                                float(wrap_to_pi(angle_diff).abs() * 180.0 / math.pi)
                             )
 
                         else:
                             # -------------- CLASS CONFUSION ERROR -----------------
-                            # False Positive for predicted class
+                            # Wrong class but good localization
                             stats[cls_det]["fp"] += 1
                             per_true[cls_det].append(0)
-                            per_score[cls_det].append(float(score_det))
+                            per_score[cls_det].append(score_det)
 
-                            # False Negative for true class
                             stats[true_cls]["fn"] += 1
-                            gt_matched[best_gt_idx] = True  # Mark GT as used
+                            gt_matched[best_gt_idx] = True
 
-                            # Update confusion matrix
-                            y_true.append(true_cls)  # row = true class
-                            y_pred.append(cls_det)  # col = predicted class
+                            y_true.append(true_cls)  # GT class row
+                            y_pred.append(cls_det)  # Predicted class column
                     else:
-                        # -------------------- BACKGROUND FALSE POSITIVE --------------------
-                        # Detection doesn't match any GT with sufficient IoU
+                        # ---------------- BACKGROUND FALSE POSITIVE --------------
+                        # No matching GT with sufficient IoU
                         stats[cls_det]["fp"] += 1
                         per_true[cls_det].append(0)
-                        per_score[cls_det].append(float(score_det))
+                        per_score[cls_det].append(score_det)
 
-                        y_true.append(-1)  # row = background
-                        y_pred.append(cls_det)  # col = predicted class
+                        y_true.append(-1)  # Background row
+                        y_pred.append(cls_det)  # Predicted class column
+
+                # ---- Process unmatched GT boxes as False Negatives -------------
+                for i in range(num_gt):
+                    if not gt_matched[i]:
+                        cls_gt = int(gt_labels[i])
+                        stats[cls_gt]["fn"] += 1
+                        y_true.append(cls_gt)  # GT class row
+                        y_pred.append(-1)  # Background column
+
+                # ---- Store qualitative sample ----------------------------------
+                samples.append(
+                    (
+                        imgs[b].cpu(),
+                        {k: v.cpu().detach() for k, v in outputs[b].items()},
+                        fname,
+                        gt_boxes.cpu(),
+                        gt_angles.cpu(),
+                        gt_labels.cpu(),
+                    )
+                )
 
             # Clean up to free memory
             del imgs, outputs, targets

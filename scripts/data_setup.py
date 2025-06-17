@@ -726,96 +726,112 @@ def count_labels_per_class_and_set(root_path: str) -> None:
 
 def flip_coordinates(labels: List[str]) -> List[str]:
     """
-    Updates the class, coordinates, and angle of a YOLO OBB label after a horizontal flip of the image.
+    Updates coordinates and angle of YOLO OBB labels after a horizontal flip of an image.
 
     Args:
-        - labels: List of strings, where the first element is the class index, followed by 8 coords and an angle.
+        labels (List[str]): List containing the YOLO OBB format labels:
+            [class_id, x1, y1, x2, y2, x3, y3, x4, y4, angle]
 
     Returns:
-        - List of strings updated with the flipped class, coordinates, and angle.
+        List[str]: Modified labels with flipped coordinates and updated values:
+            - For classes 0/1: Swaps between them (3/4 left/right sideview)
+            - For classes 3/4: Swaps between them (left/right sideview)
+            - For class 2 (Frontal): Remains unchanged
+            - Coordinates: Horizontally flipped (1-x)
+            - Angle: Inverted (-angle)
+
+    Note:
+        Coordinates must be normalized between 0 and 1.
+        Points must be ordered clockwise starting from top-left.
     """
-    # Update class
+    # Update class ID for mirrored face orientations
     class_id = int(labels[0])
     if class_id in [0, 1]:
-        labels[0] = str(1 - class_id)
+        labels[0] = str(1 - class_id)  # Swap 3/4 left/right sideview
     elif class_id in [3, 4]:
-        labels[0] = str(7 - class_id)
+        labels[0] = str(7 - class_id)  # Swap left/right sideview
+    # Class 2 (Frontal) remains unchanged
 
-    # Extract coordinates and angle
+    # Reshape coordinates into (x,y) points array
     coords = np.array(labels[1:9], dtype=float).reshape(4, 2)
     angle = float(labels[9])
 
-    # Flip x coordinates (horizontal mirror)
-    coords[:, 0] = 1 - coords[:, 0]
-    coords = coords[[1, 0, 3, 2], :]  # Maintain point order consistency
+    # Horizontally flip x coordinates and reorder points
+    coords[:, 0] = 1 - coords[:, 0]  # Mirror x coordinates
+    coords = coords[[1, 0, 3, 2], :]  # Reorder to maintain clockwise order
 
-    # Flip the angle (clockwise to clockwise mirrored)
+    # Invert rotation angle
     flipped_angle = -angle
 
-    # Return updated label
+    # Return modified labels in original format
     return [labels[0]] + coords.flatten().tolist() + [flipped_angle]
 
 
 def generate_horizontal_flipped_images(root_dir: str, output_dir: str) -> None:
     """
-    Processes a directory of images and labels, applying a horizontal flip to images with a single annotation
-    of certain classes and updating their labels accordingly.
+    Creates horizontally flipped versions of images and their corresponding labels in a dataset.
 
-    Parameters:
-    - root_dir: Root directory containing 'images' and 'labels' folders.
-    - output_dir: Output directory where the modified images and labels will be saved.
+    This function processes image-label pairs by:
+    1. Flipping each image horizontally using PIL's transpose
+    2. Adjusting label coordinates to match the flipped image
+    3. Updating class labels based on face orientation (e.g. left/right views are swapped)
+    4. Saving flipped images and modified labels with "flip_" prefix
+
+    Args:
+        root_dir (str): Root directory containing 'images' and 'labels' subdirectories with
+                       original dataset
+        output_dir (str): Output directory where flipped images and modified labels will be saved
+                         in 'images' and 'labels' subdirectories
+
+    The function expects:
+    - JPG images in root_dir/images/
+    - YOLO format labels in root_dir/labels/ with matching filenames (.txt)
+    - Labels with format: class_id x1 y1 x2 y2 x3 y3 x4 y4 angle
     """
+    # Create input/output directory paths
     images_dir = os.path.join(root_dir, "images")
     labels_dir = os.path.join(root_dir, "labels")
 
-    # Create output directories if they do not exist
+    # Create output directories if they don't exist
     os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "labels"), exist_ok=True)
 
+    # Process each image in the dataset
     for filename in os.listdir(images_dir):
-        if filename.endswith(".jpg"):  # Ensure only .jpg images are processed
+        if filename.endswith(".jpg"):
             image_path = os.path.join(images_dir, filename)
             label_path = os.path.join(labels_dir, filename.replace(".jpg", ".txt"))
 
-            if not os.path.exists(
-                label_path
-            ):  # Skip images without a corresponding label file
-                continue  # Move to the next image in the directory
+            # Skip if no corresponding label file exists
+            if not os.path.exists(label_path):
+                continue
 
-            # Read and process label
+            # Read all annotations from label file
             with open(label_path, "r") as file:
-                labels = file.readlines()
+                lines = file.readlines()
 
-            if len(labels) == 1:  # Process only if there is a single annotation
-                label = labels[0].strip().split()
-                if int(label[0]) in [
-                    0,
-                    1,
-                    3,
-                    4,
-                ]:  # Check if the annotation is of an interested class
-                    image = Image.open(image_path)
-                    flipped_image = image.transpose(
-                        Image.FLIP_LEFT_RIGHT
-                    )  # Apply horizontal flip
+            # Process each annotation line
+            new_labels = []
+            for line in lines:
+                label = line.strip().split()
+                # Flip coordinates and update class labels using helper function
+                new_label = flip_coordinates(label)
+                new_labels.append(" ".join(map(str, new_label)))
 
-                    new_label = flip_coordinates(label)  # Update label
+            # Create and save horizontally flipped image
+            image = Image.open(image_path)
+            flipped_image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            new_filename = f"flip_{filename}"
+            flipped_image.save(os.path.join(output_dir, "images", new_filename))
 
-                    # Construct filename with 'flip_' prefix
-                    new_filename = f"flip_{filename}"
-                    flipped_image.save(
-                        os.path.join(output_dir, "images", new_filename)
-                    )  # Save modified image
+            # Save modified labels for flipped image
+            new_label_path = os.path.join(
+                output_dir, "labels", new_filename.replace(".jpg", ".txt")
+            )
+            with open(new_label_path, "w") as f:
+                f.write("\n".join(new_labels))
 
-                    new_label_str = " ".join(map(str, new_label))
-                    with open(
-                        os.path.join(
-                            output_dir, "labels", new_filename.replace(".jpg", ".txt")
-                        ),
-                        "w",
-                    ) as f:
-                        f.write(new_label_str)  # Save modified label
-    print(f"All images and labels have been flipped and saved in {output_dir}")
+    print(f"All flipped images and labels have been saved in {output_dir}")
 
 
 def convert_obb_to_aabb(root_dir: str, dest_dir: str, save_label: bool = False) -> None:

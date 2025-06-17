@@ -97,11 +97,11 @@ NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
 # Loss Function Weights
 # =======================
 ALPHA = [
-    0.94,
-    0.95,
     1.0,
-    3.15,
-    3.16,
+    1.0,
+    0.56,
+    3.33,
+    3.33,
 ]  # Values according to dataset's distribution (old_values = [1.5, 1.5, 1.5, 2.5, 2.5])
 GAMMA = 2.0
 POS_IOU_THRESH_1 = 0.6

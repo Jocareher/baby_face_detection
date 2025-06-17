@@ -38,7 +38,7 @@ def parse_args():
         "--backbone",
         type=str,
         default="densenet121",
-        choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit"],
+        choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit", "vggface2"],
         help="Backbone architecture to use",
     )
 
@@ -150,8 +150,6 @@ def main():
         out_channel=args.out_channel,
         pretrained=False,
     ).to(device)
-
-    reset_heads(model)  # reset classification/regression heads
 
     print(f"[INFO] Loading weights from: {args.checkpoint}")
     # Load the saved model weights from the checkpoint file

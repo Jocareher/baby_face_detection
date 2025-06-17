@@ -222,76 +222,62 @@ def run_inference(
                     score_det = float(pred_scores[det_idx].item())
                     cls_det = int(pred_labels[det_idx].item())
 
-                    # Filter GTs of the same class that are not yet matched
-                    mask_same_cls = (gt_labels.to(device) == cls_det) & (~gt_matched)
-                    if mask_same_cls.sum() > 0:
-                        ious_same_cls = iou_matrix[mask_same_cls, det_idx]
-                        best_iou_val, idx_in_mask = torch.max(ious_same_cls, dim=0)
-                        gt_idxs = torch.nonzero(mask_same_cls, as_tuple=False).view(-1)
-                        best_gt_idx = int(gt_idxs[idx_in_mask].item())
-                    else:
-                        best_iou_val = torch.tensor(0.0, device=device)
-                        best_gt_idx = -1
+                    # 1) Get IoU with all unmatched GT boxes
+                    unmatched_mask = ~gt_matched
+                    ious_all = iou_matrix[
+                        :, det_idx
+                    ]  # IoUs with current detection (num_gt,)
+                    ious_all[~unmatched_mask] = -1  # Invalidate already matched GTs
+                    best_iou_val, best_gt_idx = ious_all.max(
+                        0
+                    )  # Get highest IoU and corresponding GT idx
 
                     if best_iou_val >= iou_thres:
-                        # True Positive
-                        stats[cls_det]["tp"] += 1
-                        gt_matched[best_gt_idx] = True
+                        true_cls = int(
+                            gt_labels[best_gt_idx]
+                        )  # Class of best matching GT box
+                        if cls_det == true_cls:
+                            # -------------------- TRUE POSITIVE --------------------
+                            # Update metrics for the correct class prediction
+                            stats[true_cls]["tp"] += 1
+                            gt_matched[best_gt_idx] = True
 
-                        iou_errs[cls_det].append(float(best_iou_val.item()))
-                        raw_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
-                        wrapped = wrap_to_pi(raw_diff)
-                        angle_errs[cls_det].append(
-                            float((wrapped.abs() * 180.0 / math.pi).item())
-                        )
+                            # Store metrics for PR curve
+                            per_true[true_cls].append(1)
+                            per_score[true_cls].append(float(score_det))
+                            y_true.append(true_cls)  # For confusion matrix diagonal
+                            y_pred.append(true_cls)
 
-                        # For PR curve: TP = 1
-                        per_true[cls_det].append(1)
-                        per_score[cls_det].append(score_det)
+                            # Store geometric error metrics
+                            iou_errs[true_cls].append(float(best_iou_val))
+                            angle_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
+                            angle_errs[true_cls].append(
+                                float(wrap_to_pi(angle_diff).abs() * 180 / math.pi)
+                            )
 
-                        # For F1 vs. threshold
-                        all_gts.append(cls_det)  # Ground truth label
-                        all_preds.append(cls_det)  # Predicted label
-                        all_scores.append(score_det)  # Prediction score
+                        else:
+                            # -------------- CLASS CONFUSION ERROR -----------------
+                            # False Positive for predicted class
+                            stats[cls_det]["fp"] += 1
+                            per_true[cls_det].append(0)
+                            per_score[cls_det].append(float(score_det))
 
-                        # For confusion matrix
-                        y_true.append(cls_det)
-                        y_pred.append(cls_det)
+                            # False Negative for true class
+                            stats[true_cls]["fn"] += 1
+                            gt_matched[best_gt_idx] = True  # Mark GT as used
+
+                            # Update confusion matrix
+                            y_true.append(true_cls)  # row = true class
+                            y_pred.append(cls_det)  # col = predicted class
                     else:
-                        # False Positive
+                        # -------------------- BACKGROUND FALSE POSITIVE --------------------
+                        # Detection doesn't match any GT with sufficient IoU
                         stats[cls_det]["fp"] += 1
                         per_true[cls_det].append(0)
-                        per_score[cls_det].append(score_det)
+                        per_score[cls_det].append(float(score_det))
 
-                        # For F1 vs. threshold
-                        all_gts.append(-1)  # Background
-                        all_preds.append(cls_det)
-                        all_scores.append(score_det)
-
-                        # Confusion matrix: (row=BG, col=cls_det)
-                        y_true.append(-1)
-                        y_pred.append(cls_det)
-
-                # Handle unmatched GTs (False Negatives)
-                for i in range(num_gt):
-                    if not gt_matched[i]:
-                        cls_gt = int(gt_labels[i].item())
-                        stats[cls_gt]["fn"] += 1
-                        # Confusion matrix: (row=cls_gt, col=BG)
-                        y_true.append(cls_gt)
-                        y_pred.append(-1)
-
-                # Save qualitative sample
-                samples.append(
-                    (
-                        imgs[b].cpu(),
-                        {k: v.cpu().detach() for k, v in outputs[b].items()},
-                        fname,
-                        gt_boxes.cpu(),
-                        gt_angles.cpu(),
-                        gt_labels.cpu(),
-                    )
-                )
+                        y_true.append(-1)  # row = background
+                        y_pred.append(cls_det)  # col = predicted class
 
             # Clean up to free memory
             del imgs, outputs, targets

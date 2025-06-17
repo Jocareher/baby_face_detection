@@ -148,7 +148,7 @@ def get_train_transform(
                 #     translate_range=(-0.1, 0.1),
                 #     prob=0.3,
                 # ),
-                RandomOcclusionOBB(max_size_ratio=0.5, prob=0.3),
+                RandomOcclusionOBB(max_size_ratio=0.5, prob=0.5),
                 RandomNoiseOBB(std=10, prob=0.7),
                 RandomBlurOBB(ksize=(5, 5), prob=0.7),
                 RandomGrayOBB(prob=0.3),

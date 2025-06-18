@@ -1364,3 +1364,32 @@ def in_training_inference(
     plt.close(fig)
     model.train()
     print(f"[INFO] In-training inference saved to {out_path}")
+
+
+def load_checkpoint_for_resuming(
+    model: nn.Module, checkpoint_path: str, device: torch.device
+) -> None:
+    """
+    Loads model weights from a saved checkpoint to resume training.
+
+    Args:
+        model (nn.Module): The model to load weights into.
+        checkpoint_path (str): Path to the saved checkpoint file.
+        device (torch.device): Device to map the checkpoint (e.g., CPU or GPU).
+    """
+    print(f"[INFO] Loading model checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+
+    # Remove _orig_mod. prefix if it exists (from torch.compile)
+    if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        stripped = {}
+        for k, v in state_dict.items():
+            if k.startswith("_orig_mod."):
+                stripped[k[len("_orig_mod.") :]] = v
+            else:
+                stripped[k] = v
+        state_dict = stripped
+
+    model.load_state_dict(state_dict)
+    print("[INFO] Checkpoint successfully loaded into model. Ready to resume training.")

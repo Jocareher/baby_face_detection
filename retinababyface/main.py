@@ -24,7 +24,7 @@ from data_setup.dataset import BabyFacesDataset, make_balanced_sampler
 from data_setup.collate import custom_collate
 from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device
-from engine.train import train, EarlyStopping
+from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference
 from loss.losses import MultiTaskLoss
 from utils.visualize import visualize_and_save_dataset_in_script, create_training_gif
@@ -90,6 +90,14 @@ def parse_args():
         choices=["feature_extractor", "fine_tuning", "train_all"],
         help="How to treat the backbone parameters during training.",
     )
+
+    parser.add_argument(
+        "--resume_training",
+        type=str,
+        default=None,
+        help="Path to a checkpoint file to resume training from (e.g. run_name/checkpoint.pt).",
+    )
+
     # Training hyperparameters
     parser.add_argument(
         "--epochs",
@@ -435,6 +443,16 @@ def main():
             )
         )
     print(f"[INFO] Model summary saved to {output_dir / 'model_summary.txt'}")
+
+    # If resuming training from a checkpoint
+    if args.resume_training:
+        load_checkpoint_for_resuming(model, args.resume_training, device)
+
+    # If using OneCycleLR scheduler, warn about resuming training without scheduler state
+    if args.scheduler == "OneCycle" and args.resume_training:
+        print(
+            "[WARNING] OneCycleLR is not recommended when resuming training without scheduler state. Consider using ReduceLR or Cosine."
+        )
 
     # Compile the model if using CUDA and PyTorch 2.0 or later
     if device.type == "cuda":

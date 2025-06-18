@@ -37,16 +37,16 @@ echo "Environment is ready!"
 
 # Run training with specified arguments
 python main.py \
-    --root_dir="/home/jreyes/obbabyface_rot" \
+    --root_dir="/home/jreyes/obbabyface_rot_ext" \
     --backbone="densenet121" \
     --epochs=100 \
-    --lr=1e-3 \
-    --scheduler="OneCycle" \
+    --lr=0.00001 \
+    --scheduler="ReduceLR" \
     --patience=20 \
-    --run_name="ft_densenet" \
+    --run_name="resume_train_exp_best_map" \
     --record_metrics \
     --batch_size=32 \
-    --backbone_mode="fine_tuning" \
+    --backbone_mode="feature_extractor" \
     --clip_value=1.0 \
     --weight_decay=1e-3 \
     --lambda_face=1 \
@@ -54,3 +54,5 @@ python main.py \
     --lambda_cls=1 \
     --lambda_obb=1 \
     --out_channel=128 \
+    --balanced_sampler \
+    --resume_training="/home/jreyes/baby_face_detection/retinababyface/weights/checkpoint.pt" \

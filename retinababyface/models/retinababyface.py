@@ -18,6 +18,7 @@ from torchvision.models.feature_extraction import create_feature_extractor
 
 from .context_modules import FPN, SSH, MobileNetV1
 from .vggface_backbone import vggface2_resnet50
+from .arcface_backbone import arcface_backbone
 from data_setup.augmentations import wrap_to_pi
 import config
 
@@ -148,311 +149,35 @@ class ClassHead(nn.Module):
 
 class RetinaBabyFace(nn.Module):
     """
-    RetinaBabyFace model integrating backbone, FPN, SSH blocks,
-    and multiple prediction heads for oriented bounding box detection, angle estimation, and class prediction.
+    RetinaBabyFace model for face detection, orientation estimation and pose classification.
 
-    This model is designed for face detection and classification tasks, with additional capabilities
-    for predicting oriented bounding boxes (OBBs) and rotation angles.
+    This model combines:
+    - A feature extraction backbone (various options like ResNet50, DenseNet121, ViT, etc.)
+    - Feature Pyramid Network (FPN) for multi-scale features
+    - SSH context modules for feature refinement
+    - Multiple prediction heads:
+        - Face head for binary face/no-face detection
+        - OBB head for oriented bounding box regression
+        - Angle head for rotation angle estimation
+        - Class head for pose classification
+
+    The model processes features at 5 scales (P2-P6) through two SSH stages for refinement.
+    Predictions from both stages are combined additively for the final output.
+
+    Output Shapes:
+        - orientation_logits: (batch_size, num_anchors_total, num_classes)
+        - face_logits: (batch_size, num_anchors_total, 1)
+        - obbs: (batch_size, num_anchors_total, 8) - 4 pairs of (x,y) vertex offsets
+        - angs: (batch_size, num_anchors_total, 1) - rotation angles in [-π, π]
+
+    Supported backbones:
+        - ResNet50 (ImageNet or VGGFace2 pretrained)
+        - DenseNet121
+        - VGG16
+        - Vision Transformer (ViT)
+        - MobileNetV1
+        - ArcFace IR-SE-50
     """
-
-    def __init__(
-        self,
-        backbone_name: str = "densenet121",
-        out_channel: int = 64,
-        pretrained: bool = True,
-    ):
-        """
-        Initializes the RetinaBabyFace model.
-
-        Args:
-            backbone_name (str): Name of the backbone to use (e.g., "mobilenetv1", "resnet50", "vgg16", "densenet121", "vit").
-            out_channel (int): Number of output channels for FPN layers.
-            pretrained (bool): Whether to load pretrained weights for the backbone.
-        """
-        super().__init__()
-
-        # Build backbone and retrieve feature extractor, return layers, and in_channels_list
-        self.backbone, return_layers, in_channels_list = self.make_backbone(
-            backbone_name, pretrained
-        )
-
-        # Feature Pyramid Network (FPN) for multi-scale feature aggregation
-        self.fpn = FPN(in_channels_list, out_channel)
-
-        # SSH layers applied on each FPN output for enhanced feature extraction
-        self.ssh1_stage1 = SSH(out_channel, out_channel)  # P3
-        self.ssh1_stage2 = SSH(out_channel, out_channel)
-
-        self.ssh2_stage1 = SSH(out_channel, out_channel)  # P4
-        self.ssh2_stage2 = SSH(out_channel, out_channel)
-
-        self.ssh3_stage1 = SSH(out_channel, out_channel)  # P5
-        self.ssh3_stage2 = SSH(out_channel, out_channel)
-
-        self.ssh4_stage1 = SSH(out_channel, out_channel)  # P2
-        self.ssh4_stage2 = SSH(out_channel, out_channel)
-
-        self.ssh5_stage1 = SSH(out_channel, out_channel)  # P6
-        self.ssh5_stage2 = SSH(out_channel, out_channel)
-
-        # Prediction heads:
-        # - OBB head for predicting 8 vertex displacements of oriented bounding boxes
-        # - Angle head for predicting rotation angles of bounding boxes
-        # - Class head for predicting class logits
-        # - Face head for predicting face/no-face logits
-        self.obb_head = OBBHead(out_channel)
-        self.angle_head = AngleHead(out_channel)
-        self.class_head = ClassHead(out_channel)
-        self.face_head = FaceHead(out_channel)
-
-    def make_backbone(
-        self, name: str, pretrained: bool
-    ) -> tuple[nn.Module, dict, list[int]]:
-        """
-        Creates and returns a feature extractor from a specified backbone.
-
-        Args:
-            name (str): Name of the backbone model (e.g., "resnet50", "vgg16", "densenet121", "vit", "mobilenetv1").
-            pretrained (bool): Whether to use pretrained weights.
-
-        Returns:
-            Tuple containing:
-                - feature extractor (nn.Module): Backbone feature extractor.
-                - return_layers (dict): Mapping of layer names to output names.
-                - in_channels_list (list[int]): Channels for each returned feature map.
-        """
-        if name == "resnet50":
-            # ResNet50 backbone
-            weights = ResNet50_Weights.DEFAULT if pretrained else None
-            model = resnet50(weights=weights)
-            return_layers = {
-                "layer1": "feat1",  # C2
-                "layer2": "feat2",  # C3
-                "layer3": "feat3",  # C4
-                "layer4": "feat4",  # C5
-            }
-            in_channels_list = [256, 512, 1024, 2048]
-            feat_ext = create_feature_extractor(model, return_layers)
-
-        elif name == "vgg16":
-            # VGG16 backbone
-            weights = VGG16_Weights.DEFAULT if pretrained else None
-            model = vgg16(weights=weights).features
-            return_layers = {
-                "4": "feat1",  # C2
-                "9": "feat2",  # C3
-                "16": "feat3",  # C4
-                "23": "feat4",  # C5
-            }
-            in_channels_list = [128, 256, 512, 512]
-            feat_ext = create_feature_extractor(model, return_layers)
-
-        elif name == "densenet121":
-            # DenseNet121 backbone
-            weights = DenseNet121_Weights.DEFAULT if pretrained else None
-            model = densenet121(weights=weights).features
-            return_layers = {
-                "denseblock1": "feat1",  # C2
-                "denseblock2": "feat2",  # C3
-                "denseblock3": "feat3",  # C4
-                "denseblock4": "feat4",  # C5
-            }
-            in_channels_list = [256, 512, 1024, 1024]
-            feat_ext = create_feature_extractor(model, return_layers)
-
-        elif name == "vit":
-            # Vision Transformer (ViT) backbone
-            weights = ViT_B_16_Weights.DEFAULT if pretrained else None
-            vit = vit_b_16(weights=weights)
-            return_layers = {
-                "encoder.layers.encoder_layer_2": "feat1",  # C2
-                "encoder.layers.encoder_layer_5": "feat2",  # C3
-                "encoder.layers.encoder_layer_8": "feat3",  # C4
-                "encoder.layers.encoder_layer_11": "feat4",  # C5
-            }
-            in_channels_list = [768, 768, 768, 768]
-            feat_seq = create_feature_extractor(vit, return_layers)
-            feat_ext = ViTFeature2D(feat_seq, patch_size=16)
-
-        elif name == "vggface2":
-            # VGGFace2 ResNet50 backbone
-            model = vggface2_resnet50(
-                include_top=False
-            )  # Load ResNet50 architecture without the top FC layers.
-
-            if pretrained:
-                # Load pretrained weights for VGGFace2 ResNet50 backbone
-                weights_path = os.path.join(
-                    os.path.dirname(__file__),
-                    "..",
-                    "weights",
-                    "resnet50_scratch_weight.pth",
-                )
-                weights_path = os.path.abspath(weights_path)  # Convert to absolute path
-                state = torch.load(
-                    weights_path, map_location="cpu"
-                )  # Load weights from file
-                model.load_state_dict(
-                    state, strict=False
-                )  # Load weights, ignoring FC layer weights
-                print(f"[INFO] Loaded VGGFace2 ResNet50 weights from: {weights_path}.")
-
-            # ------------------------------------------------------------------
-            # Map layers for Feature Pyramid Network (FPN)
-            # ------------------------------------------------------------------
-            return_layers = {
-                "layer1": "feat1",  # C2: First feature map
-                "layer2": "feat2",  # C3: Second feature map
-                "layer3": "feat3",  # C4: Third feature map
-                "layer4": "feat4",  # C5: Fourth feature map
-            }
-            in_channels_list = [
-                256,
-                512,
-                1024,
-                2048,
-            ]  # Channel dimensions for each feature map
-            feat_ext = create_feature_extractor(
-                model, return_layers
-            )  # Create feature extractor from backbone
-
-        else:
-            # MobileNetV1 backbone
-            model = MobileNetV1()
-            return_layers = {
-                "stage1": "feat1",  # C2: channels=32
-                "stage2": "feat2",  # C3: channels=64
-                "stage3": "feat3",  # C4: channels=128
-                "stage4": "feat4",  # C5: channels=256
-            }
-            in_channels_list = [32, 64, 128, 256]
-            feat_ext = create_feature_extractor(model, return_layers)
-
-        return feat_ext, return_layers, in_channels_list
-
-    def forward(self, x: torch.Tensor):
-        """
-        Forward pass of the RetinaBabyFace model.
-
-        This method performs multi-scale feature extraction, context refinement, and prediction
-        across multiple levels of the feature pyramid. It integrates outputs from two stages
-        of SSH refinement and combines predictions from both stages for final outputs.
-
-        Args:
-            x (torch.Tensor): Input image tensor of shape (B, C, H, W).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-                - orientation_logits (torch.Tensor): Class logits for orientation prediction.
-                - face_logits (torch.Tensor): Binary logits for face/no-face prediction.
-                - obbs (torch.Tensor): Oriented bounding box (OBB) vertex displacements.
-                - angs (torch.Tensor): Rotation angles of OBBs wrapped to [-π, π].
-        """
-        # 1) Extract 4 feature maps C2..C5 from the backbone
-        feats = self.backbone(x)
-
-        # 2) Pass through FPN → obtain P2..P6 feature pyramid levels
-        p2, p3, p4, p5, p6 = self.fpn(feats)
-
-        # 3) Context stage 1 (SSH stage1) applied to each pyramid level
-        c2_1 = self.ssh4_stage1(p2)  # P2 → c2_1
-        c3_1 = self.ssh1_stage1(p3)  # P3 → c3_1
-        c4_1 = self.ssh2_stage1(p4)  # P4 → c4_1
-        c5_1 = self.ssh3_stage1(p5)  # P5 → c5_1
-        c6_1 = self.ssh5_stage1(p6)  # P6 → c6_1
-
-        # 4) Intermediate predictions from stage 1
-        cls2_1 = self.class_head(c2_1)  # Class logits for P2
-        face2_1 = self.face_head(c2_1)  # Face logits for P2
-        obb2_1 = self.obb_head(c2_1)  # OBB vertex displacements for P2
-        ang2_1 = self.angle_head(c2_1)  # Rotation angles for P2
-
-        cls3_1 = self.class_head(c3_1)  # Class logits for P3
-        face3_1 = self.face_head(c3_1)  # Face logits for P3
-        obb3_1 = self.obb_head(c3_1)  # OBB vertex displacements for P3
-        ang3_1 = self.angle_head(c3_1)  # Rotation angles for P3
-
-        cls4_1 = self.class_head(c4_1)  # Class logits for P4
-        face4_1 = self.face_head(c4_1)  # Face logits for P4
-        obb4_1 = self.obb_head(c4_1)  # OBB vertex displacements for P4
-        ang4_1 = self.angle_head(c4_1)  # Rotation angles for P4
-
-        cls5_1 = self.class_head(c5_1)  # Class logits for P5
-        face5_1 = self.face_head(c5_1)  # Face logits for P5
-        obb5_1 = self.obb_head(c5_1)  # OBB vertex displacements for P5
-        ang5_1 = self.angle_head(c5_1)  # Rotation angles for P5
-
-        cls6_1 = self.class_head(c6_1)  # Class logits for P6
-        face6_1 = self.face_head(c6_1)  # Face logits for P6
-        obb6_1 = self.obb_head(c6_1)  # OBB vertex displacements for P6
-        ang6_1 = self.angle_head(c6_1)  # Rotation angles for P6
-
-        # 5) Context stage 2 (SSH stage2) → refinement
-        c2_2 = self.ssh4_stage2(c2_1)  # Refined P2
-        c3_2 = self.ssh1_stage2(c3_1)  # Refined P3
-        c4_2 = self.ssh2_stage2(c4_1)  # Refined P4
-        c5_2 = self.ssh3_stage2(c5_1)  # Refined P5
-        c6_2 = self.ssh5_stage2(c6_1)  # Refined P6
-
-        # 6) Predictions from stage 2
-        cls2_2 = self.class_head(c2_2)  # Refined class logits for P2
-        face2_2 = self.face_head(c2_2)  # Refined face logits for P2
-        obb2_2 = self.obb_head(c2_2)  # Refined OBB vertex displacements for P2
-        ang2_2 = self.angle_head(c2_2)  # Refined rotation angles for P2
-
-        cls3_2 = self.class_head(c3_2)  # Refined class logits for P3
-        face3_2 = self.face_head(c3_2)  # Refined face logits for P3
-        obb3_2 = self.obb_head(c3_2)  # Refined OBB vertex displacements for P3
-        ang3_2 = self.angle_head(c3_2)  # Refined rotation angles for P3
-
-        cls4_2 = self.class_head(c4_2)  # Refined class logits for P4
-        face4_2 = self.face_head(c4_2)  # Refined face logits for P4
-        obb4_2 = self.obb_head(c4_2)  # Refined OBB vertex displacements for P4
-        ang4_2 = self.angle_head(c4_2)  # Refined rotation angles for P4
-
-        cls5_2 = self.class_head(c5_2)  # Refined class logits for P5
-        face5_2 = self.face_head(c5_2)  # Refined face logits for P5
-        obb5_2 = self.obb_head(c5_2)  # Refined OBB vertex displacements for P5
-        ang5_2 = self.angle_head(c5_2)  # Refined rotation angles for P5
-
-        cls6_2 = self.class_head(c6_2)  # Refined class logits for P6
-        face6_2 = self.face_head(c6_2)  # Refined face logits for P6
-        obb6_2 = self.obb_head(c6_2)  # Refined OBB vertex displacements for P6
-        ang6_2 = self.angle_head(c6_2)  # Refined rotation angles for P6
-
-        # 7) Combine stage1 + stage2 predictions (additive refinement)
-        cls2_f = cls2_1 + cls2_2
-        face2_f = face2_1 + face2_2
-        obb2_f = obb2_1 + obb2_2
-        ang2_f = wrap_to_pi(ang2_1 + ang2_2)
-
-        cls3_f = cls3_1 + cls3_2
-        face3_f = face3_1 + face3_2
-        obb3_f = obb3_1 + obb3_2
-        ang3_f = wrap_to_pi(ang3_1 + ang3_2)
-
-        cls4_f = cls4_1 + cls4_2
-        face4_f = face4_1 + face4_2
-        obb4_f = obb4_1 + obb4_2
-        ang4_f = wrap_to_pi(ang4_1 + ang4_2)
-
-        cls5_f = cls5_1 + cls5_2
-        face5_f = face5_1 + face5_2
-        obb5_f = obb5_1 + obb5_2
-        ang5_f = wrap_to_pi(ang5_1 + ang5_2)
-
-        cls6_f = cls6_1 + cls6_2
-        face6_f = face6_1 + face6_2
-        obb6_f = obb6_1 + obb6_2
-        ang6_f = wrap_to_pi(ang6_1 + ang6_2)
-
-        # 8) Concatenate predictions across the 5 pyramid levels
-        orientation_logits = torch.cat([cls2_f, cls3_f, cls4_f, cls5_f, cls6_f], dim=1)
-        face_logits = torch.cat([face2_f, face3_f, face4_f, face5_f, face6_f], dim=1)
-        obbs = torch.cat([obb2_f, obb3_f, obb4_f, obb5_f, obb6_f], dim=1)
-        angs = torch.cat([ang2_f, ang3_f, ang4_f, ang5_f, ang6_f], dim=1)
-
-        return orientation_logits, face_logits, obbs, angs
 
 
 class ViTFeature2D(nn.Module):

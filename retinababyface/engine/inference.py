@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple, List, Dict, Any, Union
 
 import torch
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import patches, patheffects
@@ -1005,3 +1006,143 @@ def inference(
         "f1_threshold_figure": fig_f1,
         "grid_figure": fig_grid,
     }
+
+
+def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
+    """
+    Creates and saves training/validation curves from a model training log CSV.
+
+    Generates separate plots for different loss components and metrics:
+    - Face detection loss
+    - Classification loss
+    - Angular regression loss
+    - Oriented bounding box (OBB) loss
+    - Total combined loss
+    - Mean Average Precision (mAP)
+
+    Each plot shows training and validation curves (except mAP which is validation only)
+    with epochs on x-axis and the corresponding metric on y-axis.
+
+    Args:
+        csv_path (str): Path to CSV file containing training logs with columns:
+            epoch, train_face_loss, test_face_loss, train_class_loss, etc.
+        output_dir (Path): Directory where plots will be saved under 'curves' subfolder.
+            Will be created if it doesn't exist.
+    """
+    # Read training log data
+    df = pd.read_csv(csv_path)
+    curves_path = output_dir / "curves"
+    curves_path.mkdir(parents=True, exist_ok=True)
+
+    def make_plot(train_col: str, val_col: str, title: str, ylabel: str, filename: str):
+        """Helper function to create and save a single training/validation curve plot"""
+        plt.figure(figsize=(10, 6), facecolor="white")
+
+        # Plot training curve
+        plt.plot(
+            df["epoch"],
+            df[train_col],
+            label="Training",
+            color="#2ecc71",  # Bright green
+            linewidth=2,
+            marker="o",
+            markersize=6,
+            alpha=0.8,
+        )
+
+        # Plot validation curve
+        plt.plot(
+            df["epoch"],
+            df[val_col],
+            label="Validation",
+            color="#e74c3c",  # Bright red
+            linewidth=2,
+            marker="s",
+            markersize=6,
+            alpha=0.8,
+        )
+
+        # Styling
+        plt.xlabel("Epoch", fontsize=12, labelpad=10)
+        plt.ylabel(ylabel, fontsize=12, labelpad=10)
+        plt.title(title, fontsize=14, pad=15)
+
+        # Grid and background
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.gca().set_facecolor("#f8f9fa")  # Light gray background
+
+        # Legend with semi-transparent background
+        plt.legend(
+            framealpha=0.95,
+            facecolor="white",
+            edgecolor="none",
+            fontsize=10,
+            loc="upper right",
+        )
+
+        plt.tight_layout()
+        plt.savefig(curves_path / f"{filename}.png", dpi=300, bbox_inches="tight")
+        plt.close()
+
+    # Generate individual loss component plots
+    make_plot(
+        "train_face_loss",
+        "test_face_loss",
+        "Face Detection Loss Over Training",
+        "Loss",
+        "face_curves",
+    )
+    make_plot(
+        "train_class_loss",
+        "test_class_loss",
+        "Classification Loss Over Training",
+        "Loss",
+        "class_curves",
+    )
+    make_plot(
+        "train_angular_loss",
+        "test_angular_loss",
+        "Angular Regression Loss Over Training",
+        "Loss",
+        "angle_curves",
+    )
+    make_plot(
+        "train_obb_loss",
+        "test_obb_loss",
+        "OBB Regression Loss Over Training",
+        "Loss",
+        "obb_curves",
+    )
+    make_plot(
+        "train_total_loss",
+        "test_total_loss",
+        "Total Combined Loss Over Training",
+        "Loss",
+        "total_curves",
+    )
+
+    # mAP plot (validation only)
+    plt.figure(figsize=(10, 6), facecolor="white")
+    plt.plot(
+        df["epoch"],
+        df["test_mAP"],
+        label="Validation mAP",
+        color="#3498db",  # Bright blue
+        linewidth=2.5,
+        marker="D",
+        markersize=7,
+    )
+
+    plt.xlabel("Epoch", fontsize=12, labelpad=10)
+    plt.ylabel("mAP", fontsize=12, labelpad=10)
+    plt.title("Mean Average Precision Over Training", fontsize=14, pad=15)
+
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.gca().set_facecolor("#f8f9fa")
+    plt.legend(framealpha=0.95, facecolor="white", edgecolor="none", fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(curves_path / "map.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"[INFO] Training curves saved to: {curves_path}")

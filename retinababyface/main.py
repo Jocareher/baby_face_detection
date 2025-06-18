@@ -25,7 +25,7 @@ from data_setup.collate import custom_collate
 from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
-from engine.inference import inference
+from engine.inference import inference, plot_training_curves_from_csv
 from loss.losses import MultiTaskLoss
 from utils.visualize import visualize_and_save_dataset_in_script, create_training_gif
 import config
@@ -601,6 +601,10 @@ def main():
     figures["iou_boxplot_figure"].savefig(figures_dir / "iou_boxplot.png", dpi=150)
     figures["angle_boxplot_figure"].savefig(figures_dir / "angle_boxplot.png", dpi=150)
     figures["f1_threshold_figure"].savefig(figures_dir / "f1_threshold.png", dpi=150)
+
+    # Plot training curves from the CSV file
+    print(f"[INFO] Plotting training curves from {csv_path}")
+    plot_training_curves_from_csv(csv_path, output_dir)
 
     print(f"[INFO] All figures saved to {figures_dir}")
     print(f"[INFO] All predictions saved to {predictions_dir}")

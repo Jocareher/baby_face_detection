@@ -188,7 +188,7 @@ def main():
     figures = inference(
         model=model,
         test_loader=test_loader,
-        output_dir=args.output_dir,
+        output_dir=predictions_dir,
         device=device,
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,

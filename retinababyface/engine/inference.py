@@ -1002,7 +1002,7 @@ def inference(
     )
 
     print("[STEP 4] Saving individual prediction images...")
-    save_individual_predictions(results["samples"], labels_map, pred_dir, mean, std)
+    save_individual_predictions(results["samples"], labels_map, output_dir, mean, std)
 
     print("[DONE] Inference and reporting completed.")
     return {

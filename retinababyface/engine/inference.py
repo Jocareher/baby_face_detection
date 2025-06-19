@@ -277,6 +277,10 @@ def run_inference(
                                 float(wrap_to_pi(angle_diff).abs() * 180.0 / math.pi)
                             )
 
+                            all_gts.append(true_cls)
+                            all_preds.append(true_cls)
+                            all_scores.append(score_det)
+
                         else:
                             # -------------- CLASS CONFUSION ERROR -----------------
                             # Wrong class but good localization
@@ -289,6 +293,10 @@ def run_inference(
 
                             y_true.append(true_cls)  # GT class row
                             y_pred.append(cls_det)  # Predicted class column
+
+                            all_gts.append(true_cls)
+                            all_preds.append(cls_det)
+                            all_scores.append(score_det)
                     else:
                         # ---------------- BACKGROUND FALSE POSITIVE --------------
                         # No matching GT with sufficient IoU
@@ -298,6 +306,10 @@ def run_inference(
 
                         y_true.append(-1)  # Background row
                         y_pred.append(cls_det)  # Predicted class column
+
+                        all_gts.append(-1)
+                        all_preds.append(true_cls)
+                        all_scores.append(score_det)
 
                 # ---- Process unmatched GT boxes as False Negatives -------------
                 for i in range(num_gt):
@@ -908,10 +920,6 @@ def inference(
             - IoU and angle boxplots
             - Qualitative grid
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    pred_dir = output_dir / "predictions"
-    pred_dir.mkdir(exist_ok=True)
 
     print("[STEP 1] Preparing anchors...")
     resize_size, anchors_xy, _ = prepare_anchors(

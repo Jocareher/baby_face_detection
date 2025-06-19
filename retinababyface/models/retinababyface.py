@@ -339,32 +339,31 @@ class RetinaBabyFace(nn.Module):
             feat_ext = create_feature_extractor(
                 model, return_layers
             )  # Create feature extractor from backbone
-        
+
         elif name == "arcface":
             # ArcFace IR-SE-50 backbone (Insightface implementation)
             # Load pretrained weights from the IR-SE-50 model trained with ArcFace loss
             weights_path = os.path.join(
-            os.path.dirname(__file__),
-            "..",
-            "weights",
-            "model_ir_se50.pth",
+                os.path.dirname(__file__),
+                "..",
+                "weights",
+                "model_ir_se50.pth",
             )
             weights_path = os.path.abspath(weights_path)  # Get absolute path
-            model = arcface_backbone(
-            weights_path if pretrained else None)
+            model = arcface_backbone(weights_path if pretrained else None)
 
             # Map layers from IR-SE-50 body to FPN feature extraction
             # The indices correspond to where each stage ends in model.body
             return_layers = {
-            "body.2" :  "feat1",   # Stage 1 (C2): 64 channels
-            "body.6" :  "feat2",   # Stage 2 (C3): 128 channels  
-            "body.20":  "feat3",   # Stage 3 (C4): 256 channels
-            "body.23":  "feat4",   # Stage 4 (C5): 512 channels
+                "body.2": "feat1",  # Stage 1 (C2): 64 channels
+                "body.6": "feat2",  # Stage 2 (C3): 128 channels
+                "body.20": "feat3",  # Stage 3 (C4): 256 channels
+                "body.23": "feat4",  # Stage 4 (C5): 512 channels
             }
-            
+
             # Output channels for each feature map
-            in_channels_list = [64,128,256,512]
-            
+            in_channels_list = [64, 128, 256, 512]
+
             # Create feature extractor using torchvision's helper
             feat_ext = create_feature_extractor(model, return_layers)
 

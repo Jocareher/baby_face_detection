@@ -39,14 +39,14 @@ echo "Environment is ready!"
 python main.py \
     --root_dir="/home/jreyes/obbabyface_rot_ext" \
     --backbone="densenet121" \
-    --epochs=100 \
-    --lr=0.00001 \
-    --scheduler="ReduceLR" \
+    --epochs=120 \
+    --lr=3e-4 \
+    --scheduler="Cosine" \
     --patience=20 \
-    --run_name="resume_train_exp_best_map" \
+    --run_name="dense_fine_rotvect_cosine_16batch" \
     --record_metrics \
-    --batch_size=32 \
-    --backbone_mode="feature_extractor" \
+    --batch_size=16 \
+    --backbone_mode="fine_tuning" \
     --clip_value=1.0 \
     --weight_decay=1e-3 \
     --lambda_face=1 \
@@ -55,4 +55,7 @@ python main.py \
     --lambda_obb=1 \
     --out_channel=128 \
     --balanced_sampler \
-    --resume_training="/home/jreyes/baby_face_detection/retinababyface/weights/checkpoint.pt" \
+    --rot_loss_type="vector" \
+    --alpha=0.7,0.7,0.25,1.6,1.6 \
+    --optimizer="ADAMW" \
+    #--resume_training="/home/jreyes/baby_face_detection/retinababyface/weights/checkpoint.pt" \

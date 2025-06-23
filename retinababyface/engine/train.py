@@ -2,13 +2,13 @@ import time
 import csv
 import os
 import random
+from contextlib import nullcontext
 from typing import List, Optional, Dict, Tuple, Union
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler, autocast
 import wandb
 from torch.utils.data import DataLoader
 from torch.optim import Adam, SGD
@@ -773,61 +773,76 @@ def train_step(
     angular_loss_sum = 0.0
     total_batches = 0
 
+    # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
     use_amp = device.type == "cuda"
-    scaler = GradScaler(enabled=use_amp)
 
+    if use_amp:
+        try:
+            from torch.amp import GradScaler, autocast  # PyTorch >= 2.0
+        except ImportError:
+            from torch.cuda.amp import GradScaler, autocast  # PyTorch < 2.0 fallback
+        scaler = GradScaler()  # Scales gradients to prevent underflow in float16
+        autocast_context = autocast()  # Context manager for mixed precision
+        print("[INFO] Using Automatic Mixed Precision (AMP) for training.")
+    else:
+        scaler = None
+        autocast_context = nullcontext()  # No-op context for CPU or no AMP
+
+    # Progress bar for training batches
     bar = tqdm(
         train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True
     )
+
     for batch in bar:
-        images = batch["image"].to(device)  # Move images to the device.
+        images = batch["image"].to(device)  # Move images to device (CPU/GPU)
         targets_raw = batch["target"]
         targets = build_multitask_targets(
             targets_raw, device
-        )  # Process targets for multi-task learning.
+        )  # Prepare targets for loss
 
-        optimizer.zero_grad()  # Zero the gradients.
-        anchors_xy, anchors_xywhr = anchors  #
-        batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
+        optimizer.zero_grad()  # Reset gradients before backward pass
+        anchors_xy, anchors_xywhr = anchors
+        batch_anchors = anchors_xy.unsqueeze(0).repeat(
+            images.size(0), 1, 1
+        )  # Expand anchors for batch
+        image_sizes = [(images.shape[3], images.shape[2])] * images.size(
+            0
+        )  # List of image sizes per batch
 
-        # Forward pass with automatic mixed precision (AMP) if enabled
-        # This helps speed up training and reduce memory usage on GPUs.
-        with autocast(device_type="cuda", enabled=use_amp):
-            pred = model(images)  # Forward pass.
-            image_sizes = [(images.shape[3], images.shape[2])] * images.size(
-                0
-            )  # [(W, H), ...]
+        with autocast_context:  # Enable mixed precision if AMP is used
+            pred = model(images)  # Forward pass
             loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
                 pred, targets, batch_anchors, anchors_xywhr, image_sizes
-            )  # Calculate loss.
+            )
 
-        # Scale the loss for AMP training
-        scaler.scale(loss).backward()  # Backward pass.
+        if use_amp:
+            scaler.scale(loss).backward()  # Backward pass with gradient scaling
 
-        # Clip gradients if specified
-        # This helps prevent exploding gradients, especially in deep networks.
-        # It can be done by norm or by value.
-        # "Norm" clips gradients by their L2 norm, while "Value" clips them by a fixed value.
-        # This is useful to stabilize training and prevent large updates.
-        if clip_value is not None:
-            # Unscale gradients before clipping
-            # This is necessary when using AMP to ensure gradients are in the correct scale.
-            scaler.unscale_(optimizer)
-            # Clip gradients based on the specified mode
-            if grad_clip_mode == "Norm":
-                clip_grad_norm_(model.parameters(), clip_value)
-            elif grad_clip_mode == "Value":
-                clip_grad_value_(model.parameters(), clip_value)
+            if clip_value is not None:
+                scaler.unscale_(optimizer)  # Unscale gradients before clipping
+                if grad_clip_mode == "Norm":
+                    clip_grad_norm_(model.parameters(), clip_value)  # Clip by norm
+                elif grad_clip_mode == "Value":
+                    clip_grad_value_(model.parameters(), clip_value)  # Clip by value
 
-        # Step the optimizer with scaled gradients
-        # This applies the gradients to the model parameters.
-        # The scaler helps to avoid overflow in AMP training.
-        scaler.step(optimizer)
-        scaler.update()
+            scaler.step(optimizer)  # Optimizer step with scaled gradients
+            scaler.update()  # Update the scaler for next iteration
+        else:
+            loss.backward()  # Standard backward pass
 
+            if clip_value is not None:
+                if grad_clip_mode == "Norm":
+                    clip_grad_norm_(model.parameters(), clip_value)  # Clip by norm
+                elif grad_clip_mode == "Value":
+                    clip_grad_value_(model.parameters(), clip_value)  # Clip by value
+
+            optimizer.step()  # Optimizer step
+
+        # Step the OneCycleLR scheduler after every batch if used
         if scheduler is not None and isinstance(scheduler, lr_scheduler.OneCycleLR):
-            scheduler.step()  # Update learning rate if using OneCycleLR scheduler.
+            scheduler.step()
 
+        # Accumulate losses for reporting
         total_loss_sum += loss.item()
         class_loss_sum += loss_class
         face_loss_sum += loss_face
@@ -837,6 +852,7 @@ def train_step(
 
     bar.close()
 
+    # Compute average losses and current learning rate for reporting
     current_lr = optimizer.param_groups[0]["lr"]  # Get current learning rate.
     avg_total_loss = total_loss_sum / total_batches
     avg_class_loss = class_loss_sum / total_batches

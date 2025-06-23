@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import GradScaler, autocast
 import wandb
 from torch.utils.data import DataLoader
 from torch.optim import Adam, SGD
@@ -18,12 +18,10 @@ import tqdm.auto as tqdm_auto
 from torch.nn import functional as F
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon
-from sklearn.metrics import average_precision_score
 
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
 from models.anchors import AnchorGeneratorOBB, get_feature_map_shapes
-from models.retinababyface import ViTFeature2D
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
 from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
@@ -776,7 +774,7 @@ def train_step(
     total_batches = 0
 
     use_amp = device.type == "cuda"
-    scaler = GradScaler(enabled=use_amp)
+    scaler = GradScaler(device_type="cuda", enabled=use_amp)
 
     bar = tqdm(
         train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True
@@ -794,7 +792,7 @@ def train_step(
 
         # Forward pass with automatic mixed precision (AMP) if enabled
         # This helps speed up training and reduce memory usage on GPUs.
-        with autocast(enabled=use_amp):
+        with autocast(device_type="cuda", enabled=use_amp):
             pred = model(images)  # Forward pass.
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(
                 0

@@ -782,7 +782,9 @@ def train_step(
         except ImportError:
             from torch.cuda.amp import GradScaler, autocast  # PyTorch < 2.0 fallback
         scaler = GradScaler()  # Scales gradients to prevent underflow in float16
-        autocast_context = autocast(device_type="cuda", enabled=True)  # Context manager for mixed precision
+        autocast_context = autocast(
+            device_type="cuda", enabled=True
+        )  # Context manager for mixed precision
         print("[INFO] Using Automatic Mixed Precision (AMP) for training.")
     else:
         scaler = None

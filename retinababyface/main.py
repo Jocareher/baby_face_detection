@@ -135,8 +135,8 @@ def parse_args():
         "--optimizer",
         type=str,
         default=config.DEFAULT_OPTIMIZER,
-        choices=["ADAM", "SGD"],
-        help="Optimizer to use: ADAM or SGD.",
+        choices=["ADAM", "SGD", "ADAMW", "RADAM"],
+        help="Optimizer to use: ADAM, ADAMW, RADAM, or SGD.",
     )
     parser.add_argument(
         "--scheduler",
@@ -172,6 +172,13 @@ def parse_args():
         default=config.OBB_LOSS_TYPE,
         choices=["l1", "smooth_l1"],
         help="Type of loss to use for oriented bounding box regression (default: L1)",
+    )
+    parser.add_argument(
+        "--rot_loss_type",
+        type=str,
+        default=config.ROT_LOSS_TYPE,
+        choices=["cosine", "vector"],
+        help="Type of loss to use for rotation angle regression (default: cosine)",
     )
     parser.add_argument(
         "--lambda_cls",
@@ -480,6 +487,7 @@ def main():
     # Initialize the multi-task loss function with specified weights and thresholds
     multitask_loss = MultiTaskLoss(
         args.obb_loss_type,
+        args.rot_loss_type,
         args.lambda_cls,
         args.lambda_obb,
         args.lambda_rot,

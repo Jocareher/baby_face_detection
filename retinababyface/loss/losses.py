@@ -99,15 +99,29 @@ class FocalLoss(nn.Module):
 
 class RotationLoss(nn.Module):
     """
-    Module for calculating the rotation loss between predicted and ground truth angles.
-    The loss is defined as:
-        L_rot = 1 - cos(pred_angle - gt_angle)
-    This loss penalizes the difference between predicted and ground truth angles,
-    with a higher loss for larger differences.
+    Computes the loss between predicted and ground-truth rotation angles.
+
+    Supports two modes:
+        - "cosine": Uses the cosine similarity loss, defined as L_rot = 1 - cos(pred_angle - gt_angle).
+          This penalizes the angular difference, with a minimum at zero difference and a maximum at pi.
+        - "vector": Treats angles as 2D unit vectors (sin, cos) and computes the mean squared error (MSE)
+          between predicted and ground-truth vectors. This is equivalent to minimizing the squared Euclidean
+          distance on the unit circle.
+
+    Args:
+        mode (str): Loss mode, either "cosine" or "vector".
+            - "cosine": L_rot = 1 - cos(pred_angle - gt_angle)
+            - "vector": L_rot = MSE([sin(pred), cos(pred)], [sin(gt), cos(gt)])
+
+    Usage:
+        loss_fn = RotationLoss(mode="cosine")
+        loss = loss_fn(pred_angles, gt_angles, valid_mask)
     """
 
-    def __init__(self):
+    def __init__(self, mode: str = "cosine"):
         super().__init__()
+        assert mode in {"cosine", "vector"}, "mode must be 'cosine' or 'vector'"
+        self.mode = mode
 
     def forward(
         self,
@@ -116,30 +130,36 @@ class RotationLoss(nn.Module):
         valid_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
-        Calculates the rotation loss.
-
-        The loss function is defined as:
-        L_rot = 1 - cos(pred_angle - gt_angle)
-
-        This loss penalizes the difference between predicted and ground truth angles,
-        with a higher loss for larger differences.
+        Computes the rotation loss between predicted and ground-truth angles.
 
         Args:
-            pred_angles (torch.Tensor): Predicted angles tensor of shape (B, N, 1).
-            gt_angles (torch.Tensor): Ground truth angles tensor of shape (B, N, 1).
-            valid_mask (torch.Tensor, optional): Valid mask tensor of shape (B, N) to exclude certain predictions from loss calculation.
+            pred_angles (torch.Tensor): Predicted angles, shape (..., 1).
+            gt_angles (torch.Tensor): Ground-truth angles, shape (..., 1).
+            valid_mask (torch.Tensor, optional): Boolean mask of shape (...) indicating valid elements.
+                If provided, loss is computed only on valid entries.
 
         Returns:
-            torch.Tensor: The mean rotation loss.
+            torch.Tensor: Scalar tensor with the mean rotation loss.
         """
-        # Both tensors are of shape (B, N, 1)
-        diff = pred_angles - gt_angles  # (…,1)
-        loss = 1 - torch.cos(diff)
+        if self.mode == "cosine":
+            # Cosine loss: penalizes angular difference
+            diff = pred_angles - gt_angles  # (..., 1)
+            loss = 1 - torch.cos(diff)
+        else:  # "vector"
+            # Vector loss: treat angles as points on the unit circle
+            v_pred = torch.cat(
+                [pred_angles.sin(), pred_angles.cos()], dim=-1
+            )  # (..., 2)
+            v_gt = torch.cat([gt_angles.sin(), gt_angles.cos()], dim=-1)  # (..., 2)
+            loss = F.mse_loss(v_pred, v_gt, reduction="none").sum(
+                -1, keepdim=True
+            )  # (..., 1)
+
         if valid_mask is not None:
-            loss = loss[
-                valid_mask
-            ]  # Apply valid mask to exclude certain predictions from loss.
-        return loss.mean()  # Return the mean rotation loss.
+            # Apply mask to exclude invalid predictions from loss computation
+            loss = loss[valid_mask]
+
+        return loss.mean()
 
 
 class OBBIoULoss(nn.Module):
@@ -294,6 +314,8 @@ class MultiTaskLoss(nn.Module):
         L_total = λ_cls * L_cls + λ_face * L_face + λ_obb * L_obb + λ_rot * L_rot
 
     Args:
+        obb_loss_type (str): Type of OBB regression loss to use ("smooth_l1" or "l1").
+        rot_loss_type (str): Type of rotation loss to use ("cosine" or "
         lambda_cls (float): Weight for the classification loss.
         lambda_obb (float): Weight for the oriented bounding box regression loss.
         lambda_rot (float): Weight for the angle regression loss.
@@ -322,6 +344,7 @@ class MultiTaskLoss(nn.Module):
     def __init__(
         self,
         obb_loss_type: str = config.OBB_LOSS_TYPE,
+        rot_loss_type: str = config.ROT_LOSS_TYPE,
         lambda_cls: float = config.LAMBDA_CLS,
         lambda_obb: float = config.LAMBDA_OBB,
         lambda_rot: float = config.LAMBDA_ROT,
@@ -342,7 +365,7 @@ class MultiTaskLoss(nn.Module):
         self.obb_loss = OBBRegressionLoss(
             loss_type=obb_loss_type, beta=2.0, reduction="mean"
         )
-        self.rot_loss = RotationLoss()
+        self.rot_loss = RotationLoss(mode=rot_loss_type)
         self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb
         self.lambda_rot = lambda_rot

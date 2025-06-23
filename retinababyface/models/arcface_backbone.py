@@ -120,7 +120,10 @@ class BackboneIRSE50(nn.Module):
     def __init__(self):
         super().__init__()
         self.input = nn.Sequential(
-            nn.Conv2d(3, 64, 3, 2, 1, bias=False), nn.BatchNorm2d(64), nn.PReLU(64), nn.MaxPool2d(2)
+            nn.Conv2d(3, 64, 3, 2, 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.PReLU(64),
+            nn.MaxPool2d(2),
         )
 
         modules = []

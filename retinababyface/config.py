@@ -113,6 +113,7 @@ LAMBDA_CLS = 1.0
 LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0
 LAMBDA_ROT = 1.0
+OBB_LOSS_TYPE = "smooth_l1"  # "smooth_l1", "l1"
 
 # =======================
 # Inference Parameters

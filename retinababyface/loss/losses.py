@@ -321,6 +321,7 @@ class MultiTaskLoss(nn.Module):
 
     def __init__(
         self,
+        obb_loss_type: str = config.OBB_LOSS_TYPE,
         lambda_cls: float = config.LAMBDA_CLS,
         lambda_obb: float = config.LAMBDA_OBB,
         lambda_rot: float = config.LAMBDA_ROT,
@@ -339,7 +340,7 @@ class MultiTaskLoss(nn.Module):
             pos_weight=torch.tensor(float(config.NEG_SAMPLES_RATIO)), reduction="mean"
         )
         self.obb_loss = OBBRegressionLoss(
-            loss_type="smooth_l1", beta=2.0, reduction="mean"
+            loss_type=obb_loss_type, beta=2.0, reduction="mean"
         )
         self.rot_loss = RotationLoss()
         self.lambda_cls = lambda_cls

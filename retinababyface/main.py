@@ -167,6 +167,13 @@ def parse_args():
 
     # Loss weighting
     parser.add_argument(
+        "--obb_loss_type",
+        type=str,
+        default=config.OBB_LOSS_TYPE,
+        choices=["l1", "smooth_l1"],
+        help="Type of loss to use for oriented bounding box regression (default: L1)",
+    )
+    parser.add_argument(
         "--lambda_cls",
         type=float,
         default=config.LAMBDA_CLS,
@@ -472,6 +479,7 @@ def main():
 
     # Initialize the multi-task loss function with specified weights and thresholds
     multitask_loss = MultiTaskLoss(
+        args.obb_loss_type,
         args.lambda_cls,
         args.lambda_obb,
         args.lambda_rot,

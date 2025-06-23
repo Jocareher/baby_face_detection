@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader
-from torch.optim import Adam, SGD
+from torch.optim import Adam, SGD, AdamW, RAdam
 from torch.optim import lr_scheduler
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 import tqdm.auto as tqdm_auto
@@ -625,20 +625,21 @@ def create_optimizer(
     which_optimizer: str, model: nn.Module, learning_rate: float, weight_decay: float
 ) -> torch.optim.Optimizer:
     """
-    Creates an optimizer for the model.
+    Creates and returns an optimizer for the model.
 
     Args:
-        which_optimizer (str): The optimizer to use ('ADAM' or 'SGD').
-        model (nn.Module): The model to optimize.
-        learning_rate (float): The learning rate.
-        weight_decay (float): The weight decay.
+        which_optimizer (str): The optimizer to use ('ADAM', 'SGD', 'ADAMW', or 'RAdam').
+        model (nn.Module): The model whose parameters will be optimized.
+        learning_rate (float): The learning rate for the optimizer.
+        weight_decay (float): The weight decay (L2 regularization).
 
     Returns:
-        torch.optim.Optimizer: The optimizer.
+        torch.optim.Optimizer: Instantiated optimizer.
 
     Raises:
-        ValueError: If the optimizer is not 'ADAM' or 'SGD'.
+        ValueError: If the optimizer name is not recognized.
     """
+    # Select optimizer based on string identifier
     if which_optimizer == "ADAM":
         return Adam(
             model.parameters(),
@@ -653,8 +654,23 @@ def create_optimizer(
             weight_decay=weight_decay,
             momentum=0.9,
         )
+    elif which_optimizer == "ADAMW":
+        return AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            amsgrad=True,
+        )
+    elif which_optimizer == "RAdam":
+        return RAdam(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+        )
     else:
-        raise ValueError("The optimizer must be 'ADAM' or 'SGD'.")
+        raise ValueError(
+            "The optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', or 'RAdam'"
+        )
 
 
 def create_scheduler(
@@ -665,26 +681,28 @@ def create_scheduler(
     train_dataloader: DataLoader,
 ) -> Optional[lr_scheduler._LRScheduler]:
     """
-    Creates a learning rate scheduler.
+    Creates and returns a learning rate scheduler for the optimizer.
 
     Args:
-        which_scheduler (Optional[str]): The scheduler to use ('ReduceLR', 'OneCycle', 'Cosine', or None).
-        optimizer (torch.optim.Optimizer): The optimizer.
-        learning_rate (float): The initial learning rate.
-        epochs (int): The number of epochs.
-        train_dataloader (DataLoader): The training data loader.
+        which_scheduler (Optional[str]): Scheduler type: 'ReduceLR', 'OneCycle', 'Cosine', or None.
+        optimizer (torch.optim.Optimizer): Optimizer whose learning rate will be scheduled.
+        learning_rate (float): Initial learning rate.
+        epochs (int): Total number of training epochs.
+        train_dataloader (DataLoader): Training dataloader (used for steps per epoch).
 
     Returns:
-        Optional[lr_scheduler._LRScheduler]: The learning rate scheduler, or None if no scheduler is used.
+        Optional[lr_scheduler._LRScheduler]: Instantiated scheduler, or None if not used.
 
     Raises:
-        ValueError: If the scheduler is not 'ReduceLR', 'OneCycle', or 'Cosine'.
+        ValueError: If the scheduler type is not recognized.
     """
     if which_scheduler == "ReduceLR":
+        # Reduce learning rate when a metric has stopped improving
         return lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=0.8, patience=3, min_lr=1e-5
         )
     elif which_scheduler == "OneCycle":
+        # OneCycleLR: increases LR up to max_lr, then decreases it, for superconvergence
         return lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=learning_rate * 3,
@@ -692,8 +710,32 @@ def create_scheduler(
             steps_per_epoch=len(train_dataloader),
         )
     elif which_scheduler == "Cosine":
-        return lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
+        # CosineAnnealingLR with linear warmup for the first few epochs
+        warmup_epochs = 3
+        total_iters_warmup = warmup_epochs * len(train_dataloader)
+        total_iters_cosine = (epochs - warmup_epochs) * len(train_dataloader)
+
+        warmup = lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.1,  # Start at 10% of initial LR
+            end_factor=1.0,
+            total_iters=total_iters_warmup,
+        )
+
+        cosine = lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=total_iters_cosine,
+            eta_min=1e-6,
+        )
+
+        # SequentialLR: first warmup, then cosine annealing
+        return lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[total_iters_warmup],
+        )
     elif which_scheduler is None:
+        # No scheduler used
         return None
     else:
         raise ValueError(

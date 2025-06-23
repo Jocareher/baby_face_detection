@@ -135,8 +135,8 @@ def parse_args():
         "--optimizer",
         type=str,
         default=config.DEFAULT_OPTIMIZER,
-        choices=["ADAM", "SGD", "ADAMW", "RADAM"],
-        help="Optimizer to use: ADAM, ADAMW, RADAM, or SGD.",
+        choices=["ADAM", "SGD", "ADAMW", "RAdam"],
+        help="Optimizer to use: ADAM, ADAMW, RAdam, or SGD.",
     )
     parser.add_argument(
         "--scheduler",

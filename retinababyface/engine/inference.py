@@ -920,7 +920,7 @@ def inference(
             - IoU and angle boxplots
             - Qualitative grid
     """
-    
+
     output_dir.mkdir(exist_ok=True)
 
     print("[STEP 1] Preparing anchors...")

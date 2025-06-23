@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
 import wandb
 from torch.utils.data import DataLoader
 from torch.optim import Adam, SGD
@@ -774,6 +775,9 @@ def train_step(
     angular_loss_sum = 0.0
     total_batches = 0
 
+    use_amp = device.type == "cuda"
+    scaler = GradScaler(enabled=use_amp)
+
     bar = tqdm(
         train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True
     )
@@ -787,27 +791,41 @@ def train_step(
         optimizer.zero_grad()  # Zero the gradients.
         anchors_xy, anchors_xywhr = anchors  #
         batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
-        pred = model(images)  # Forward pass.
-        image_sizes = [(images.shape[3], images.shape[2])] * images.size(
-            0
-        )  # [(W, H), ...]
-        loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
-            pred, targets, batch_anchors, anchors_xywhr, image_sizes
-        )  # Calculate loss.
 
-        loss.backward()  # Backward pass.
+        # Forward pass with automatic mixed precision (AMP) if enabled
+        # This helps speed up training and reduce memory usage on GPUs.
+        with autocast(enabled=use_amp):
+            pred = model(images)  # Forward pass.
+            image_sizes = [(images.shape[3], images.shape[2])] * images.size(
+                0
+            )  # [(W, H), ...]
+            loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
+                pred, targets, batch_anchors, anchors_xywhr, image_sizes
+            )  # Calculate loss.
 
+        # Scale the loss for AMP training
+        scaler.scale(loss).backward()  # Backward pass.
+
+        # Clip gradients if specified
+        # This helps prevent exploding gradients, especially in deep networks.
+        # It can be done by norm or by value.
+        # "Norm" clips gradients by their L2 norm, while "Value" clips them by a fixed value.
+        # This is useful to stabilize training and prevent large updates.
         if clip_value is not None:
+            # Unscale gradients before clipping
+            # This is necessary when using AMP to ensure gradients are in the correct scale.
+            scaler.unscale_(optimizer)
+            # Clip gradients based on the specified mode
             if grad_clip_mode == "Norm":
-                clip_grad_norm_(
-                    model.parameters(), clip_value
-                )  # Clip gradients by norm.
+                clip_grad_norm_(model.parameters(), clip_value)
             elif grad_clip_mode == "Value":
-                clip_grad_value_(
-                    model.parameters(), clip_value
-                )  # Clip gradients by value.
+                clip_grad_value_(model.parameters(), clip_value)
 
-        optimizer.step()  # Update model parameters.
+        # Step the optimizer with scaled gradients
+        # This applies the gradients to the model parameters.
+        # The scaler helps to avoid overflow in AMP training.
+        scaler.step(optimizer)
+        scaler.update()
 
         if scheduler is not None and isinstance(scheduler, lr_scheduler.OneCycleLR):
             scheduler.step()  # Update learning rate if using OneCycleLR scheduler.

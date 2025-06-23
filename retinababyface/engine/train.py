@@ -792,7 +792,7 @@ def train_step(
 
         # Forward pass with automatic mixed precision (AMP) if enabled
         # This helps speed up training and reduce memory usage on GPUs.
-        with autocast(enabled=use_amp):
+        with autocast(device_type="cuda", enabled=use_amp):
             pred = model(images)  # Forward pass.
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(
                 0

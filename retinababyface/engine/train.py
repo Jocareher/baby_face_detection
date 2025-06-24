@@ -882,8 +882,13 @@ def train_step(
 
             optimizer.step()  # Optimizer step
 
-        # Step the OneCycleLR scheduler after every batch if used
-        if scheduler is not None and isinstance(scheduler, lr_scheduler.OneCycleLR):
+        # Step the scheduler if it's not ReduceLROnPlateau
+        # ReduceLROnPlateau requires a separate step with validation loss
+        # scheduler.step(loss) is called in the validation step.
+        # For other schedulers, we step it here after optimizer step.
+        if scheduler is not None and not isinstance(
+            scheduler, lr_scheduler.ReduceLROnPlateau
+        ):
             scheduler.step()
 
         # Accumulate losses for reporting
@@ -1241,8 +1246,9 @@ def train(
             if scheduler is not None:
                 if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
                     scheduler.step(test_total_loss)
-                elif isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
-                    scheduler.step()
+                # elif isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
+                #     scheduler.step() # Cosine scheduler does not need step here
+                # since T_max is set to total iterations
 
             epoch_time = time.time() - epoch_start
             print(

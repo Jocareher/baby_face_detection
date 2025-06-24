@@ -181,6 +181,13 @@ def parse_args():
         help="Type of loss to use for rotation angle regression (default: cosine)",
     )
     parser.add_argument(
+        "--cls_loss_type",
+        type=str,
+        default=config.ROT_LOSS_TYPE,
+        choices=["focal", "l2"],
+        help="Type of loss to use for orientation classification (default: focal)",
+    )
+    parser.add_argument(
         "--lambda_cls",
         type=float,
         default=config.LAMBDA_CLS,
@@ -488,6 +495,7 @@ def main():
     multitask_loss = MultiTaskLoss(
         args.obb_loss_type,
         args.rot_loss_type,
+        args.cls_loss_type,
         args.lambda_cls,
         args.lambda_obb,
         args.lambda_rot,

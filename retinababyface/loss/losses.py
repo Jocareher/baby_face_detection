@@ -97,6 +97,94 @@ class FocalLoss(nn.Module):
             return out.view(*orig_shape[:-1])
 
 
+class L2Loss(nn.Module):
+    """ ""
+    Implements the Least-Squares (L2) loss for multi-class classification tasks using one-hot targets and softmax probabilities.
+
+    This loss function computes the squared difference between the predicted class probabilities (after softmax) and the one-hot encoded ground truth labels, optionally weighting each class by a factor `alpha`.
+
+    The loss for each sample is computed as:
+    where:
+        - p_c: predicted probability for class c (after softmax)
+        - y_c: one-hot encoded target for class c
+        - alpha_c: weighting factor for class c (can be a scalar or a list of per-class weights)
+
+    Args:
+        alpha (float or List[float], optional): Weighting factor(s) for each class. If a single float is provided, the same weight is applied to all classes. If a list is provided, it must have length equal to the number of classes. Default is 1.0.
+        ignore_index (int, optional): Specifies a target value that is ignored and does not contribute to the loss. Useful for masking out certain samples. Default is -100.
+        reduction (str, optional): Specifies the reduction to apply to the output: 'mean' | 'sum' | 'none'.
+            - 'mean': the sum of the output will be divided by the number of elements in the output.
+            - 'sum': the output will be summed.
+            - 'none': no reduction will be applied. Default is 'mean'.
+
+    Shape:
+        - Input: logits of shape (..., C), where C = number of classes.
+        - Target: tensor of shape (...), containing class indices in [0, C-1].
+
+    Returns:
+        torch.Tensor: The computed loss. If reduction is 'none', returns a tensor of shape (N,) where N is the number of valid (non-ignored) samples.
+
+    Notes:
+        - This loss is less commonly used than cross-entropy for classification, but can be beneficial in some cases.
+        - The `ignore_index` parameter allows for flexible masking of samples (e.g., for padded sequences).
+
+    """
+
+    def __init__(
+        self,
+        alpha: Union[float, List[float]] = 1.0,
+        ignore_index: int = -100,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+        if isinstance(alpha, (list, tuple)):
+            self.alpha = torch.tensor(alpha, dtype=torch.float32)
+        else:
+            self.alpha = torch.tensor([alpha], dtype=torch.float32)
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the L2 loss between softmax probabilities and one-hot targets.
+
+        Args:
+            logits (torch.Tensor): Input logits of shape (..., C).
+            targets (torch.Tensor): Target class indices of shape (...).
+
+        Returns:
+            torch.Tensor: The computed loss (scalar if reduction is 'mean' or 'sum').
+        """
+        C = logits.shape[-1]
+        p = F.softmax(logits, dim=-1)  # (..., C) - predicted probabilities
+
+        t = targets.view(-1)  # (N,) - flatten targets
+        mask = t != self.ignore_index  # (N,) - mask for valid targets
+        if mask.sum() == 0:
+            return logits.new_tensor(0.0)
+
+        p = p.view(-1, C)[mask]  # (M, C) - valid predictions
+        t = t[mask]  # (M,) - valid targets
+
+        y_onehot = F.one_hot(t, C).float()  # (M, C) - one-hot encoded targets
+
+        # α_c: class weights, broadcast to (C,)
+        alpha = (
+            self.alpha.to(p.device)
+            if self.alpha.numel() == C
+            else self.alpha.to(p.device).expand(C)
+        )
+        # Compute per-sample L2 loss, weighted by alpha
+        loss = 0.5 * ((p - y_onehot).pow(2) * alpha).sum(dim=1)  # (M,)
+
+        if self.reduction == "mean":
+            return loss.mean()
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss  # "none"
+
+
 class RotationLoss(nn.Module):
     """
     Computes the loss between predicted and ground-truth rotation angles.
@@ -297,7 +385,7 @@ class MultiTaskLoss(nn.Module):
     """
     Multi-task loss function for RetinaFace model.
     This loss function combines the following components:
-        1. Focal loss for classification (multi-class).
+        1. Focal loss or Least Square Loss for classification (multi-class).
         2. Binary cross-entropy loss for face classification.
         3. Oriented bounding box regression loss.
         4. Rotation angle regression loss.
@@ -305,7 +393,7 @@ class MultiTaskLoss(nn.Module):
     The loss function is designed to handle multiple tasks simultaneously,
     allowing the model to learn from all tasks at once.
     The loss function is defined as:
-        L_cls  = FocalLoss(orient_logits, tgt_cls)
+        L_cls  = CLSLoss(orient_logits, tgt_cls)
         L_face = BCE(face_logits, tgt_face)
         L_obb  = OBBRegressionLoss(pred_deltas, gt_xy, anc_xy)
         L_rot  = RotationLoss(pred_angles, gt_angles)
@@ -315,7 +403,8 @@ class MultiTaskLoss(nn.Module):
 
     Args:
         obb_loss_type (str): Type of OBB regression loss to use ("smooth_l1" or "l1").
-        rot_loss_type (str): Type of rotation loss to use ("cosine" or "
+        rot_loss_type (str): Type of rotation loss to use ("cosine" or "vector").
+        cls_loss_type (str): Type of classification loss to use ("focal" or "ls").
         lambda_cls (float): Weight for the classification loss.
         lambda_obb (float): Weight for the oriented bounding box regression loss.
         lambda_rot (float): Weight for the angle regression loss.
@@ -345,6 +434,7 @@ class MultiTaskLoss(nn.Module):
         self,
         obb_loss_type: str = config.OBB_LOSS_TYPE,
         rot_loss_type: str = config.ROT_LOSS_TYPE,
+        cls_loss_type: str = config.CLS_LOSS_TYPE,
         lambda_cls: float = config.LAMBDA_CLS,
         lambda_obb: float = config.LAMBDA_OBB,
         lambda_rot: float = config.LAMBDA_ROT,
@@ -358,7 +448,13 @@ class MultiTaskLoss(nn.Module):
         neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
     ) -> None:
         super().__init__()
-        self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
+        if cls_loss_type == "focal":
+            self.cls_loss_fn = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
+        elif cls_loss_type == "ls":
+            self.cls_loss_fn = L2Loss(alpha=alpha, reduction="mean")
+        else:
+            raise ValueError("cls_loss_type must be 'focal' or 'ls'")
+
         self.bce_loss = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor(float(config.NEG_SAMPLES_RATIO)), reduction="mean"
         )
@@ -472,7 +568,7 @@ class MultiTaskLoss(nn.Module):
             # Initialize all targets as ignore_index
             tgt_cls = torch.full(
                 (N,),
-                self.focal_loss.ignore_index,
+                self.cls_loss_fn.ignore_index,
                 dtype=torch.long,
                 device=orient_logits.device,
             )
@@ -490,7 +586,7 @@ class MultiTaskLoss(nn.Module):
                 tgt_cls_sel = tgt_cls[
                     sel_idx_1
                 ]  # (P+H,) Corresponding ground-truth labels
-                cls_loss += self.focal_loss(
+                cls_loss += self.cls_loss_fn(
                     logits_sel, tgt_cls_sel
                 )  # Compute focal loss
                 num_cls_batches += 1  # Increment batch count for classification

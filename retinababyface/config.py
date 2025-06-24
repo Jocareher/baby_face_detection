@@ -115,7 +115,7 @@ LAMBDA_OBB = 1.0
 LAMBDA_ROT = 1.0
 OBB_LOSS_TYPE = "smooth_l1"  # "smooth_l1", "l1"
 ROT_LOSS_TYPE = "cosine"  # "cosine", "vector"
-CLS_LOSS_TYPE = "focal"  # "focal", "l2"
+CLS_LOSS_TYPE = "focal"  # "focal", "ls"
 
 # =======================
 # Inference Parameters

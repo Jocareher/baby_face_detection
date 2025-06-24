@@ -183,7 +183,7 @@ def parse_args():
     parser.add_argument(
         "--cls_loss_type",
         type=str,
-        default=config.ROT_LOSS_TYPE,
+        default=config.CLS_LOSS_TYPE,
         choices=["focal", "l2"],
         help="Type of loss to use for orientation classification (default: focal)",
     )

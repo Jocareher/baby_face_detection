@@ -240,8 +240,13 @@ def infer_with_rotated_nms(
         face_scores_b = face_scores[b]  # (N,)
 
         # Filter purely on face presence
-        keep_mask = face_scores_b > conf_thres
-        keep_mask &= orient_conf > class_thres
+        # This is the first filtering step before applying NMS
+        # We keep anchors with face score >= conf_thres
+        # and final score (face score * orientation confidence) >= class_thres
+        # This ensures we only keep anchors that are likely to be faces
+        # and have a high enough orientation confidence
+        final_score = face_scores_b * orient_conf  # (N,)
+        keep_mask = (face_scores_b >= conf_thres) & (final_score >= class_thres)
         if not keep_mask.any():
             outputs.append(
                 {

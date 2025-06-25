@@ -109,6 +109,7 @@ NEG_IOU_THRESH_1 = 0.3
 POS_IOU_THRESH_2 = 0.5
 NEG_IOU_THRESH_2 = 0.4
 NEG_SAMPLES_RATIO = 5
+FACE_POS_WEIGHT = 2.0  # Weight for positive face samples in the loss function
 LAMBDA_CLS = 1.0
 LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0

@@ -212,6 +212,12 @@ def parse_args():
         help="Weight for the rotation angle regression loss.",
     )
     parser.add_argument(
+        "--face_pos_weight",
+        type=float,
+        default=config.FACE_POS_WEIGHT,
+        help="Weight for positive face samples in the loss function (default: 2.0).",
+    )
+    parser.add_argument(
         "--pos_iou_thr_1",
         type=float,
         default=config.POS_IOU_THRESH_1,
@@ -507,6 +513,7 @@ def main():
         args.alpha,
         args.gamma,
         args.neg_samples_ratio,
+        args.face_pos_weight,
     )
 
     # Initialize early stopping mechanism

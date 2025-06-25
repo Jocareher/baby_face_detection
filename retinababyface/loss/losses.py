@@ -446,6 +446,7 @@ class MultiTaskLoss(nn.Module):
         alpha: List[float] = config.ALPHA,
         gamma: float = config.GAMMA,
         neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
+        face_pos_weight: float = config.FACE_POS_WEIGHT,
     ) -> None:
         super().__init__()
         if cls_loss_type == "focal":
@@ -456,7 +457,7 @@ class MultiTaskLoss(nn.Module):
             raise ValueError("cls_loss_type must be 'focal' or 'ls'")
 
         self.bce_loss = nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor(float(config.NEG_SAMPLES_RATIO)), reduction="mean"
+            pos_weight=torch.tensor(face_pos_weight), reduction="mean"
         )
         self.obb_loss = OBBRegressionLoss(
             loss_type=obb_loss_type, beta=2.0, reduction="mean"

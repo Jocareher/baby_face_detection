@@ -191,36 +191,38 @@ def infer_with_rotated_nms(
     images: torch.Tensor,  # (B, 3, H, W)
     anchors_xy: torch.Tensor,  # (N, 8) anchor corners in xyxyxyxy
     image_size: Tuple[int, int],  # (W, H)
-    conf_thres: float = 0.25,
+    face_thres: float = 0.20,
     iou_thres: float = 0.45,
-    class_thres: float = 0.6,
+    class_thres: float = 0.15,
+    alpha_score: float = 0.6,
     pre_nms_topk: int = 1000,
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference using a RetinaBabyFace-like model with an extra face/no-face head
-    and applies rotated NMS.
+    Performs inference with a RetinaBabyFace-like model that includes an additional face/no-face head,
+    applying rotated Non-Maximum Suppression (NMS) to filter predictions.
 
     Args:
-        model (nn.Module): Model that outputs classification logits, vertex deltas, and angles.
+        model (nn.Module): Model that outputs orientation logits, face logits, vertex deltas, and angles.
         images (Tensor): Batch of input images, shape (B, 3, H, W).
-        anchors_xy (Tensor): Anchor polygons in (N, 8) format (4 corners).
-        image_size (Tuple[int, int]): Size of input images (W, H).
-        conf_thres (float): Confidence threshold to filter low-score predictions.
+        anchors_xy (Tensor): Anchor polygons in (N, 8) format (4 corners per anchor).
+        image_size (Tuple[int, int]): Size of input images as (W, H).
+        face_thres (float): Minimum face probability to consider a detection.
         iou_thres (float): IoU threshold for rotated NMS.
-        class_thres (float): Class confidence threshold to filter low-score predictions.
-        pre_nms_topk (int): Max number of top scoring predictions before NMS.
-        max_det (int): Max number of final predictions per image.
+        class_thres (float): Minimum orientation confidence to consider a detection.
+        alpha_score (float): Weighting factor for combining face and orientation confidence.
+        pre_nms_topk (int): Maximum number of top-scoring predictions to keep before NMS.
+        max_det (int): Maximum number of final predictions per image after NMS.
 
     Returns:
-        List[Dict[str, Tensor]]: List of length B with dicts per image containing:
+        List[Dict[str, Tensor]]: List of length B, each dict contains:
             - 'boxes':    (M, 5) boxes in (cx, cy, w, h, θ) format
-            - 'scores':   (M,)   face probabilities
+            - 'scores':   (M,)   combined face/orientation scores
             - 'labels':   (M,)   orientation labels (0–4)
             - 'polygons': (M, 8) 4-corner polygons for visualization
     """
     B = images.size(0)
-    # Unpack the new face/no-face head output
+    # Unpack model outputs: orientation logits, face logits, vertex deltas, and predicted angles
     (
         orient_logits,
         face_logits,
@@ -228,76 +230,57 @@ def infer_with_rotated_nms(
         pred_angles,
     ) = model(images)
 
-    face_scores = torch.sigmoid(face_logits.squeeze(-1))  # (B, N, 1) → (B, N)
+    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # (B, N, 1) → (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
     outputs = []
 
     for b in range(B):
-        # Get the per-anchor orientation labels & confidences
+        # Get the most probable orientation label and its confidence for each anchor
         orient_conf, orient_labels = orientation_probs[b].max(-1)
 
-        # Extract face score per-anchor
-        face_scores_b = face_scores[b]  # (N,)
+        # Compute a combined score using face probability and orientation confidence
+        score = (face_prob[b] ** alpha_score) * (orient_conf ** (1 - alpha_score))
 
-        # Filter purely on face presence
-        # This is the first filtering step before applying NMS
-        # We keep anchors with face score >= conf_thres
-        # and final score (face score * orientation confidence) >= class_thres
-        # This ensures we only keep anchors that are likely to be faces
-        # and have a high enough orientation confidence
-        final_score = face_scores_b * orient_conf  # (N,)
-        keep_mask = (face_scores_b >= conf_thres) & (final_score >= class_thres)
-        if not keep_mask.any():
+        # Filter anchors based on face probability and orientation confidence thresholds
+        keep = (face_prob[b] >= face_thres) & (orient_conf >= class_thres)
+        if not keep.any():
             outputs.append(
-                {
-                    "boxes": torch.zeros((0, 5), device=images.device),
-                    "scores": torch.zeros((0,), device=images.device),
-                    "labels": torch.zeros((0,), device=images.device),
-                    "polygons": torch.zeros((0, 8), device=images.device),
-                }
+                dict(
+                    boxes=torch.empty(0, 5, device=images.device),
+                    scores=torch.empty(0, device=images.device),
+                    labels=torch.empty(0, device=images.device),
+                    polygons=torch.empty(0, 8, device=images.device),
+                )
             )
             continue
 
-        # 1) Get original indices of kept proposals
-        idxs = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)  # (N_valid,)
+        # Get indices of anchors that passed the filtering
+        idx = keep.nonzero(as_tuple=False).squeeze(1)
+        # Select top-K anchors by combined score before NMS
+        K = min(pre_nms_topk, idx.numel())
+        topk = score[idx].topk(K, sorted=True).indices
+        sel = idx[topk]  # (K,)
 
-        # 2) Select top-K proposals by score
-        scores_k = face_scores_b[
-            idxs
-        ]  # Use face_scores_b here instead of orientation_conf
-        K = min(pre_nms_topk, scores_k.size(0))
-        topk_scores, topk_inds = scores_k.topk(K, sorted=True)  # (K,)
-        sel = idxs[topk_inds]  # (K,) indices w.r.t. full anchor set
-
-        # 3) Decode selected proposals into polygons
+        # Decode predicted polygons for selected anchors
         verts = decode_vertices(
-            deltas[b][sel],  # (K, 8)
-            anchors_xy[sel],  # (K, 8)
-            image_size,
-            use_diag=True,
-        )  # → (K, 8)
-
-        # 4) Convert to (cx, cy, w, h, θ) format for NMS
+            deltas[b][sel], anchors_xy[sel], image_size, use_diag=True
+        )  # (K, 8)
+        # Convert polygons to (cx, cy, w, h, θ) format
         xywhr = xyxyxyxy2xywhr(
-            verts, pred_angles[b][sel].squeeze(-1), image_size  # (K,)
+            verts, pred_angles[b][sel].squeeze(-1), image_size
         )  # (K, 5)
 
-        # 5) Apply rotated NMS
-        keep_nms = nms_rotated(xywhr, topk_scores, threshold=iou_thres)
-        keep_nms = keep_nms[:max_det]
+        # Apply rotated NMS to filter overlapping predictions
+        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
+        sel_final = sel[keep_nms]
 
-        # 6) Map back to original indices in logits/predictions
-        sel_final = sel[keep_nms]  # Final selection
-
-        # 7) Prepare output
+        # Prepare output dictionary for this image
         outputs.append(
             {
                 "boxes": xywhr[keep_nms],  # (M, 5) in (cx, cy, w, h, θ)
-                "scores": face_scores_b[sel][keep_nms],  # (M,)
+                "scores": score[sel][keep_nms],  # (M,)
                 "labels": orient_labels[sel_final].float(),  # (M,)
-                "polygons": verts[
-                    keep_nms
-                ],  # (M, 8) in (x1, y1, x2, y2, x3, y3, x4, y4)
+                "polygons": verts[keep_nms],  # (M, 8) in (x1, y1, ..., x4, y4)
             }
         )
 

@@ -302,10 +302,10 @@ def parse_args():
         help="Dataset split to evaluate at inference time (train/val/test).",
     )
     parser.add_argument(
-        "--conf_thres",
+        "--face_thres",
         type=float,
-        default=config.CONF_THRESH,
-        help=f"Face confidence threshold for inference (default: {config.CONF_THRESH}).",
+        default=config.FACE_THRESH,
+        help=f"Face confidence threshold for inference (default: {config.FACE_THRESH}).",
     )
     parser.add_argument(
         "--iou_thres",
@@ -545,7 +545,7 @@ def main():
         args.run_name,
         config.SCALE_FACTORS,
         config.RATIO_FACTORS,
-        conf_thres=args.conf_thres,
+        face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
         csv_path=csv_path,

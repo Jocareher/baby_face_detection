@@ -67,9 +67,9 @@ def parse_args():
         help="Batch size for inference (default: 32).",
     )
     parser.add_argument(
-        "--conf_thres",
+        "--face_thres",
         type=float,
-        default=config.CONF_THRESH,
+        default=config.FACE_THRESH,
         help="Confidence threshold for detections (default: 0.5).",
     )
     parser.add_argument(
@@ -193,7 +193,7 @@ def main():
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,
         ratio_factors=config.RATIO_FACTORS,
-        conf_thres=args.conf_thres,
+        face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
         grid_shape=(args.grid_rows, args.grid_cols),

@@ -121,7 +121,7 @@ CLS_LOSS_TYPE = "focal"  # "focal", "ls"
 # =======================
 # Inference Parameters
 # =======================
-CONF_THRESH = 0.5
+FACE_THRESH = 0.5
 IOU_THRESH = 0.3
 CLASS_THRESH = 0.6
 

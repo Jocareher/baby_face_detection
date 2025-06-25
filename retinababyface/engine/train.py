@@ -913,7 +913,7 @@ def val_step(
     loss_fn: nn.Module,
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
-    conf_thres: float = 0.25,
+    face_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
 ) -> Tuple[float, float, float, float, float, float]:
@@ -928,9 +928,9 @@ def val_step(
         anchors (Tuple[Tensor, Tensor]): A tuple containing:
             - anchors_xy (Tensor): Tensor of base anchor vertices (N, 8).
             - anchors_xywhr (Tensor): Tensor of anchors in (cx, cy, w, h, θ) format (N, 5).
-        conf_thres (float): Confidence threshold for filtering predictions.
+        face_thres (float): Confidence threshold for face detection.
         iou_thres (float): IoU threshold for rotated NMS.
-        class_thres (float): Class confidence threshold for filtering predictions.
+        class_thres (float): Confidence threshold for class predictions
 
     Returns:
         Tuple[float, float, float, float, float, float]: A tuple containing:
@@ -974,7 +974,7 @@ def val_step(
                 images,
                 anchors_xy,
                 image_size=(images.shape[3], images.shape[2]),
-                conf_thres=conf_thres,
+                face_thres=face_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
             )
@@ -1060,7 +1060,7 @@ def train(
     run_name: str = "My_Run",
     scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
-    conf_thres: float = 0.25,
+    face_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
     grid_shape: Tuple[int, int] = (3, 3),
@@ -1096,7 +1096,7 @@ def train(
         run_name (str, optional): Weights & Biases run name.
         scale_factors (List[float], optional): Scale factors for anchor generation.
         ratio_factors (List[float], optional): Ratio factors for anchor generation.
-        conf_thres (float, optional): Confidence threshold for filtering predictions.
+        face_thres (float, optional): Face detection confidence threshold for filtering predictions.
         iou_thres (float, optional): IoU threshold for rotated NMS.
         class_thres (float, optional): Class confidence threshold for filtering predictions.
         grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
@@ -1225,7 +1225,7 @@ def train(
                 loss_fn=loss_fn,
                 device=device,
                 anchors=anchors_tuple,
-                conf_thres=conf_thres,
+                face_thres=face_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
             )

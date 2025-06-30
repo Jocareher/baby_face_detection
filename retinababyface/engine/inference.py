@@ -107,7 +107,7 @@ def run_inference(
     loader: DataLoader,
     anchors_xy: torch.Tensor,
     resize_size: Tuple[int, int],
-    conf_thres: float,
+    face_thres: float,
     iou_thres: float,
     class_thres: float,
     device: torch.device,
@@ -166,7 +166,7 @@ def run_inference(
 
             # Perform inference with rotated NMS
             outputs = infer_with_rotated_nms(
-                model, imgs, anchors_xy, resize_size, conf_thres, iou_thres, class_thres
+                model, imgs, anchors_xy, resize_size, face_thres, iou_thres, class_thres
             )
             orient_logits, _, _, _ = model(imgs)
             orientation_probs = F.softmax(orient_logits, dim=-1)
@@ -882,7 +882,7 @@ def inference(
     labels_map: Dict[int, str],
     scale_factors: List[float],
     ratio_factors: List[float],
-    conf_thres: float = 0.25,
+    face_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.5,
     grid_shape: Tuple[int, int] = (3, 3),
@@ -938,7 +938,7 @@ def inference(
         loader=test_loader,
         anchors_xy=anchors_xy,
         resize_size=resize_size,
-        conf_thres=conf_thres,
+        face_thres=face_thres,
         iou_thres=iou_thres,
         class_thres=class_thres,
         device=device,

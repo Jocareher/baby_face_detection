@@ -992,7 +992,7 @@ def inference(
         all_scores=results["all_scores"],
         all_preds=results["all_preds"],
         labels_map=labels_map,
-        default_th=conf_thres,
+        default_th=0.5,
     )
 
     fig_grid = plot_qualitative_grid(

@@ -98,7 +98,7 @@ class FocalLoss(nn.Module):
 
 
 class L2Loss(nn.Module):
-    """ ""
+    """
     Implements the Least-Squares (L2) loss for multi-class classification tasks using one-hot targets and softmax probabilities.
 
     This loss function computes the squared difference between the predicted class probabilities (after softmax) and the one-hot encoded ground truth labels, optionally weighting each class by a factor `alpha`.

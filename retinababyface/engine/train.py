@@ -147,42 +147,45 @@ def nms_rotated(
     boxes: torch.Tensor,  # (N, 5) - (cx, cy, w, h, θ)
     scores: torch.Tensor,  # (N,)   - confidence scores
     threshold: float = 0.45,
+    min_area_ratio: float = 0.3,
 ) -> torch.Tensor:
     """
-    Performs Non-Maximum Suppression (NMS) for rotated bounding boxes (OBBs)
-    using pairwise probabilistic IoU (pIoU) as the suppression criterion.
+    Improved NMS with pIoU and area ratio + containment filter.
 
-    Boxes with IoU ≥ threshold and lower score are suppressed.
-
-    Args:
-        boxes (Tensor): Tensor of shape (N, 5) with rotated boxes in (cx, cy, w, h, θ) format.
-        scores (Tensor): Confidence scores for each box, shape (N,).
-        threshold (float): IoU threshold for suppression (default: 0.45).
-
-    Returns:
-        Tensor: Indices of boxes kept after NMS, referring to the original input order.
+    Removes boxes that are:
+    - Highly overlapping by pIoU (≥ threshold)
+    - OR much smaller and fully inside another box
     """
-    # Sort boxes by descending score
     order = scores.argsort(descending=True)
     keep = []
 
-    # Iterate until no boxes left
     while order.numel() > 0:
-        # Select the box with the highest score
         i = order[0].item()
         keep.append(i)
-        # Remove the selected box from the order
+
         if order.numel() == 1:
             break
-        # Compute IoU with the remaining boxes
-        rest = order[1:]
-        # Compute pairwise IoU using batch_probiou
-        ious = batch_probiou(boxes[i : i + 1], boxes[rest]).squeeze(0)
-        # Suppress boxes with IoU >= threshold
-        order = rest[ious < threshold]
 
-        # Keep only boxes with IoU < threshold
-        # and remove the current box from the order
+        rest = order[1:]
+        ious = batch_probiou(boxes[i : i + 1], boxes[rest]).squeeze(0)
+        suppress_mask = ious >= threshold
+
+        box_i = boxes[i].unsqueeze(0)  # (1, 5)
+        for idx, j in enumerate(rest):
+            box_j = boxes[j].unsqueeze(0)  # (1, 5)
+
+            area_i = box_i[0, 2] * box_i[0, 3]
+            area_j = box_j[0, 2] * box_j[0, 3]
+            area_ratio = area_j / (area_i + 1e-6)
+
+            # Compute center distance
+            center_dist = torch.norm(box_j[0, :2] - box_i[0, :2])
+
+            if area_ratio < min_area_ratio and center_dist < 0.2 * torch.sqrt(area_i):
+                suppress_mask[idx] = True
+
+        order = rest[~suppress_mask]
+
     return torch.tensor(keep, device=boxes.device, dtype=torch.long)
 
 

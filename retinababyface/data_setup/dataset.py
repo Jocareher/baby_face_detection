@@ -23,7 +23,7 @@ class BabyFacesDataset(Dataset):
         class_idx x1 y1 x2 y2 x3 y3 x4 y4 angle
 
     - class_idx: integer from 0 to 4 indicating face orientation
-        (0 = 3/4 leftside, 1 = 3/4 rightside, 2 = frontal, 3 = left profile, 4 = right profile)
+        (0 = left profile, 1 = 3/4 leftside, 2 = frontal, 3 = 3/4 rightside, 4 = right profile)
     - x1, y1, ..., x4, y4: normalized (0–1) coordinates of the OBB corners
     - angle: rotation angle in radians (clockwise), usually measured from the top-left corner
 
@@ -471,3 +471,68 @@ def make_balanced_sampler(dataset):
 
     # 4) Create the WeightedRandomSampler
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+
+
+def remap_labels_in_dataset(root_dir: str) -> None:
+    """
+    Remaps the class indices in all .txt label files (OBB annotations) across
+    'train', 'val', and 'test' folders of the dataset, following a new class order.
+
+    It creates new subdirectories called 'labels_updated/' inside each partition
+    where the updated label files are saved.
+
+    Expected annotation format in each .txt line:
+        class_idx x1 y1 x2 y2 x3 y3 x4 y4 angle
+
+    Args:
+        root_dir (str): Root path of the dataset. It must contain:
+            root_dir/train/labels/
+            root_dir/val/labels/
+            root_dir/test/labels/
+    """
+    # Mapping from old class indices to new class indices
+    label_index_swap = {
+        0: 1,  # 3/4 Leftside → 1
+        1: 3,  # 3/4 Rightside → 3
+        2: 2,  # Frontal → 2
+        3: 0,  # Left Profile → 0
+        4: 4,  # Right Profile → 4
+    }
+
+    partitions = ["train", "val", "test"]
+
+    for split in partitions:
+        labels_dir = Path(root_dir) / split / "labels"
+        updated_dir = Path(root_dir) / split / "labels_updated"
+        updated_dir.mkdir(parents=True, exist_ok=True)
+
+        for txt_file in labels_dir.glob("*.txt"):
+            updated_lines = []
+
+            with open(txt_file, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) != 10:
+                        print(
+                            f"[WARNING] Skipping malformed line in {txt_file.name}: {line}"
+                        )
+                        continue
+                    try:
+                        class_old = int(parts[0])
+                        class_new = label_index_swap[class_old]
+                        updated_line = " ".join([str(class_new)] + parts[1:])
+                        updated_lines.append(updated_line)
+                    except KeyError:
+                        print(
+                            f"[ERROR] Unknown class index in {txt_file.name}: {class_old}"
+                        )
+                        continue
+
+            # Save updated annotation
+            updated_path = updated_dir / txt_file.name
+            with open(updated_path, "w") as f_out:
+                f_out.write("\n".join(updated_lines) + "\n")
+
+    print(
+        "All label files successfully remapped and saved to 'labels_updated/' directories."
+    )

@@ -204,7 +204,12 @@ def main():
     # 5. Save output figures
     # Save all figures
     figures["pr_figure"].savefig(figures_dir / "precision_recall.png", dpi=150)
-    figures["confusion_figure"].savefig(figures_dir / "confusion_matrix.png", dpi=150)
+    figures["confusion_figure_raw"].savefig(
+        figures_dir / "confusion_matrix_raw.png", dpi=150
+    )
+    figures["confusion_figure_normalized"].savefig(
+        figures_dir / "confusion_matrix_normalized.png", dpi=150
+    )
     figures["grid_figure"].savefig(figures_dir / "grid_examples.png", dpi=150)
     figures["iou_boxplot_figure"].savefig(figures_dir / "iou_boxplot.png", dpi=150)
     figures["angle_boxplot_figure"].savefig(figures_dir / "angle_boxplot.png", dpi=150)

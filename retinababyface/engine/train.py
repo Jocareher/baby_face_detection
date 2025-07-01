@@ -939,7 +939,7 @@ def val_step(
             - avg_face_loss (float): Average face loss.
             - avg_obb_loss (float): Average oriented bounding box (OBB) loss.
             - avg_angular_loss (float): Average angular prediction loss.
-            - mAP (float): Rotated mean Average Precision using 11-point interpolation.
+            - mAP (float): Mean Average Precision (mAP) for rotated bounding boxes.
     """
     model.eval()  # Switch model to evaluation mode (no dropout, batchnorm is fixed).
 

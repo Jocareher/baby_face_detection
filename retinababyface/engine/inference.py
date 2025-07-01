@@ -471,9 +471,9 @@ def plot_precision_recall(
 
 def plot_confusion_matrix(
     y_true: List[int], y_pred: List[int], labels_map: Dict[int, str]
-) -> plt.Figure:
+) -> Dict[str, plt.Figure]:
     """
-    Plots a confusion matrix with absolute values and correct/total for diagonals.
+    Plots both the raw and normalized confusion matrices.
 
     Args:
         y_true (List[int]): Ground truth class indices.
@@ -481,38 +481,61 @@ def plot_confusion_matrix(
         labels_map (Dict[int, str]): Mapping from class index to class name.
 
     Returns:
-        matplotlib.figure.Figure: Confusion matrix plot.
+        Dict[str, plt.Figure]: Dictionary with 'raw' and 'normalized' confusion matrix plots.
     """
     labels = list(labels_map.keys()) + [-1]
     names = [labels_map.get(l, "BG") for l in labels]
 
-    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    cm_raw = confusion_matrix(y_true, y_pred, labels=labels)
+    cm_norm = cm_raw.astype(float) / cm_raw.sum(axis=1, keepdims=True)
+    cm_norm = np.nan_to_num(cm_norm)  # Replace NaNs from division by zero
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    im = ax.imshow(cm, cmap="Blues", vmin=0)
-
-    # Annotate matrix with values
+    # Raw matrix plot
+    fig_raw, ax_raw = plt.subplots(figsize=(6, 6))
+    im_raw = ax_raw.imshow(cm_raw, cmap="Blues")
     for i in range(len(names)):
         for j in range(len(names)):
-            if cm[i, j] == 0:
+            val = cm_raw[i, j]
+            if val == 0:
                 continue
-            text = f"{np.diag(cm)[i]}/{cm.sum(1)[i]}" if i == j else str(cm[i, j])
-            color = "white" if cm[i, j] > cm.max() / 2 else "black"
-            ax.text(j, i, text, ha="center", va="center", color=color)
+            text = (
+                f"{np.diag(cm_raw)[i]}/{cm_raw.sum(1)[i]}" if i == j else str(int(val))
+            )
+            color = "white" if val > cm_raw.max() / 2 else "black"
+            ax_raw.text(j, i, text, ha="center", va="center", color=color)
+    ax_raw.set_xticks(range(len(names)))
+    ax_raw.set_yticks(range(len(names)))
+    ax_raw.set_xticklabels(names, rotation=45, ha="right")
+    ax_raw.set_yticklabels(names)
+    ax_raw.set_xlabel("Predicted", fontsize=11)
+    ax_raw.set_ylabel("True", fontsize=11)
+    ax_raw.set_title("Confusion Matrix (Raw)", fontsize=13)
+    plt.colorbar(im_raw, ax=ax_raw, fraction=0.046, pad=0.04)
+    fig_raw.tight_layout()
 
-    # Axis and styling
-    ax.set_xticks(range(len(names)))
-    ax.set_yticks(range(len(names)))
-    ax.set_xticklabels(names, rotation=45, ha="right")
-    ax.set_yticklabels(names)
-    ax.set_xlabel("Predicted", fontsize=11)
-    ax.set_ylabel("True", fontsize=11)
-    ax.set_title("Confusion Matrix", fontsize=13)
+    # Normalized matrix plot
+    fig_norm, ax_norm = plt.subplots(figsize=(6, 6))
+    im_norm = ax_norm.imshow(cm_norm, cmap="Blues", vmin=0.0, vmax=1.0)
+    for i in range(len(names)):
+        for j in range(len(names)):
+            val = cm_norm[i, j]
+            if val == 0:
+                continue
+            text = f"{val:.2f}"
+            color = "white" if val > 0.5 else "black"
+            ax_norm.text(j, i, text, ha="center", va="center", color=color)
+    ax_norm.set_xticks(range(len(names)))
+    ax_norm.set_yticks(range(len(names)))
+    ax_norm.set_xticklabels(names, rotation=45, ha="right")
+    ax_norm.set_yticklabels(names)
+    ax_norm.set_xlabel("Predicted", fontsize=11)
+    ax_norm.set_ylabel("True", fontsize=11)
+    ax_norm.set_title("Confusion Matrix (Normalized)", fontsize=13)
+    plt.colorbar(im_norm, ax=ax_norm, fraction=0.046, pad=0.04)
+    fig_norm.tight_layout()
 
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.tight_layout()
-    print("[INFO] Confusion matrix plotted.")
-    return fig
+    print("[INFO] Confusion matrices plotted (raw and normalized).")
+    return {"raw": fig_raw, "normalized": fig_norm}
 
 
 def plot_boxplots(
@@ -955,7 +978,7 @@ def inference(
         mAP=mAP,
     )
 
-    fig_cm = plot_confusion_matrix(
+    cm_figs = plot_confusion_matrix(
         y_true=results["y_true"], y_pred=results["y_pred"], labels_map=labels_map
     )
 
@@ -1010,7 +1033,8 @@ def inference(
     return {
         "mAP": mAP,
         "pr_figure": fig_pr,
-        "confusion_figure": fig_cm,
+        "confusion_figure_raw": cm_figs["raw"],
+        "confusion_figure_normalized": cm_figs["normalized"],
         "iou_boxplot_figure": fig_iou,
         "angle_boxplot_figure": fig_ang,
         "f1_threshold_figure": fig_f1,

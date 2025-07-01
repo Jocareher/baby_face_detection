@@ -834,6 +834,7 @@ def save_individual_predictions(
         ax.axis("off")
         ax.set_aspect("equal")
 
+        # GT OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
             coords = pts.view(4, 2).numpy()
             ax.add_patch(
@@ -841,24 +842,28 @@ def save_individual_predictions(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="green",
+                    edgecolor="#008000",  # Dark green
                     linewidth=2,
                     linestyle="--",
                 )
             )
             ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=2)
+
+            # Bottom-right corner for GT text
+            br_x, br_y = coords[:, 0].max(), coords[:, 1].max()
             ax.text(
-                coords[:, 0].mean(),
-                coords[:, 1].mean(),
+                br_x,
+                br_y,
                 f"{labels_map[int(lbl)]}: {math.degrees(float(ang)):.1f}°",
-                color="green",
+                color="white",
                 fontsize=6,
                 fontweight="bold",
-                ha="center",
-                va="center",
-                path_effects=[patheffects.withStroke(linewidth=2, foreground="white")],
+                ha="right",
+                va="bottom",
+                bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
             )
 
+        # Predicted OBBs
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
@@ -868,21 +873,26 @@ def save_individual_predictions(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="blue",
+                    edgecolor="#004080",  # Dark blue
                     linewidth=1.5,
                 )
             )
-            ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="red", linewidth=1.5)
+            ax.plot(
+                coords[[0, 1], 0], coords[[0, 1], 1], color="#800000", linewidth=1.5
+            )
+
+            # Top-left corner for prediction text
+            tl_x, tl_y = coords[:, 0].min(), coords[:, 1].min()
             ang_pred = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
-                coords[:, 0].mean(),
-                coords[:, 1].mean(),
-                f"{labels_map[int(lbl)]}: {ang_pred:.1f}°/{score:.2f}",
-                color="blue",
-                fontsize=5,
-                ha="center",
-                va="center",
-                path_effects=[patheffects.withStroke(linewidth=2, foreground="black")],
+                tl_x,
+                tl_y,
+                f"{labels_map[int(lbl)]}: {ang_pred:.1f}° / {score:.2f}",
+                color="white",
+                fontsize=6,
+                ha="left",
+                va="top",
+                bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
 
         save_path = os.path.join(output_dir, os.path.basename(fname))

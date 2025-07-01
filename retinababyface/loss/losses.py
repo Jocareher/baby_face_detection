@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple, Dict, Union, Optional
 
 import torch
 import torch.nn as nn
@@ -99,44 +99,37 @@ class FocalLoss(nn.Module):
 
 class L2Loss(nn.Module):
     """
-    Implements the Least-Squares (L2) loss for multi-class classification tasks using one-hot targets and softmax probabilities.
+    Least Squares (L2/MSE) Loss for classification with optional Gaussian label smoothing.
 
-    This loss function computes the squared difference between the predicted class probabilities (after softmax) and the one-hot encoded ground truth labels, optionally weighting each class by a factor `alpha`.
+    Theory:
+        The classic L2 loss for classification is:
+            L = 0.5 * sum_c α_c * (p_c - y_c)^2
+        where:
+            - p_c: predicted probability for class c (after softmax)
+            - y_c: target probability for class c (one-hot or soft label)
+            - α_c: class balancing weight (optional)
 
-    The loss for each sample is computed as:
-    where:
-        - p_c: predicted probability for class c (after softmax)
-        - y_c: one-hot encoded target for class c
-        - alpha_c: weighting factor for class c (can be a scalar or a list of per-class weights)
+        If sigma is None, y_c is a one-hot vector (classic MSE for classification).
+        If sigma > 0, y_c is a soft label vector with a Gaussian distribution centered at the target class,
+        providing label smoothing and encouraging the model to distribute probability mass around the true class.
 
     Args:
-        alpha (float or List[float], optional): Weighting factor(s) for each class. If a single float is provided, the same weight is applied to all classes. If a list is provided, it must have length equal to the number of classes. Default is 1.0.
-        ignore_index (int, optional): Specifies a target value that is ignored and does not contribute to the loss. Useful for masking out certain samples. Default is -100.
-        reduction (str, optional): Specifies the reduction to apply to the output: 'mean' | 'sum' | 'none'.
-            - 'mean': the sum of the output will be divided by the number of elements in the output.
-            - 'sum': the output will be summed.
-            - 'none': no reduction will be applied. Default is 'mean'.
-
-    Shape:
-        - Input: logits of shape (..., C), where C = number of classes.
-        - Target: tensor of shape (...), containing class indices in [0, C-1].
-
-    Returns:
-        torch.Tensor: The computed loss. If reduction is 'none', returns a tensor of shape (N,) where N is the number of valid (non-ignored) samples.
-
-    Notes:
-        - This loss is less commonly used than cross-entropy for classification, but can be beneficial in some cases.
-        - The `ignore_index` parameter allows for flexible masking of samples (e.g., for padded sequences).
-
+        alpha (float or list[float]): Class balancing weights (α_c). If float, same for all classes.
+        sigma (float, optional): Standard deviation for Gaussian label smoothing. If None, uses one-hot labels.
+        ignore_index (int): Label value to ignore in loss computation.
+        reduction (str): 'mean', 'sum', or 'none' for loss reduction.
     """
 
     def __init__(
         self,
         alpha: Union[float, List[float]] = 1.0,
+        sigma: Optional[float] = None,
         ignore_index: int = -100,
         reduction: str = "mean",
     ):
         super().__init__()
+        self.sigma = sigma
+        # Convert alpha to tensor for broadcasting
         if isinstance(alpha, (list, tuple)):
             self.alpha = torch.tensor(alpha, dtype=torch.float32)
         else:
@@ -144,45 +137,85 @@ class L2Loss(nn.Module):
         self.ignore_index = ignore_index
         self.reduction = reduction
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def labels_gaussian_soft(idx: torch.Tensor, C: int, sigma: float) -> torch.Tensor:
         """
-        Computes the L2 loss between softmax probabilities and one-hot targets.
+        Generate soft labels using a Gaussian distribution centered at the target class.
 
         Args:
-            logits (torch.Tensor): Input logits of shape (..., C).
-            targets (torch.Tensor): Target class indices of shape (...).
+            idx (Tensor): Target class indices, shape (N,)
+            C (int): Number of classes
+            sigma (float): Standard deviation for Gaussian smoothing
 
         Returns:
-            torch.Tensor: The computed loss (scalar if reduction is 'mean' or 'sum').
+            Tensor: Soft label matrix of shape (N, C)
         """
-        C = logits.shape[-1]
-        p = F.softmax(logits, dim=-1)  # (..., C) - predicted probabilities
+        grid = torch.arange(
+            C, device=idx.device
+        ).float()  # Class indices [0, 1, ..., C-1]
+        idx = idx.unsqueeze(1).float()  # Shape (N, 1) for broadcasting
+        dist2 = (grid - idx).pow(2)  # Squared distance to target class
+        probs = torch.exp(-dist2 / (2 * sigma**2))  # Gaussian weights for each class
+        return probs / probs.sum(dim=1, keepdim=True)  # Normalize to sum to 1
 
-        t = targets.view(-1)  # (N,) - flatten targets
-        mask = t != self.ignore_index  # (N,) - mask for valid targets
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the L2/MSE classification loss.
+
+        Args:
+            logits (Tensor): Raw model outputs, shape (..., C)
+            targets (Tensor): Target class indices, shape (...)
+
+        Returns:
+            Tensor: Scalar loss (if reduction), or per-sample loss
+        """
+        # Number of classes
+        C = logits.shape[-1]
+
+        # Predicted probabilities, shape (..., C)
+        p = F.softmax(logits, dim=-1)
+
+        # Flatten targets to (N,)
+        t = targets.view(-1)
+
+        # Mask for valid targets
+        mask = t != self.ignore_index
+
+        # Return zero if no valid targets
         if mask.sum() == 0:
             return logits.new_tensor(0.0)
 
-        p = p.view(-1, C)[mask]  # (M, C) - valid predictions
-        t = t[mask]  # (M,) - valid targets
+        # Select valid predictions, shape (M, C)
+        p = p.view(-1, C)[mask]
 
-        y_onehot = F.one_hot(t, C).float()  # (M, C) - one-hot encoded targets
+        # Select valid targets, shape (M,)
+        t = t[mask]
 
-        # α_c: class weights, broadcast to (C,)
+        # Use one-hot labels if no smoothing
+        if self.sigma is None:
+            y = F.one_hot(t, C).float()
+        # Use Gaussian soft labels
+        else:
+            y = self.labels_gaussian_soft(t, C, self.sigma)
+
+        # Prepare alpha for broadcasting: shape (C,)
         alpha = (
             self.alpha.to(p.device)
             if self.alpha.numel() == C
             else self.alpha.to(p.device).expand(C)
         )
-        # Compute per-sample L2 loss, weighted by alpha
-        loss = 0.5 * ((p - y_onehot).pow(2) * alpha).sum(dim=1)  # (M,)
 
+        # Compute weighted L2 loss for each sample: 0.5 * sum_c α_c * (p_c - y_c)^2
+        loss = 0.5 * ((p - y).pow(2) * alpha).sum(dim=1)
+
+        # Reduction
         if self.reduction == "mean":
             return loss.mean()
         elif self.reduction == "sum":
             return loss.sum()
         else:
-            return loss  # "none"
+            # No reduction, return per-sample loss
+            return loss
 
 
 class RotationLoss(nn.Module):
@@ -452,7 +485,7 @@ class MultiTaskLoss(nn.Module):
         if cls_loss_type == "focal":
             self.cls_loss_fn = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
         elif cls_loss_type == "ls":
-            self.cls_loss_fn = L2Loss(alpha=alpha, reduction="mean")
+            self.cls_loss_fn = L2Loss(alpha=alpha, reduction="mean", sigma=1.0)
         else:
             raise ValueError("cls_loss_type must be 'focal' or 'ls'")
 

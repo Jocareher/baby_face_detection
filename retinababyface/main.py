@@ -579,10 +579,10 @@ def main():
 
     # Define label mapping for inference
     labels_map = {
-        0: "3/4 Leftside",
-        1: "3/4 Rightside",
+        0: "Leftside",
+        1: "3/4 Lefttside",
         2: "Frontal",
-        3: "Left Profile",
+        3: "3/4 Rightside",
         4: "Right Profile",
     }
 

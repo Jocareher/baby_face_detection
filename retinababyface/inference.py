@@ -176,13 +176,12 @@ def main():
 
     # 3. Define label names (without background class)
     labels_map = {
-        0: "3/4 Leftside",
-        1: "3/4 Rightside",
+        0: "Leftside",
+        1: "3/4 Lefttside",
         2: "Frontal",
-        3: "Left Profile",
+        3: "3/4 Rightside",
         4: "Right Profile",
     }
-
     # 4. Run inference
     print("[INFO] Running inference...")
     figures = inference(

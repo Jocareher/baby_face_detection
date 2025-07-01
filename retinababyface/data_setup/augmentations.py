@@ -65,7 +65,7 @@ class RandomHorizontalFlipOBB:
     Applies a horizontal flip to the image and updates:
     - OBB coordinates
     - angles (negated)
-    - class indices (0↔1, 3↔4)
+    - class indices (0↔4, 1↔3)
     """
 
     def __init__(self, prob: float = 0.5):
@@ -118,7 +118,7 @@ class RandomHorizontalFlipOBB:
 
             # Flip class indices: vectorized swap using masks
             class_idxs_flipped = class_idxs.clone()
-            swap_map = {0: 1, 1: 0, 3: 4, 4: 3}
+            swap_map = {0: 4, 1: 3, 3: 1, 4: 0}
             for a, b in swap_map.items():
                 class_idxs_flipped[class_idxs == a] = b
 

@@ -480,12 +480,13 @@ class MultiTaskLoss(nn.Module):
         gamma: float = config.GAMMA,
         neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
         face_pos_weight: float = config.FACE_POS_WEIGHT,
+        sigma_l2_cls: float = config.SIGMA_L2_CLS,  # For L2Loss, if used
     ) -> None:
         super().__init__()
         if cls_loss_type == "focal":
             self.cls_loss_fn = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
         elif cls_loss_type == "ls":
-            self.cls_loss_fn = L2Loss(alpha=alpha, reduction="mean", sigma=1.0)
+            self.cls_loss_fn = L2Loss(alpha=alpha, reduction="mean", sigma=sigma_l2_cls)
         else:
             raise ValueError("cls_loss_type must be 'focal' or 'ls'")
 

@@ -260,6 +260,12 @@ def parse_args():
         default=config.GAMMA,
         help="Gamma (focusing parameter) for Focal Loss.",
     )
+    parser.add_argument(
+        "--sigma_l2_cls",
+        type=float,
+        default=config.SIGMA_L2_CLS,
+        help="Sigma for L2 Loss, if used (default: None).",
+    )
 
     # Data augmentation
     parser.add_argument(
@@ -514,6 +520,7 @@ def main():
         args.gamma,
         args.neg_samples_ratio,
         args.face_pos_weight,
+        args.sigma_l2_cls,
     )
 
     # Initialize early stopping mechanism

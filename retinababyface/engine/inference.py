@@ -643,7 +643,6 @@ def plot_boxplots(
 
     # Leave space on the right for legend
     fig.subplots_adjust(right=0.75)
-    plt.tight_layout()
     print(f"[INFO] Boxplot for '{y_field}' created.")
     return fig
 

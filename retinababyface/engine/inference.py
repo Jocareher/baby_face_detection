@@ -641,6 +641,8 @@ def plot_boxplots(
         frameon=False,
     )
 
+    # Leave space on the right for legend
+    fig.subplots_adjust(right=0.75)
     plt.tight_layout()
     print(f"[INFO] Boxplot for '{y_field}' created.")
     return fig
@@ -775,8 +777,9 @@ def plot_qualitative_grid(
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
         ax.set_title(Path(fname).name, fontsize=8)
+        ax.set_aspect("equal")
 
-        # Draw GT polygons
+        # Ground Truth OBBs
         for pts, angle, cls in zip(gt_b, gt_a, gt_l):
             pts_np = pts.view(4, 2).numpy()
             ax.add_patch(
@@ -784,26 +787,26 @@ def plot_qualitative_grid(
                     pts_np,
                     closed=True,
                     fill=False,
-                    edgecolor="green",
+                    edgecolor="#008000",
                     linewidth=2,
                     linestyle="--",
                 )
             )
             ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="orange", linewidth=2)
-            cen = pts_np.mean(axis=0)
+            br_x, br_y = pts_np[:, 0].max(), pts_np[:, 1].max()
             ax.text(
-                cen[0],
-                cen[1],
-                f"{labels_map[int(cls)]}: {math.degrees(angle):.1f}°",
-                color="green",
+                br_x,
+                br_y,
+                f"{labels_map[int(cls)]}: {math.degrees(float(angle)):.1f}°",
+                color="white",
                 fontsize=6,
                 fontweight="bold",
-                ha="center",
-                va="center",
-                path_effects=[patheffects.withStroke(linewidth=2, foreground="white")],
+                ha="right",
+                va="bottom",
+                bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
             )
 
-        # Draw predicted polygons
+        # Predicted OBBs
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
@@ -813,25 +816,27 @@ def plot_qualitative_grid(
                     pts_np,
                     closed=True,
                     fill=False,
-                    edgecolor="blue",
+                    edgecolor="#004080",
                     linewidth=1.5,
                 )
             )
-            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="red", linewidth=1.5)
-            cen = pts_np.mean(axis=0)
+            ax.plot(
+                pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="#800000", linewidth=1.5
+            )
+            tl_x, tl_y = pts_np[:, 0].min(), pts_np[:, 1].min()
             ang = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
-                cen[0],
-                cen[1],
-                f"{labels_map[int(lbl)]}: {ang:.1f}°/{score:.2f}",
-                color="blue",
-                fontsize=5,
-                ha="center",
-                va="center",
-                path_effects=[patheffects.withStroke(linewidth=2, foreground="black")],
+                tl_x,
+                tl_y,
+                f"{labels_map[int(lbl)]}: {ang:.1f}° / {score:.2f}",
+                color="white",
+                fontsize=6,
+                ha="left",
+                va="top",
+                bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
 
-    # Hide unused axes
+    # Hide any unused axes
     for ax in axes[len(samples) :]:
         ax.axis("off")
 

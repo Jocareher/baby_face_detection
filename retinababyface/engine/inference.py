@@ -110,6 +110,7 @@ def run_inference(
     face_thres: float,
     iou_thres: float,
     class_thres: float,
+    alpha_score: float,
     device: torch.device,
     labels_map: Dict[int, str],
 ) -> Dict[str, Any]:
@@ -124,6 +125,7 @@ def run_inference(
         conf_thres (float): Confidence threshold for filtering predictions.
         iou_thres (float): IoU threshold for matching predictions to ground truths.
         class_thres (float): Class score threshold for filtering predictions.
+        alpha_score (float): Weighting factor for combining face and orientation confidence scores.
         device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
         labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
 
@@ -166,10 +168,15 @@ def run_inference(
 
             # Perform inference with rotated NMS
             outputs = infer_with_rotated_nms(
-                model, imgs, anchors_xy, resize_size, face_thres, iou_thres, class_thres
+                model,
+                imgs,
+                anchors_xy,
+                resize_size,
+                face_thres,
+                iou_thres,
+                class_thres,
+                alpha_score,
             )
-            orient_logits, _, _, _ = model(imgs)
-            orientation_probs = F.softmax(orient_logits, dim=-1)
 
             batch_size = imgs.size(0)
             for b in range(batch_size):

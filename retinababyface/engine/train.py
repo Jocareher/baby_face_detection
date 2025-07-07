@@ -1000,6 +1000,7 @@ def val_step(
                 face_thres=face_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
+                alpha_score=alpha_score,
             )
 
             # Accumulate predictions and ground truths for each image in the batch

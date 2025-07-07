@@ -642,6 +642,7 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
+        alpha_score=args.alpha_score,
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,

@@ -552,7 +552,7 @@ def plot_boxplots(
     title: str,
     labels_map: Dict[int, str],
     y_lim: Tuple[float, float] = None,
-    cmap_name: str = "tab20",
+    cmap_name: str = "tab10",
 ) -> plt.Figure:
     """
     Draws class-wise colored boxplots for any metric (IoU, angle error, etc.)
@@ -626,7 +626,7 @@ def plot_boxplots(
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
 
-    # Add legend with mean ± std
+    # Add legend outside plot
     handles = [
         plt.Line2D([0], [0], marker="s", linestyle="", color=cmap(i), markersize=8)
         for i in range(len(classes))
@@ -637,6 +637,8 @@ def plot_boxplots(
         title=f"{y_field} per class",
         loc="upper right",
         fontsize=9,
+        bbox_to_anchor=(1.02, 1.0),
+        frameon=False,
     )
 
     plt.tight_layout()

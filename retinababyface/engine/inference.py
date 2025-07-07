@@ -636,13 +636,14 @@ def plot_boxplots(
         legend_labels,
         title=f"{y_field} per class",
         loc="upper right",
-        fontsize=9,
         bbox_to_anchor=(1.02, 1.0),
+        fontsize=9,
         frameon=False,
     )
 
     # Leave space on the right for legend
-    fig.subplots_adjust(right=0.75)
+    plt.tight_layout()
+    fig.subplots_adjust(right=0.78)
     print(f"[INFO] Boxplot for '{y_field}' created.")
     return fig
 

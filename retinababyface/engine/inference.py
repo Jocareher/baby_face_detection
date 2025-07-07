@@ -607,9 +607,11 @@ def plot_boxplots(
 
     # Apply colormap
     cmap = plt.get_cmap(cmap_name)
+    colors = {} 
     for i, box in enumerate(bp["boxes"]):
-        color = cmap(i)
-        box.set_facecolor(color)
+        this_color = cmap(i)
+        colors[class_names[i]] = this_color
+        box.set_facecolor(this_color)
         box.set_edgecolor("black")
 
     # Add jittered points
@@ -619,7 +621,7 @@ def plot_boxplots(
             ax.scatter(jittered_x, val,
                        alpha=0.7,
                        edgecolors="black",
-                       color=color[name],
+                       color=colors[name],
                        label=f"{name} {mean_std_text[name]}")
 
     # Axes style

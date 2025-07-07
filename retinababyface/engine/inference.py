@@ -591,7 +591,7 @@ def plot_boxplots(
             mean_std_text[name] = "N/A"
 
 
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(8, 5))
 
     # Basic boxplot (unstyled)
     bp = ax.boxplot(
@@ -636,10 +636,10 @@ def plot_boxplots(
         ax.spines[spine].set_visible(False)
 
     # Legend outside
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False, title=f"{y_field} per class")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 0.5), frameon=False, title=f"{y_field} per class")
 
     plt.tight_layout()
-    fig.subplots_adjust(right=0.78)
+    fig.subplots_adjust(right=0.82)  # Adjust right margin for legend
     print(f"[INFO] Boxplot for '{y_field}' created.")
     return fig
 

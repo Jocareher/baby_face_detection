@@ -555,7 +555,9 @@ def plot_boxplots(
     cmap_name: str = "tab20",
 ) -> plt.Figure:
     """
-    Draws class-wise colored boxplots for any metric (IoU, angle error, etc.).
+    Draws class-wise colored boxplots for any metric (IoU, angle error, etc.)
+    and includes a legend with mean ± std per class.
+
 
     Args:
         data (List[Dict[str, Any]]): List of metric dictionaries with 'class' and value fields.
@@ -576,6 +578,17 @@ def plot_boxplots(
     values = [
         [d[y_field] for d in data if d[x_field] == labels_map[c]] for c in classes
     ]
+
+    # Compute mean ± std for each class
+    legend_labels = []
+    for i, v in enumerate(values):
+        if v:
+            mean_val = np.mean(v)
+            std_val = np.std(v)
+            label = f"{class_names[i]} {mean_val:.2f} ± {std_val:.2f}"
+        else:
+            label = f"{class_names[i]} N/A"
+        legend_labels.append(label)
 
     fig, ax = plt.subplots(figsize=(6, 4))
 
@@ -612,6 +625,19 @@ def plot_boxplots(
     ax.grid(axis="y", linestyle=":", alpha=0.6)
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
+
+    # Add legend with mean ± std
+    handles = [
+        plt.Line2D([0], [0], marker="s", linestyle="", color=cmap(i), markersize=8)
+        for i in range(len(classes))
+    ]
+    ax.legend(
+        handles,
+        legend_labels,
+        title=f"{y_field} per class",
+        loc="upper right",
+        fontsize=9,
+    )
 
     plt.tight_layout()
     print(f"[INFO] Boxplot for '{y_field}' created.")
@@ -925,6 +951,7 @@ def inference(
     face_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.5,
+    alpha_score: float = 0.6,
     grid_shape: Tuple[int, int] = (3, 3),
     mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
     std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
@@ -949,6 +976,7 @@ def inference(
         conf_thres (float): Confidence threshold for filtering predictions.
         iou_thres (float): IoU threshold to match GT with predictions.
         class_thres (float): Class score threshold for filtering predictions.
+        alpha_score (float): Weight for combining face detection and OBB scores.
         grid_shape (Tuple[int, int]): Rows x Columns in qualitative grid.
         mean (Tuple): Image normalization mean.
         std (Tuple): Image normalization std.
@@ -981,6 +1009,7 @@ def inference(
         face_thres=face_thres,
         iou_thres=iou_thres,
         class_thres=class_thres,
+        alpha_score=alpha_score,
         device=device,
         labels_map=labels_map,
     )

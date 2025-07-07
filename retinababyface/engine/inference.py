@@ -580,22 +580,23 @@ def plot_boxplots(
     ]
 
     # Compute mean ± std for each class
-    legend_labels = []
-    for i, v in enumerate(values):
-        if v:
-            mean_val = np.mean(v)
-            std_val = np.std(v)
-            label = f"{class_names[i]} {mean_val:.2f} ± {std_val:.2f}"
+    mean_std_text = {}
+    for i, val in enumerate(values):
+        name = class_names[i]
+        if val:
+            mu = np.mean(val)
+            sigma = np.std(val)
+            mean_std_text[name] = f"{mu:.2f} ± {sigma:.2f}"
         else:
-            label = f"{class_names[i]} N/A"
-        legend_labels.append(label)
+            mean_std_text[name] = "N/A"
+
 
     fig, ax = plt.subplots(figsize=(6, 4))
 
     # Basic boxplot (unstyled)
     bp = ax.boxplot(
         values,
-        labels=class_names,
+        positions=np.arange(len(class_names)),
         notch=True,
         patch_artist=True,
         boxprops=dict(facecolor="none", edgecolor="black"),
@@ -612,36 +613,29 @@ def plot_boxplots(
         box.set_edgecolor("black")
 
     # Add jittered points
-    for i, vals in enumerate(values):
-        xs = np.random.normal(i + 1, 0.06, size=len(vals))
-        ax.scatter(xs, vals, color=cmap(i), s=6, alpha=0.7)
+    for i, (name, val) in enumerate(zip(class_names, values)):
+        if val:
+            jittered_x = np.random.normal(i, 0.04, size=len(val))
+            ax.scatter(jittered_x, val,
+                       alpha=0.7,
+                       edgecolors="black",
+                       color=color[name],
+                       label=f"{name} {mean_std_text[name]}")
 
-    # Axis and style
-    ax.set_title(title, fontsize=13)
-    ax.set_ylabel(y_field, fontsize=11)
+    # Axes style
+    ax.set_xticks(np.arange(len(class_names)))
     ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=10)
-    if y_lim is not None:
+    ax.set_ylabel(y_field, fontsize=12)
+    ax.set_title(title, fontsize=14)
+    if y_lim:
         ax.set_ylim(y_lim)
     ax.grid(axis="y", linestyle=":", alpha=0.6)
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
 
-    # Add legend outside plot
-    handles = [
-        plt.Line2D([0], [0], marker="s", linestyle="", color=cmap(i), markersize=8)
-        for i in range(len(classes))
-    ]
-    ax.legend(
-        handles,
-        legend_labels,
-        title=f"{y_field} per class",
-        loc="upper right",
-        bbox_to_anchor=(1.02, 1.0),
-        fontsize=9,
-        frameon=False,
-    )
+    # Legend outside
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False, title=f"{y_field} per class")
 
-    # Leave space on the right for legend
     plt.tight_layout()
     fig.subplots_adjust(right=0.78)
     print(f"[INFO] Boxplot for '{y_field}' created.")

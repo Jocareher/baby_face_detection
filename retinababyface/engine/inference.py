@@ -636,10 +636,9 @@ def plot_boxplots(
         ax.spines[spine].set_visible(False)
 
     # Legend outside
-    ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.0), frameon=False, title=f"{y_field} per class")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.04, 1.0), frameon=False, title=f"{y_field} per class")
 
     plt.tight_layout()
-    fig.subplots_adjust(right=0.75)  # Adjust right margin for legend
     print(f"[INFO] Boxplot for '{y_field}' created.")
     return fig
 

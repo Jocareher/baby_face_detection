@@ -85,6 +85,12 @@ def parse_args():
         help="Class confidence threshold for matching (default: 0.6).",
     )
     parser.add_argument(
+        "--alpha_score",
+        type=float,
+        default=config.ALPHA_SCORE,
+        help=f"Weighting factor for combining face and orientation confidence scores (default: {config.ALPHA_SCORE}).",
+    )
+    parser.add_argument(
         "--grid_rows",
         type=int,
         default=3,
@@ -177,10 +183,10 @@ def main():
     # 3. Define label names (without background class)
     labels_map = {
         0: "Leftside",
-        1: "3/4 Lefttside",
+        1: "3/4 Leftside",
         2: "Frontal",
         3: "3/4 Rightside",
-        4: "Right Profile",
+        4: "Rightside",
     }
     # 4. Run inference
     print("[INFO] Running inference...")

@@ -326,6 +326,12 @@ def parse_args():
         help=f"Orientation confidence threshold for inference (default: {config.CLASS_THRESH}).",
     )
     parser.add_argument(
+        "--alpha_score",
+        type=float,
+        default=config.ALPHA_SCORE,
+        help=f"Weighting factor for combining face and orientation confidence scores (default: {config.ALPHA_SCORE}).",
+    )
+    parser.add_argument(
         "--grid_rows",
         type=int,
         default=3,
@@ -555,6 +561,7 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
+        alpha_score=args.alpha_score,
         csv_path=csv_path,
         anchor_preview_path=anchor_preview_path,
         inference_preview=inference_preview,
@@ -587,10 +594,10 @@ def main():
     # Define label mapping for inference
     labels_map = {
         0: "Leftside",
-        1: "3/4 Lefttside",
+        1: "3/4 Leftside",
         2: "Frontal",
         3: "3/4 Rightside",
-        4: "Right Profile",
+        4: "Rightside",
     }
 
     # Reload model for inference

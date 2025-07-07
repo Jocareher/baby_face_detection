@@ -937,6 +937,7 @@ def val_step(
     face_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
+    alpha_score: float = 0.7,
 ) -> Tuple[float, float, float, float, float, float]:
     """
     Runs one full evaluation loop on the validation dataset, computing predictions, losses, and rotated mAP.
@@ -952,6 +953,7 @@ def val_step(
         face_thres (float): Confidence threshold for face detection.
         iou_thres (float): IoU threshold for rotated NMS.
         class_thres (float): Confidence threshold for class predictions
+        alpha_score (float): Weighting factor for combining face and class scores.
 
     Returns:
         Tuple[float, float, float, float, float, float]: A tuple containing:
@@ -1084,6 +1086,7 @@ def train(
     face_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
+    alpha_score: float = 0.7,
     grid_shape: Tuple[int, int] = (3, 3),
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
@@ -1122,6 +1125,7 @@ def train(
         class_thres (float, optional): Class confidence threshold for filtering predictions.
         grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
         csv_path (Union[str, Path], optional): Path to save training metrics CSV.
+        alpha_score (float): Weighting factor for combining face and orientation confidence.
         anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
         inference_preview (Union[str, Path], optional): Path to save inference preview image.
         show_every_epoch (int, optional): Frequency of showing inference previews during training.
@@ -1249,6 +1253,7 @@ def train(
                 face_thres=face_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
+                alpha_score=alpha_score,
             )
 
             # Update scheduler if applicable

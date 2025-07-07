@@ -354,7 +354,7 @@ def main():
     # ------------------------------------------------------------------------
     # I. Output directory structure
     # ------------------------------------------------------------------------
-    output_dir = Path(args.run_name)
+    output_dir = Path("runs") / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ckpt_path = output_dir / "checkpoint.pt"

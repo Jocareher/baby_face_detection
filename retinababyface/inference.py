@@ -117,7 +117,7 @@ def main():
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path("runs") / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     figures_dir = output_dir / "figures"

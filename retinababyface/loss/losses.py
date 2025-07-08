@@ -613,6 +613,7 @@ class MultiTaskLoss(nn.Module):
         rect_loss = 0.0  # Orthogonality loss for OBBs
         valid_batches = 0
         num_cls_batches = 0
+        rect_verts = []
 
         for b in range(B):
             # -------------------------------------
@@ -740,15 +741,6 @@ class MultiTaskLoss(nn.Module):
                         anc_xy_2.unsqueeze(0),  # (1, num_pos_2, 8)
                     )
 
-                    # ---------   ORTHOGONALITY REGULARISATION   --------------------------
-                    verts_pred = decode_vertices(
-                        pred_deltas_2, anc_xy_2, image_sizes[b], use_diag=True
-                    ).view(
-                        -1, 4, 2
-                    )  # (num_pos_2, 4, 2)
-
-                    rect_loss += orthogonality_loss(verts_pred)
-
                     # -------------------------------------
                     # Stage 2: Final rotation loss
                     # -------------------------------------
@@ -760,9 +752,22 @@ class MultiTaskLoss(nn.Module):
                         pa_wrapped_2.unsqueeze(-1), ga_wrapped_2.unsqueeze(-1)
                     )
 
+                    # ---------   ORTHOGONALITY REGULARISATION   --------------------------
+                    verts_pred = decode_vertices(
+                        pred_deltas_2, anc_xy_2, image_sizes[b], use_diag=True
+                    ).view(
+                        -1, 4, 2
+                    )  # (num_pos_2, 4, 2)
+                    rect_verts.append(verts_pred)  # Collect for orthogonality loss
+
         # -------------------------------------
         # Normalize and combine all losses
         # -------------------------------------
+        if rect_verts:
+            # Concatenate all rect_verts from the batch
+            rect_loss = orthogonality_loss(torch.cat(rect_verts, 0))
+            rect_loss = rect_loss / max(1, valid_batches)
+
         # Classification loss normalized by number of batches
         cls_loss = cls_loss / max(1, num_cls_batches)
         # Face loss normalized by batch size
@@ -770,7 +775,6 @@ class MultiTaskLoss(nn.Module):
         if valid_batches > 0:
             obb_loss /= valid_batches
             rot_loss /= valid_batches
-            rect_loss /= valid_batches
             total_loss = (
                 self.lambda_cls * cls_loss
                 + self.lambda_face * face_loss

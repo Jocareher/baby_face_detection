@@ -1203,6 +1203,13 @@ def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
         "obb_curves",
     )
     make_plot(
+        "train_rect_loss",
+        "test_rect_loss",
+        "Orthogonality Regularization Over Training",
+        "Loss",
+        "regularization_curves",
+    )
+    make_plot(
         "train_total_loss",
         "test_total_loss",
         "Total Combined Loss Over Training",

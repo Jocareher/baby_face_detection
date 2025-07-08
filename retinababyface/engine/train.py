@@ -822,6 +822,7 @@ def train_step(
     class_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
+    rect_loss_sum = 0.0
     total_batches = 0
 
     # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
@@ -864,7 +865,7 @@ def train_step(
 
         with autocast_context:  # Enable mixed precision if AMP is used
             pred = model(images)  # Forward pass
-            loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
+            loss, loss_class, loss_face, loss_obb, loss_angle, loss_rect = loss_fn(
                 pred, targets, batch_anchors, anchors_xywhr, image_sizes
             )
 
@@ -906,6 +907,7 @@ def train_step(
         face_loss_sum += loss_face
         obb_loss_sum += loss_obb
         angular_loss_sum += loss_angle
+        rect_loss_sum += loss_rect
         total_batches += 1
 
     bar.close()
@@ -917,6 +919,7 @@ def train_step(
     avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_angular_loss = angular_loss_sum / total_batches
+    avg_rect_loss = rect_loss_sum / total_batches
 
     return (
         avg_total_loss,
@@ -924,6 +927,7 @@ def train_step(
         avg_face_loss,
         avg_obb_loss,
         avg_angular_loss,
+        avg_rect_loss,
         current_lr,
     )
 
@@ -972,6 +976,7 @@ def val_step(
     face_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
+    rect_loss_sum = 0.0
     total_batches = 0
 
     # Prepare containers to collect predictions and ground truths
@@ -1032,7 +1037,7 @@ def val_step(
             # Compute loss for the batch
             pred = model(images)
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
-            loss, loss_class, loss_face, loss_obb, loss_angle = loss_fn(
+            loss, loss_class, loss_face, loss_obb, loss_angle, loss_rect = loss_fn(
                 pred, targets, batch_anchors, anchors_xywhr, image_sizes
             )
             total_loss += loss.item()
@@ -1040,6 +1045,7 @@ def val_step(
             face_loss_sum += loss_face
             obb_loss_sum += loss_obb
             angular_loss_sum += loss_angle
+            rect_loss_sum += loss_rect
             total_batches += 1
 
     bar.close()
@@ -1050,6 +1056,7 @@ def val_step(
     avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_ang_loss = angular_loss_sum / total_batches
+    avg_rect_loss = rect_loss_sum / total_batches
 
     # Compute rotated mAP using accumulated predictions and ground truths
     mAP = compute_map_rotated(
@@ -1062,7 +1069,15 @@ def val_step(
         num_classes=5,
     )
 
-    return avg_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_ang_loss, mAP
+    return (
+        avg_loss,
+        avg_class_loss,
+        avg_face_loss,
+        avg_obb_loss,
+        avg_ang_loss,
+        avg_rect_loss,
+        mAP,
+    )
 
 
 def train(
@@ -1144,11 +1159,13 @@ def train(
         "train_face_loss",
         "train_obb_loss",
         "train_angular_loss",
+        "train_rect_loss",
         "test_total_loss",
         "test_class_loss",
         "test_face_loss",
         "test_obb_loss",
         "test_angular_loss",
+        "test_rect_loss",
         "test_mAP",
         "learning_rate",
         "epoch_time",
@@ -1164,11 +1181,13 @@ def train(
         "train_face_loss": [],
         "train_obb_loss": [],
         "train_angular_loss": [],
+        "train_rect_loss": [],
         "test_total_loss": [],
         "test_class_loss": [],
         "test_face_loss": [],
         "test_obb_loss": [],
         "test_angular_loss": [],
+        "test_rect_loss": [],
         "test_mAP": [],
     }
 
@@ -1224,6 +1243,7 @@ def train(
                 train_face_loss,
                 train_obb_loss,
                 train_angular_loss,
+                train_rect_loss,
                 current_lr,
             ) = train_step(
                 model=model,
@@ -1244,6 +1264,7 @@ def train(
                 test_face_loss,
                 test_obb_loss,
                 test_angular_loss,
+                test_rect_loss,
                 test_mAP,
             ) = val_step(
                 model=model,
@@ -1267,13 +1288,13 @@ def train(
 
             epoch_time = time.time() - epoch_start
             print(
-                f"Epoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
+                f"\nEpoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
             )
             print(
-                f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | Face Loss: {train_face_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f}"
+                f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | Face Loss: {train_face_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f} | Rect Loss: {train_rect_loss:.4f}"
             )
             print(
-                f"Test metrics | Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f} | mAP: {test_mAP:.4f}"
+                f"Test metrics | Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f} | Rect Loss: {test_rect_loss:.4f} | mAP: {test_mAP:.4f}"
             )
 
             if record_metrics:
@@ -1285,11 +1306,13 @@ def train(
                         "train_face_loss": train_face_loss,
                         "train_obb_loss": train_obb_loss,
                         "train_angular_loss": train_angular_loss,
+                        "train_rect_loss": train_rect_loss,
                         "test_total_loss": test_total_loss,
                         "test_class_loss": test_class_loss,
                         "test_face_loss": test_face_loss,
                         "test_obb_loss": test_obb_loss,
                         "test_angular_loss": test_angular_loss,
+                        "test_rect_loss": test_rect_loss,
                         "test_mAP": test_mAP,
                         "learning_rate": current_lr,
                         "epoch_time": epoch_time,
@@ -1302,11 +1325,13 @@ def train(
             results["train_face_loss"].append(train_face_loss)
             results["train_obb_loss"].append(train_obb_loss)
             results["train_angular_loss"].append(train_angular_loss)
+            results["train_rect_loss"].append(train_rect_loss)
             results["test_total_loss"].append(test_total_loss)
             results["test_class_loss"].append(test_class_loss)
             results["test_face_loss"].append(test_face_loss)
             results["test_obb_loss"].append(test_obb_loss)
             results["test_angular_loss"].append(test_angular_loss)
+            results["test_rect_loss"].append(test_rect_loss)
             results["test_mAP"].append(test_mAP)
 
             # Write metrics to CSV file
@@ -1320,11 +1345,13 @@ def train(
                         f"{train_face_loss:.4f}",
                         f"{train_obb_loss:.4f}",
                         f"{train_angular_loss:.4f}",
+                        f"{train_rect_loss:.4f}",
                         f"{test_total_loss:.4f}",
                         f"{test_class_loss:.4f}",
                         f"{test_face_loss:.4f}",
                         f"{test_obb_loss:.4f}",
                         f"{test_angular_loss:.4f}",
+                        f"{test_rect_loss:.4f}",
                         f"{test_mAP:.4f}",
                         f"{current_lr:.5f}",
                         f"{epoch_time:.4f}",

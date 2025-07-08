@@ -414,6 +414,63 @@ class OBBRegressionLoss(nn.Module):
             )
 
 
+def orthogonality_loss(
+    verts: torch.Tensor,
+    w_angle: float = 1.0,
+    w_side: float = 0.5,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Computes a regularization loss to encourage quadrilaterals to be rectangles.
+
+    Args:
+        verts (torch.Tensor): Tensor of shape (N, 4, 2) containing N quadrilaterals,
+            each defined by 4 vertices in cyclic order (clockwise or counter-clockwise).
+        w_angle (float): Weight for the orthogonality (right angle) term.
+        w_side (float): Weight for the opposite side length equality term.
+        eps (float): Small value to avoid division by zero.
+
+    Returns:
+        torch.Tensor: Scalar tensor representing the mean orthogonality loss over the batch.
+
+    Loss terms:
+        - Orthogonality: Penalizes deviation from right angles between consecutive edges.
+            L_angle = w_angle * sum_i |cos(theta_i)|^2, where theta_i is the angle between consecutive edges.
+        - Side equality: Penalizes difference in length between opposite sides.
+            L_side = w_side * sum_i ((||edge_i|| / ||edge_opposite_i|| - 1)^2)
+
+        Total loss: L = L_angle + L_side
+    """
+    # Unpack vertices for each quadrilateral: (N, 2)
+    p0, p1, p2, p3 = verts.unbind(dim=1)
+
+    # Compute consecutive edge vectors: (N, 2)
+    edge01 = p1 - p0
+    edge12 = p2 - p1
+    edge23 = p3 - p2
+    edge30 = p0 - p3
+
+    # Orthogonality between consecutive edges (should be 90 degrees)
+    def cos2_between(e, f):
+        # Returns squared cosine of the angle between e and f, scale-invariant
+        dot = (e * f).sum(dim=-1)
+        norm = (e.norm(dim=-1) * f.norm(dim=-1)).clamp_min(eps)
+        return (dot / norm).pow(2)
+
+    # Only two unique angles needed for a rectangle (adjacent edges)
+    ortho_term = cos2_between(edge01, edge12) + cos2_between(edge12, edge23)
+
+    # Opposite side length equality
+    len01, len12 = edge01.norm(dim=-1), edge12.norm(dim=-1)
+    len23, len30 = edge23.norm(dim=-1), edge30.norm(dim=-1)
+
+    side_term = (len01 / (len23 + eps) - 1).pow(2) + (len12 / (len30 + eps) - 1).pow(2)
+
+    # Combine the two terms with their respective weights
+    loss = (w_angle * ortho_term + w_side * side_term).mean()
+    return loss
+
+
 class MultiTaskLoss(nn.Module):
     """
     Multi-task loss function for RetinaFace model.
@@ -422,7 +479,7 @@ class MultiTaskLoss(nn.Module):
         2. Binary cross-entropy loss for face classification.
         3. Oriented bounding box regression loss.
         4. Rotation angle regression loss.
-        5. Probabilistic IoU loss for OBBs.
+        5. Orthogonality loss for rectangle shape regularization.
     The loss function is designed to handle multiple tasks simultaneously,
     allowing the model to learn from all tasks at once.
     The loss function is defined as:
@@ -430,9 +487,10 @@ class MultiTaskLoss(nn.Module):
         L_face = BCE(face_logits, tgt_face)
         L_obb  = OBBRegressionLoss(pred_deltas, gt_xy, anc_xy)
         L_rot  = RotationLoss(pred_angles, gt_angles)
+        L_rect = OrthogonalityLoss(pred_vertices)
 
     The total loss is defined as:
-        L_total = λ_cls * L_cls + λ_face * L_face + λ_obb * L_obb + λ_rot * L_rot
+        L_total = λ_cls * L_cls + λ_face * L_face + λ_obb * L_obb + λ_rot * L_rot + λ_rect * L_rect
 
     Args:
         obb_loss_type (str): Type of OBB regression loss to use ("smooth_l1" or "l1").
@@ -442,6 +500,7 @@ class MultiTaskLoss(nn.Module):
         lambda_obb (float): Weight for the oriented bounding box regression loss.
         lambda_rot (float): Weight for the angle regression loss.
         lambda_face (float): Weight for the face classification loss.
+        lambda_rect (float): Weight for the orthogonality loss.
         pos_iou_thr_1 (float): IoU threshold to consider an anchor positive in stage 1.
         neg_iou_thr_1 (float): IoU threshold to consider an anchor negative in stage 1.
         pos_iou_thr_2 (float): IoU threshold to consider a provisional box positive in stage 2.
@@ -449,6 +508,8 @@ class MultiTaskLoss(nn.Module):
         alpha (List[float]): Class-balancing weights for focal loss.
         gamma (float): Focusing parameter for focal loss.
         neg_samples_ratio (int): Ratio of negative samples to positive samples for face classification.
+        face_pos_weight (float): Positive weight for the face classification loss.
+        sigma_l2_cls (float): Standard deviation for Gaussian label smoothing in L2Loss (if used).
 
     Note:
         - The loss function expects the model's output to be in the following format:
@@ -472,6 +533,7 @@ class MultiTaskLoss(nn.Module):
         lambda_obb: float = config.LAMBDA_OBB,
         lambda_rot: float = config.LAMBDA_ROT,
         lambda_face: float = config.LAMBDA_FACE,
+        lambda_rect: float = config.LAMBDA_RECT,
         pos_iou_thr_1: float = config.POS_IOU_THRESH_1,
         neg_iou_thr_1: float = config.NEG_IOU_THRESH_1,
         pos_iou_thr_2: float = config.POS_IOU_THRESH_2,
@@ -501,6 +563,7 @@ class MultiTaskLoss(nn.Module):
         self.lambda_obb = lambda_obb
         self.lambda_rot = lambda_rot
         self.lambda_face = lambda_face
+        self.lambda_rect = lambda_rect
         self.pos_iou_thr_1 = pos_iou_thr_1
         self.neg_iou_thr_1 = neg_iou_thr_1
         self.pos_iou_thr_2 = pos_iou_thr_2
@@ -521,7 +584,7 @@ class MultiTaskLoss(nn.Module):
         anchors_xy: torch.Tensor,  # (B, N, 8) anchor vertices
         anchors_xywhr: torch.Tensor,  # (N, 5) anchors in xywhr
         image_sizes: List[Tuple[int, int]],  # (W, H) for each image
-    ) -> Tuple[torch.Tensor, float, float, float, float]:
+    ) -> Tuple[torch.Tensor, float, float, float, float, float]:
         """
         Computes the total multi-task loss and returns all components:
 
@@ -547,6 +610,7 @@ class MultiTaskLoss(nn.Module):
         face_loss = 0.0
         obb_loss = 0.0
         rot_loss = 0.0
+        rect_loss = 0.0  # Orthogonality loss for OBBs
         valid_batches = 0
         num_cls_batches = 0
 
@@ -676,6 +740,15 @@ class MultiTaskLoss(nn.Module):
                         anc_xy_2.unsqueeze(0),  # (1, num_pos_2, 8)
                     )
 
+                    # ---------   ORTHOGONALITY REGULARISATION   --------------------------
+                    verts_pred = decode_vertices(
+                        pred_deltas_2, anc_xy_2, image_sizes[b], use_diag=True
+                    ).view(
+                        -1, 4, 2
+                    )  # (num_pos_2, 4, 2)
+
+                    rect_loss += orthogonality_loss(verts_pred)
+
                     # -------------------------------------
                     # Stage 2: Final rotation loss
                     # -------------------------------------
@@ -697,11 +770,13 @@ class MultiTaskLoss(nn.Module):
         if valid_batches > 0:
             obb_loss /= valid_batches
             rot_loss /= valid_batches
+            rect_loss /= valid_batches
             total_loss = (
                 self.lambda_cls * cls_loss
                 + self.lambda_face * face_loss
                 + self.lambda_obb * obb_loss
                 + self.lambda_rot * rot_loss
+                + self.lambda_rect * rect_loss
             )
         else:
             # If no positives in stage 2 at all, fall back to only face loss
@@ -713,4 +788,5 @@ class MultiTaskLoss(nn.Module):
             face_loss if not isinstance(face_loss, torch.Tensor) else face_loss.item(),
             obb_loss if not isinstance(obb_loss, torch.Tensor) else obb_loss.item(),
             rot_loss if not isinstance(rot_loss, torch.Tensor) else rot_loss.item(),
+            rect_loss if not isinstance(rect_loss, torch.Tensor) else rect_loss.item(),
         )

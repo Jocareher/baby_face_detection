@@ -590,7 +590,6 @@ def plot_boxplots(
         else:
             mean_std_text[name] = "N/A"
 
-
     fig, ax = plt.subplots(figsize=(9, 6))
 
     # Basic boxplot (unstyled)
@@ -607,7 +606,7 @@ def plot_boxplots(
 
     # Apply colormap
     cmap = plt.get_cmap(cmap_name)
-    colors = {} 
+    colors = {}
     for i, box in enumerate(bp["boxes"]):
         this_color = cmap(i)
         colors[class_names[i]] = this_color
@@ -618,11 +617,14 @@ def plot_boxplots(
     for i, (name, val) in enumerate(zip(class_names, values)):
         if val:
             jittered_x = np.random.normal(i, 0.04, size=len(val))
-            ax.scatter(jittered_x, val,
-                       alpha=0.7,
-                       edgecolors="black",
-                       color=colors[name],
-                       label=f"{name} {mean_std_text[name]}")
+            ax.scatter(
+                jittered_x,
+                val,
+                alpha=0.7,
+                edgecolors="black",
+                color=colors[name],
+                label=f"{name} {mean_std_text[name]}",
+            )
 
     # Axes style
     ax.set_xticks(np.arange(len(class_names)))
@@ -636,7 +638,12 @@ def plot_boxplots(
         ax.spines[spine].set_visible(False)
 
     # Legend outside
-    ax.legend(loc="upper left", bbox_to_anchor=(1.04, 1.0), frameon=False, title=f"{y_field} per class")
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.04, 1.0),
+        frameon=False,
+        title=f"{y_field} per class",
+    )
 
     plt.tight_layout()
     print(f"[INFO] Boxplot for '{y_field}' created.")

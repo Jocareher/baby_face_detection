@@ -282,6 +282,7 @@ def decode_vertices(
     anchors: torch.Tensor,  # (N, 8) — Anchor box vertices in pixel coordinates
     image_size: Tuple[int, int],  # (W, H)
     use_diag: bool = True,  # Whether to scale offsets by the anchor's diagonal
+    scale: float = 0.5,  # Scale factor for offsets
 ) -> torch.Tensor:
     """
     Decodes predicted OBB vertex offsets back to absolute vertex coordinates.
@@ -291,38 +292,39 @@ def decode_vertices(
     with respect to the given anchor boxes.
 
     Args:
-        deltas (torch.Tensor): Offset predictions of shape (N, 8), in the range [-1, 1].
-        anchors (torch.Tensor): Anchor box vertices of shape (N, 8), in pixel coordinates.
-        image_size (Tuple[int, int]): (width, height) of the image to clamp the results.
-        use_diag (bool, optional):
-            If True, offsets are scaled by the average diagonal of the anchor box
-            (i.e., roughly its "natural" size). If False, the offsets are interpreted
-            as pixel values directly. Default is True.
+        - deltas (torch.Tensor): Tensor of shape (N, 8) containing predicted offsets for each
+            of the 4 vertices (x, y) of the OBB, normalized to [-1, 1] (typically via tanh).
+        - anchors (torch.Tensor): Tensor of shape (N, 8) with anchor box vertex coordinates
+            in pixel space, ordered as (x0, y0, x1, y1, x2, y2, x3, y3).
+        - image_size (Tuple[int, int]): Tuple (width, height) specifying the image dimensions
+            for clamping the decoded vertices.
+        - use_diag (bool, optional): If True, scales the predicted offsets by the average
+            diagonal length of the anchor box (providing scale invariance). If False,
+            offsets are interpreted as pixel displacements. Default is True.
+        - scale (float, optional): Scaling factor applied to the offset magnitude when
+            use_diag is True. Default is 0.5.
 
     Returns:
-        torch.Tensor: Decoded absolute vertex positions of shape (N, 8), clamped to image bounds.
+        torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex
+            positions for each OBB, clamped to the image bounds.
     """
     W, H = image_size
 
     if use_diag:
-        # Compute the diagonal of the anchor box
+        # Compute the diagonal of the anchor boxes
         # Reshape anchors to (N, 4, 2) for easier manipulation
         p0, p2 = anchors.view(-1, 4, 2)[:, 0], anchors.view(-1, 4, 2)[:, 2]
-        # Compute the diagonal length
-        diag = (
-            ((p0[:, 0] - p2[:, 0]).pow(2) + (p0[:, 1] - p2[:, 1]).pow(2))
-            .sqrt()
-            .unsqueeze(1)
-        )
-        verts = anchors + deltas * diag  # Displace each vertex up to ±diag pixels
+        # Calculate the diagonal length for each anchor box
+        diag = ((p0[:, 0] - p2[:, 0]).square() + (p0[:, 1] - p2[:, 1]).square()).sqrt()
+        # Displace by deltas scaled by diag
+        verts = anchors + deltas * (diag.unsqueeze(1) * scale)
     else:
         # Direct displacement in pixel space
         verts = anchors + deltas  # Displace only ±1 px per dimension
 
     # Clamp decoded vertices to valid image bounds
-    clamp_vec = verts.new_tensor([W, H] * 4)  # (8,)
-    verts = torch.clamp_min(verts, 0.0)  # Lower bound: 0
-    verts = torch.minimum(verts, clamp_vec)  # Upper bound: image size
+    verts[..., 0::2].clamp_(0, W)  # Clamp x-coordinates
+    verts[..., 1::2].clamp_(0, H)  # Clamp y-coordinates
 
     return verts
 

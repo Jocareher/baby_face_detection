@@ -610,7 +610,7 @@ class MultiTaskLoss(nn.Module):
         face_loss = 0.0
         obb_loss = 0.0
         rot_loss = 0.0
-        rect_loss = 0.0  # Orthogonality loss for OBBs
+        rect_loss = torch.tensor(0.0, device=orient_logits.device)
         valid_batches = 0
         num_cls_batches = 0
         rect_verts = []
@@ -788,9 +788,19 @@ class MultiTaskLoss(nn.Module):
 
         return (
             total_loss,
-            cls_loss if not isinstance(cls_loss, torch.Tensor) else cls_loss.item(),
-            face_loss if not isinstance(face_loss, torch.Tensor) else face_loss.item(),
-            obb_loss if not isinstance(obb_loss, torch.Tensor) else obb_loss.item(),
-            rot_loss if not isinstance(rot_loss, torch.Tensor) else rot_loss.item(),
-            rect_loss if not isinstance(rect_loss, torch.Tensor) else rect_loss.item(),
+            cls_loss
+            if not isinstance(cls_loss, torch.Tensor)
+            else cls_loss.detach().item(),
+            face_loss
+            if not isinstance(face_loss, torch.Tensor)
+            else face_loss.detach().item(),
+            obb_loss
+            if not isinstance(obb_loss, torch.Tensor)
+            else obb_loss.detach().item(),
+            rot_loss
+            if not isinstance(rot_loss, torch.Tensor)
+            else rot_loss.detach().item(),
+            rect_loss
+            if not isinstance(rect_loss, torch.Tensor)
+            else rect_loss.detach().item(),
         )

@@ -68,7 +68,7 @@ class OBBHead(nn.Module):
         # The 8 values correspond to the 4 vertices of the OBB.
         # The vertices are represented as (Δx1, Δy1, Δx2, Δy2, Δx3, Δy3, Δx4, Δy4)
         # The output is reshaped to (B, N, 8) where N = H × W × num_anchors
-        return (
+        return torch.tanh(
             self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
         )  # torch.tanh(
         # self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
@@ -547,14 +547,15 @@ class ViTFeature2D(nn.Module):
 
 def reset_heads(model: nn.Module) -> None:
     """
-    Reinitializes the weights and biases of the model's prediction heads.
+    This function resets the weights of the specified prediction heads (`obb_head`, `angle_head`, `class_head`, and `face_head`)
+    within the given model. For each head:
+    - If the head is `obb_head`, convolutional weights are initialized from a normal distribution (mean=0.0, std=1e-3).
+    - For all other heads, convolutional weights are initialized using Kaiming-He (He normal) initialization, suitable for ReLU activations.
+    - All convolutional biases are set to zero if present.
 
-    This function applies Kaiming-He (He normal) initialization to the convolutional layers
-    of the OBB regression head (`obb_head`), angle regression head (`angle_head`), and
-    classification head (`class_head`). Biases are reset to zero.
+    This is useful for reinitializing prediction heads before fine-tuning or after modifying the model architecture.
 
-    This is typically used to reinitialize the heads before fine-tuning or after structural changes
-    to the model.
+        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head`, and `face_head`.
 
     Args:
         model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head` and `face_head`.
@@ -562,13 +563,17 @@ def reset_heads(model: nn.Module) -> None:
     Returns:
         None
     """
-    for head in [model.obb_head, model.angle_head, model.class_head, model.face_head]:
+    for head_name in ["obb_head", "angle_head", "class_head", "face_head"]:
+        head = getattr(model, head_name)
         for layer in head.modules():
             if isinstance(layer, nn.Conv2d):
-                # Apply Kaiming-He initialization for convolution weights
-                nn.init.kaiming_normal_(
-                    layer.weight, mode="fan_out", nonlinearity="relu"
-                )
+                if head_name == "obb_head":
+                    nn.init.normal_(layer.weight, mean=0.0, std=1e-3)
+                else:
+                    # Apply Kaiming-He initialization for convolution weights
+                    nn.init.kaiming_normal_(
+                        layer.weight, mode="fan_out", nonlinearity="relu"
+                    )
                 # Initialize bias to zero if present
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0)

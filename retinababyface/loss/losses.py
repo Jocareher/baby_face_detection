@@ -772,11 +772,12 @@ class MultiTaskLoss(nn.Module):
             gt_boxes_2 = targets["boxes"][b][gt_idx_2]  # (num_pos_2, 8)
             anc_xy_2 = anchors_xy[b][abs_pos_idx_2]  # (num_pos_2, 8)
             pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)  # (num_pos_2,)
+            pa_wrapped_2 = wrap_to_pi(pa_2)  # (num_pos_2,)
             obb_loss += self.obb_loss(
-                pred_deltas_2,  # (num_pos_2, 8)
-                pa_2,  # (num_pos_2, 1)
-                gt_boxes_2,  # (num_pos_2, 8)
-                anc_xy_2,  # (num_pos_2, 8)
+                pred_deltas_2.unsqueeze(0),  # (num_pos_2, 8)
+                pa_wrapped_2.unsqueeze(0).unsqueeze(-1),  # (num_pos_2, 1)
+                gt_boxes_2.unsqueeze(0),  # (num_pos_2, 8)
+                anc_xy_2.unsqueeze(0),  # (num_pos_2, 8)
                 image_sizes[b],  # (W, H)
             )
 
@@ -784,7 +785,6 @@ class MultiTaskLoss(nn.Module):
             # Stage 2: Final rotation loss
             # -------------------------------------
             ga_2 = targets["angle"][b][gt_idx_2].squeeze(-1)  # (num_pos_2,)
-            pa_wrapped_2 = wrap_to_pi(pa_2)  # (num_pos_2,)
             ga_wrapped_2 = wrap_to_pi(ga_2)  # (num_pos_2,)
             rot_loss += self.rot_loss(
                 pa_wrapped_2.unsqueeze(-1), ga_wrapped_2.unsqueeze(-1)
@@ -794,7 +794,7 @@ class MultiTaskLoss(nn.Module):
             verts_pred = decode_vertices(
                 pred_deltas_2,
                 anc_xy_2,
-                pa_2,
+                pa_wrapped_2,
                 image_sizes[b],
             ).view(
                 -1, 4, 2

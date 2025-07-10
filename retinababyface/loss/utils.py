@@ -319,10 +319,11 @@ def decode_vertices(
 
     # Rotate offsets by predicted angle for each box
     cos, sin = pred_angles.view(N, 1, 1).cos(), pred_angles.view(N, 1, 1).sin()
-    R = torch.stack(
-        [torch.stack([cos, -sin], -1), torch.stack([sin, cos], -1)], -2
+    R = torch.cat(
+        [torch.cat([cos, -sin], dim=2), torch.cat([sin, cos], dim=2)], dim=1
     )  # (N, 2, 2)
-    offs_rot = torch.matmul(offs, R)  # (N, 4, 2)
+    # Rotate offsets using batch matrix multiplication
+    offs_rot = torch.bmm(offs, R)
 
     # Add rotated offsets to anchor vertices to get decoded vertices
     verts = anc_xy + offs_rot  # (N, 4, 2)

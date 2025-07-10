@@ -393,17 +393,19 @@ class OBBRegressionLoss(nn.Module):
         pred_deltas: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
         gt_xy: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
         anchors: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
+        gt_angles: torch.Tensor,  # (B=1, N_pos, 1) or (N_pos, 1)
     ) -> torch.Tensor:
         # 1) Squeeze away the leading batch=1 dim, if present
         if pred_deltas.dim() == 3 and pred_deltas.size(0) == 1:
             pred = pred_deltas.squeeze(0)
             gt = gt_xy.squeeze(0)
             anc = anchors.squeeze(0)
+            ang = gt_angles.squeeze(0)
         else:
-            pred, gt, anc = pred_deltas, gt_xy, anchors
+            pred, gt, anc, ang = pred_deltas, gt_xy, anchors, gt_angles
 
         # 2) Encode GT into the same normalized delta space
-        gt_deltas = encode_vertices(gt, anc)
+        gt_deltas = encode_vertices(gt, anc, ang)
 
         # 3) Compute the selected loss
         if self.loss_type == "l1":
@@ -707,10 +709,14 @@ class MultiTaskLoss(nn.Module):
             with torch.no_grad():
                 pred_deltas_1 = deltas[b][pos_mask_1]  # (num_pos_1, 8)
                 anc_xy_1 = anchors_xy[b][pos_mask_1]  # (num_pos_1, 8)
-                verts_1 = decode_vertices(
-                    pred_deltas_1, anc_xy_1, image_sizes[b], use_diag=True
-                )  # (num_pos_1, 8)
                 ang_1 = pred_angles[b][pos_mask_1].squeeze(-1)  # (num_pos_1,)
+                verts_1 = decode_vertices(
+                    pred_deltas_1,
+                    anc_xy_1,
+                    ang_1,
+                    image_sizes[b],
+                )  # (num_pos_1, 8)
+
                 anc_xywhr_1 = xyxyxyxy2xywhr(
                     verts_1, ang_1, image_sizes[b]
                 )  # (num_pos_1, 5)
@@ -761,7 +767,10 @@ class MultiTaskLoss(nn.Module):
 
             # ---------   ORTHOGONALITY REGULARISATION   --------------------------
             verts_pred = decode_vertices(
-                pred_deltas_2, anc_xy_2, image_sizes[b], use_diag=True
+                pred_deltas_2,
+                anc_xy_2,
+                pa_2,
+                image_sizes[b],
             ).view(
                 -1, 4, 2
             )  # (num_pos_2, 4, 2)

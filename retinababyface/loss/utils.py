@@ -280,71 +280,57 @@ def probiou(
 def decode_vertices(
     deltas: torch.Tensor,  # (N, 8) — Predicted normalized offsets from anchor vertices
     anchors: torch.Tensor,  # (N, 8) — Anchor box vertices in pixel coordinates
-    angles: torch.Tensor,  # (N,) — Anchor box rotation angles in radians
+    pred_angles: torch.Tensor,  # (N,) — Predicted box rotation angles in radians
     image_size: Tuple[int, int],  # (W, H)
     scale: float = 0.5,  # Scale factor for offsets
 ) -> torch.Tensor:
     """
     Decodes predicted normalized vertex offsets into absolute OBB vertex coordinates.
 
-    The function takes predicted deltas (offsets) for each of the 4 vertices of an oriented bounding box (OBB),
-    which are normalized (typically via tanh to [-1, 1]), and reconstructs the absolute vertex positions
-    in pixel coordinates by applying these offsets to the anchor box vertices. Optionally, the offsets
-    are scaled by the anchor's diagonal length for scale invariance.
+    This function reconstructs the absolute positions of the 4 vertices of an oriented bounding box (OBB)
+    from predicted normalized offsets (deltas) relative to anchor box vertices. The deltas are first
+    scaled by the anchor's diagonal length (for scale invariance), then rotated by the predicted angle,
+    and finally added to the anchor vertices to obtain the decoded absolute positions in pixel coordinates.
+    The resulting vertices are clamped to the image bounds.
 
     Args:
         deltas (torch.Tensor): Tensor of shape (N, 8) containing predicted normalized offsets for each
             of the 4 vertices (x, y) of the OBB, typically in [-1, 1].
         anchors (torch.Tensor): Tensor of shape (N, 8) with anchor box vertex coordinates in pixel space,
             ordered as (x0, y0, x1, y1, x2, y2, x3, y3).
-        angles (torch.Tensor): Tensor of shape (N,) with anchor box rotation angles in radians.
+        pred_angles (torch.Tensor): Tensor of shape (N,) with predicted rotation angles in radians.
         image_size (Tuple[int, int]): Tuple (width, height) specifying the image dimensions for clamping.
-        scale (float, optional): Scaling factor applied to the offset magnitude when use_diag is True.
-            Default is 0.5.
+        scale (float, optional): Scaling factor applied to the offset magnitude. Default is 0.5.
 
     Returns:
         torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex positions for each OBB,
             clamped to the image bounds.
     """
-    W, H = image_size  # Unpack image width and height
+    W, H = image_size
+    N = anchors.size(0)
 
-    N = anchors.size(0)  # Number of boxes
+    anc_xy = anchors.view(N, 4, 2)
 
-    verts = anchors.view(N, 4, 2)  # Reshape anchors to (N, 4, 2) for 4 vertices per box
-    center = verts.mean(
-        dim=1, keepdim=True
-    )  # Compute box center for each anchor, shape (N, 1, 2)
-
-    # Compute cosine and sine of the anchor angles for rotation matrix
-    cos_t = angles.cos().view(N, 1, 1)  # (N, 1, 1)
-    sin_t = angles.sin().view(N, 1, 1)  # (N, 1, 1)
-
-    # Build rotation matrices for each box: shape (N, 2, 2)
-    R = torch.cat(
-        [
-            torch.cat([cos_t, -sin_t], dim=2),  # First row: [cos, -sin]
-            torch.cat([sin_t, cos_t], dim=2),  # Second row: [sin,  cos]
-        ],
-        dim=1,
-    )
-
-    # Compute the diagonal length of each anchor box (distance between vertex 0 and 2)
-    diag = ((verts[:, 0] - verts[:, 2]).pow(2).sum(1).sqrt() * scale).view(
+    # Scale normalized offsets by anchor diagonal and scale factor
+    diag = ((anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True) * scale).view(
         N, 1, 1
-    )  # (N, 1, 1)
+    )
+    offs = deltas.view(N, 4, 2) * diag  # (N, 4, 2)
 
-    # Center the vertices and apply rotation (if needed)
-    verts_rot = torch.bmm(verts - center, R) + center  # (N, 4, 2)
+    # Rotate offsets by predicted angle for each box
+    cos, sin = pred_angles.view(N, 1, 1).cos(), pred_angles.view(N, 1, 1).sin()
+    R = torch.stack(
+        [torch.stack([cos, -sin], -1), torch.stack([sin, cos], -1)], -2
+    )  # (N, 2, 2)
+    offs_rot = torch.matmul(offs, R)  # (N, 4, 2)
 
-    # Apply the predicted deltas, scaled by the diagonal (if use_diag is True)
-    verts_dec = verts_rot + deltas.view(N, 4, 2) * diag  # (N, 4, 2)
+    # Add rotated offsets to anchor vertices to get decoded vertices
+    verts = anc_xy + offs_rot  # (N, 4, 2)
 
-    # Clamp the decoded vertices to image bounds
-    verts_dec[..., 0].clamp_(0, W)
-    verts_dec[..., 1].clamp_(0, H)
-
-    # Return the decoded vertices as (N, 8) tensor
-    return verts_dec.view(N, 8)
+    # Clamp coordinates to image bounds
+    verts[..., 0].clamp_(0, W)
+    verts[..., 1].clamp_(0, H)
+    return verts.view(N, 8)
 
 
 def xywhr2xyxyxyxy(xywhr: torch.Tensor) -> np.ndarray:
@@ -413,14 +399,15 @@ def encode_vertices(
 ) -> torch.Tensor:
     """
     Encodes ground truth oriented bounding boxes (OBBs) as normalized deltas
-    relative to the anchor boxes, for use in regression-based OBB heads.
+    relative to anchor boxes, for use as regression targets.
 
-    For each OBB, the function computes the difference between each ground truth
-    vertex and the corresponding anchor vertex, normalizes this difference by the
-    diagonal length of the anchor box (between vertex 0 and 2), and optionally
-    applies a rotation to the anchor vertices to align with the ground truth angle.
+    For each OBB, computes the offset between each ground truth vertex and the
+    corresponding anchor vertex, rotates this offset by the inverse of the ground
+    truth angle (to align with the canonical anchor orientation), and normalizes
+    by the anchor's diagonal length (between vertex 0 and 2) times the scale factor.
 
-    The output deltas are clamped to [-1, 1] and can be used as regression targets.
+    The resulting deltas are clamped to [-1, 1] and can be used as regression targets
+    for OBB vertex prediction.
 
     Args:
         gt_boxes (torch.Tensor): Ground truth boxes in absolute vertex format (N, 8).
@@ -432,39 +419,22 @@ def encode_vertices(
         torch.Tensor: Normalized deltas of shape (N, 8), where each value is in Δx/Δy space,
                       clamped to [-1, 1].
     """
-    N = anchors.size(0)  # Number of boxes
+    N = anchors.size(0)
+    anc_xy = anchors.view(N, 4, 2)
 
-    verts_a = anchors.view(
-        N, 4, 2
-    )  # Reshape anchors to (N, 4, 2) for 4 vertices per box
+    # Compute inverse rotation matrices for each box (by -gt_angle)
+    cos, sin = gt_angles.view(N, 1, 1).cos(), gt_angles.view(N, 1, 1).sin()
+    Rinv = torch.stack(
+        [torch.stack([cos, sin], -1), torch.stack([-sin, cos], -1)], -2
+    )  # (N, 2, 2)
 
-    center = verts_a.mean(
-        dim=1, keepdim=True
-    )  # Compute anchor box center, shape (N, 1, 2)
-
-    # Compute cosine and sine of the ground truth angles for rotation matrix
-    cos_t = gt_angles.cos().view(N, 1, 1)  # (N, 1, 1)
-    sin_t = gt_angles.sin().view(N, 1, 1)  # (N, 1, 1)
-
-    # Build rotation matrices for each box: shape (N, 2, 2)
-    R = torch.cat(
-        [
-            torch.cat([cos_t, -sin_t], dim=2),  # First row: [cos, -sin]
-            torch.cat([sin_t, cos_t], dim=2),  # Second row: [sin,  cos]
-        ],
-        dim=1,
+    # Compute anchor diagonal (between vertex 0 and 2), scaled
+    diag = ((anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True) * scale).view(
+        N, 1, 1
     )
 
-    # Rotate anchor vertices to align with ground truth angle
-    verts_rot = torch.bmm(verts_a - center, R) + center  # (N, 4, 2)
+    # Compute offsets, rotate to canonical orientation, and normalize
+    offs = torch.matmul(gt_boxes.view(N, 4, 2) - anc_xy, Rinv) / diag
 
-    # Compute the diagonal length of each anchor box (distance between vertex 0 and 2), scaled
-    diag = ((verts_a[:, 0] - verts_a[:, 2]).pow(2).sum(1).sqrt() * scale).view(
-        N, 1, 1
-    )  # (N, 1, 1)
-
-    # Compute normalized deltas between ground truth and rotated anchor vertices
-    deltas = (gt_boxes.view(N, 4, 2) - verts_rot) / diag  # (N, 4, 2)
-
-    # Flatten to (N, 8) and clamp to [-1, 1] for stability
-    return deltas.view(N, 8).clamp_(-1.0, 1.0)
+    # Flatten and clamp to [-1, 1]
+    return offs.view(N, 8).clamp_(-1.0, 1.0)

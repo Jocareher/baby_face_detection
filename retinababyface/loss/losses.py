@@ -8,7 +8,6 @@ from .utils import (
     match_anchors_to_targets,
     probiou,
     xyxyxyxy2xywhr,
-    encode_vertices,
     decode_vertices,
 )
 from data_setup.augmentations import wrap_to_pi
@@ -363,11 +362,20 @@ class OBBIoULoss(nn.Module):
 
 class OBBRegressionLoss(nn.Module):
     """
-    Computes either L1 or Smooth L1 loss between predicted OBB deltas and
-    encoded ground-truth deltas (via encode_vertices).
+    Oriented Bounding Box (OBB) regression loss for 8-point vertex parameterization.
 
-    The loss is applied directly on the 8-point vertex offsets, normalized with respect
-    to the anchor box diagonal, as defined in the encode_vertices() function.
+    This loss computes the distance between predicted and ground-truth OBBs in the vertex space.
+    The predicted deltas are decoded into absolute vertex coordinates using the anchor box and
+    predicted angle, and compared to the ground-truth vertices.
+
+    Supports two loss types:
+        - "l1": Standard L1 loss (mean absolute error) between predicted and ground-truth vertices.
+        - "smooth_l1": Smooth L1 loss (Huber loss) for robustness to outliers.
+
+    Args:
+        loss_type (str): "l1" for L1 loss, "smooth_l1" for Smooth-L1 loss.
+        beta (float): Transition point for Smooth-L1 loss. Ignored if loss_type="l1".
+        reduction (str): Reduction method: "none", "sum", or "mean".
     """
 
     def __init__(
@@ -378,8 +386,8 @@ class OBBRegressionLoss(nn.Module):
     ):
         """
         Args:
-            loss_type (str): "l1" for L1 loss, "smooth_l1" for Smooth-L1.
-            beta (float): Transition point for Smooth-L1. Ignored if loss_type="l1".
+            loss_type (str): "l1" for L1 loss, "smooth_l1" for Smooth-L1 loss.
+            beta (float): Transition point for Smooth-L1 loss. Ignored if loss_type="l1".
             reduction (str): One of "none", "sum", or "mean".
         """
         super().__init__()
@@ -391,28 +399,42 @@ class OBBRegressionLoss(nn.Module):
     def forward(
         self,
         pred_deltas: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
+        pred_angles: torch.Tensor,  # (B=1, N_pos, 1) or (N_pos, 1)
         gt_xy: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
         anchors: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
-        gt_angles: torch.Tensor,  # (B=1, N_pos, 1) or (N_pos, 1)
+        image_size: Tuple[int, int],  # (W, H) of the image
     ) -> torch.Tensor:
-        # 1) Squeeze away the leading batch=1 dim, if present
+        """
+        Computes the OBB regression loss between predicted and ground-truth vertices.
+
+        Args:
+            pred_deltas (Tensor): Predicted vertex deltas, shape (B=1, N, 8) or (N, 8).
+            pred_angles (Tensor): Predicted angles in radians, shape (B=1, N, 1) or (N, 1).
+            gt_xy (Tensor): Ground-truth vertices, shape (B=1, N, 8) or (N, 8).
+            anchors (Tensor): Anchor box vertices, shape (B=1, N, 8) or (N, 8).
+            image_size (Tuple[int, int]): Image size as (width, height).
+
+        Returns:
+            Tensor: Scalar loss value (if reduction is "mean" or "sum"), or per-sample loss.
+        """
+        # Remove leading batch dimension if present (B=1)
         if pred_deltas.dim() == 3 and pred_deltas.size(0) == 1:
-            pred = pred_deltas.squeeze(0)
-            gt = gt_xy.squeeze(0)
-            anc = anchors.squeeze(0)
-            ang = gt_angles.squeeze(0)
-        else:
-            pred, gt, anc, ang = pred_deltas, gt_xy, anchors, gt_angles
+            pred_deltas = pred_deltas.squeeze(0)
+            pred_angles = pred_angles.squeeze(0)
+            gt_xy = gt_xy.squeeze(0)
+            anchors = anchors.squeeze(0)
 
-        # 2) Encode GT into the same normalized delta space
-        gt_deltas = encode_vertices(gt, anc, ang)
+        pred_angles = pred_angles.squeeze(-1)
 
-        # 3) Compute the selected loss
+        # Decode predicted deltas into absolute vertex coordinates
+        verts_pred = decode_vertices(pred_deltas, anchors, pred_angles, image_size)
+
+        # Compute the selected loss between predicted and ground-truth vertices
         if self.loss_type == "l1":
-            return F.l1_loss(pred, gt_deltas, reduction=self.reduction)
+            return F.l1_loss(verts_pred, gt_xy, reduction=self.reduction)
         else:  # smooth_l1
             return F.smooth_l1_loss(
-                pred, gt_deltas, beta=self.beta, reduction=self.reduction
+                verts_pred, gt_xy, beta=self.beta, reduction=self.reduction
             )
 
 
@@ -517,6 +539,7 @@ class MultiTaskLoss(nn.Module):
         neg_samples_ratio (int): Ratio of negative samples to positive samples for face classification.
         face_pos_weight (float): Positive weight for the face classification loss.
         sigma_l2_cls (float): Standard deviation for Gaussian label smoothing in L2Loss (if used).
+
 
     Note:
         - The loss function expects the model's output to be in the following format:
@@ -748,16 +771,18 @@ class MultiTaskLoss(nn.Module):
             pred_deltas_2 = deltas[b][abs_pos_idx_2]  # (num_pos_2, 8)
             gt_boxes_2 = targets["boxes"][b][gt_idx_2]  # (num_pos_2, 8)
             anc_xy_2 = anchors_xy[b][abs_pos_idx_2]  # (num_pos_2, 8)
+            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)  # (num_pos_2,)
             obb_loss += self.obb_loss(
-                pred_deltas_2.unsqueeze(0),  # (1, num_pos_2, 8)
-                gt_boxes_2.unsqueeze(0),  # (1, num_pos_2, 8)
-                anc_xy_2.unsqueeze(0),  # (1, num_pos_2, 8)
+                pred_deltas_2,  # (num_pos_2, 8)
+                pa_2,  # (num_pos_2, 1)
+                gt_boxes_2,  # (num_pos_2, 8)
+                anc_xy_2,  # (num_pos_2, 8)
+                image_sizes[b],  # (W, H)
             )
 
             # -------------------------------------
             # Stage 2: Final rotation loss
             # -------------------------------------
-            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)  # (num_pos_2,)
             ga_2 = targets["angle"][b][gt_idx_2].squeeze(-1)  # (num_pos_2,)
             pa_wrapped_2 = wrap_to_pi(pa_2)  # (num_pos_2,)
             ga_wrapped_2 = wrap_to_pi(ga_2)  # (num_pos_2,)

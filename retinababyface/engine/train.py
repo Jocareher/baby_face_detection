@@ -208,7 +208,7 @@ def nms_rotated(
 
 
 def infer_with_rotated_nms(
-    model: nn.Module,
+    model_or_preds: Union[nn.Module, Tuple],
     images: torch.Tensor,  # (B, 3, H, W)
     anchors_xy: torch.Tensor,  # (N, 8) anchor corners in xyxyxyxy
     image_size: Tuple[int, int],  # (W, H)
@@ -224,7 +224,7 @@ def infer_with_rotated_nms(
     applying rotated Non-Maximum Suppression (NMS) to filter predictions.
 
     Args:
-        model (nn.Module): Model that outputs orientation logits, face logits, vertex deltas, and angles.
+        model_or_preds (Union[nn.Module, Tuple]): Either a model that outputs predictions or a tuple of precomputed outputs.
         images (Tensor): Batch of input images, shape (B, 3, H, W).
         anchors_xy (Tensor): Anchor polygons in (N, 8) format (4 corners per anchor).
         image_size (Tuple[int, int]): Size of input images as (W, H).
@@ -242,14 +242,18 @@ def infer_with_rotated_nms(
             - 'labels':   (M,)   orientation labels (0–4)
             - 'polygons': (M, 8) 4-corner polygons for visualization
     """
+    # If model_or_preds is a model, run inference to get outputs
+    if isinstance(model_or_preds, nn.Module):
+        orient_logits, face_logits, deltas, pred_angles = model_or_preds(images)
+    # If model_or_preds is already a tuple of outputs, unpack them
+    else:
+        orient_logits, face_logits, deltas, pred_angles = model_or_preds
+        # chequeo rápido de forma
+        assert orient_logits.shape[0] == images.size(
+            0
+        ), "Batch size mismatch between model outputs and input images"
+
     B = images.size(0)
-    # Unpack model outputs: orientation logits, face logits, vertex deltas, and predicted angles
-    (
-        orient_logits,
-        face_logits,
-        deltas,
-        pred_angles,
-    ) = model(images)
 
     face_prob = torch.sigmoid(face_logits.squeeze(-1))  # (B, N, 1) → (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
@@ -284,7 +288,10 @@ def infer_with_rotated_nms(
 
         # Decode predicted polygons for selected anchors
         verts = decode_vertices(
-            deltas[b][sel], anchors_xy[sel], image_size, use_diag=True
+            deltas[b][sel],
+            anchors_xy[sel],
+            pred_angles[b][sel].squeeze(-1),
+            image_size,
         )  # (K, 8)
         # Convert polygons to (cx, cy, w, h, θ) format
         xywhr = xyxyxyxy2xywhr(
@@ -996,9 +1003,11 @@ def val_step(
             anchors_xy, anchors_xywhr = anchors
             batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
+            preds = model(images)
+
             # Perform inference and apply rotated NMS
             outputs = infer_with_rotated_nms(
-                model,
+                preds,
                 images,
                 anchors_xy,
                 image_size=(images.shape[3], images.shape[2]),
@@ -1035,10 +1044,9 @@ def val_step(
                     all_gt_labels.append(torch.zeros((0,), dtype=torch.long))
 
             # Compute loss for the batch
-            pred = model(images)
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
             loss, loss_class, loss_face, loss_obb, loss_angle, loss_rect = loss_fn(
-                pred, targets, batch_anchors, anchors_xywhr, image_sizes
+                preds, targets, batch_anchors, anchors_xywhr, image_sizes
             )
             total_loss += loss.item()
             class_loss_sum += loss_class

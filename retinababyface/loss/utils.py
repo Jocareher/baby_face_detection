@@ -306,24 +306,25 @@ def decode_vertices(
         torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex positions for each OBB,
             clamped to the image bounds.
     """
+    # Get the image dimensions and number of anchors
     W, H = image_size
+    # Get the number of anchors
     N = anchors.size(0)
-
+    # Reshape angles and anchors to (N, 4, 2) for easier manipulation
+    pred_angles = pred_angles.reshape(N)
     anc_xy = anchors.view(N, 4, 2)
 
     # Scale normalized offsets by anchor diagonal and scale factor
-    diag = ((anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True) * scale).view(
-        N, 1, 1
-    )
-    offs = deltas.view(N, 4, 2) * diag  # (N, 4, 2)
+    diag = (anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True) * scale
+    offs = deltas.view(N, 4, 2) * diag.unsqueeze(-1)
 
     # Rotate offsets by predicted angle for each box
-    cos, sin = pred_angles.view(N, 1, 1).cos(), pred_angles.view(N, 1, 1).sin()
-    R = torch.cat(
-        [torch.cat([cos, -sin], dim=2), torch.cat([sin, cos], dim=2)], dim=1
-    )  # (N, 2, 2)
-    # Rotate offsets using batch matrix multiplication
-    offs_rot = torch.bmm(offs, R)
+    cos, sin = pred_angles.cos().unsqueeze(1), pred_angles.sin().unsqueeze(1)
+    dx, dy = offs[..., 0], offs[..., 1]
+    # Apply rotation: (cos, -sin) and (sin, cos) for each box
+    rot_x = cos * dx - sin * dy
+    rot_y = sin * dx + cos * dy
+    offs_rot = torch.stack((rot_x, rot_y), dim=-1)
 
     # Add rotated offsets to anchor vertices to get decoded vertices
     verts = anc_xy + offs_rot  # (N, 4, 2)
@@ -427,6 +428,7 @@ def encode_vertices(
     anc_xy = anchors.view(N, 4, 2)
     gt_xy = gt_boxes.view(N, 4, 2)
 
+    # Compute offsets between ground truth and anchor vertices
     dx = gt_xy[..., 0] - anc_xy[..., 0]
     dy = gt_xy[..., 1] - anc_xy[..., 1]
 
@@ -434,13 +436,13 @@ def encode_vertices(
     cos_t = gt_angles.cos().unsqueeze(1)  # (N,1)
     sin_t = gt_angles.sin().unsqueeze(1)  # (N,1)
 
-    # rotación inversa (-θ)
+    # Apply inverse rotation (-θ) to offsets
     rot_x = cos_t * dx + sin_t * dy  # (N,4)
     rot_y = -sin_t * dx + cos_t * dy  # (N,4)
 
     offs = torch.stack([rot_x, rot_y], dim=-1)  # (N,4,2)
 
-    # normalización por la diagonal del anchor
+    # Normalize by the anchor diagonal length and scale factor
     diag = (anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True)  # (N,1)
     offs = offs / (diag.unsqueeze(-1) * scale)  # (N,4,2)
 

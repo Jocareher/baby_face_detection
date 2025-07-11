@@ -27,7 +27,8 @@ from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference, plot_training_curves_from_csv
 from loss.losses import MultiTaskLoss
-from utils.visualize import visualize_and_save_dataset_in_script, create_training_gif
+from utils.visualize import visualize_and_save_dataset_in_script
+from utils.repro import save_reproducibility_metadata
 import config
 
 
@@ -362,7 +363,10 @@ def main():
     # ------------------------------------------------------------------------
     output_dir = Path("runs") / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Output directory created at: {output_dir}")
 
+    # Save run metadata for reproducibility
+    save_reproducibility_metadata(output_dir, vars(args))
     ckpt_path = output_dir / "checkpoint.pt"
     csv_path = output_dir / f"{args.run_name}.csv"
     config_path = output_dir / f"{args.run_name}.yaml"

@@ -1022,6 +1022,8 @@ def inference(
         device=device,
         labels_map=labels_map,
     )
+    
+    metrics_csv = dump_metrics_csv(results, labels_map, output_dir)
 
     print("[STEP 3] Computing metrics and plots...")
     mAP, APs = compute_map_and_pr(results["per_true"], results["per_score"])
@@ -1242,3 +1244,77 @@ def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
     plt.close()
 
     print(f"[INFO] Training curves saved to: {curves_path}")
+
+def dump_metrics_csv(results: dict,
+                     labels_map: dict[int, str],
+                     out_dir: Path,
+                     fname: str = "metrics.csv") -> Path:
+    """
+    Vuelca en *un solo* metrics.csv:
+      · tabla de métricas por clase
+      · confusion_matrix (raw)
+      · confusion_matrix (normalized)
+    Cada bloque va precedido por una línea '# --- nombre ---' que actúa
+    como separador y comentario (pandas.read_csv(..., comment='#') lo ignora).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / fname
+
+    classes      = list(labels_map.keys())
+    class_names  = [labels_map[c] for c in classes]
+    bg_label, bg_nm = -1, "BG"
+
+    # ---------- métricas por clase ----------------------------------------
+    rows = []
+    for c, name in zip(classes, class_names):
+        tp = results["stats"][c]["tp"]
+        fp = results["stats"][c]["fp"]
+        fn = results["stats"][c]["fn"]
+
+        prec = tp / (tp + fp) if tp+fp else 0.0
+        rec  = tp / (tp + fn) if tp+fn else 0.0
+        f1   = 2*tp / (2*tp + fp + fn) if tp else 0.0
+        ap   = average_precision_score(results["per_true"][c],
+                                       results["per_score"][c]) if tp else 0.0
+
+        iou_vals   = results["iou_errs"][c]
+        angle_vals = results["angle_errs"][c]
+
+        rows.append(dict(Class=name,
+                         TP=tp, FP=fp, FN=fn,
+                         Precision=prec, Recall=rec, F1=f1, AP_PR=ap,
+                         IoU_mean=np.mean(iou_vals)   if iou_vals else 0.0,
+                         IoU_std =np.std(iou_vals)    if iou_vals else 0.0,
+                         Angle_mean_deg=np.mean(angle_vals) if angle_vals else 0.0,
+                         Angle_std_deg =np.std(angle_vals)  if angle_vals else 0.0))
+
+    # fila background: FPs que predijeron algo donde no había GT
+    bg_fp = int((np.array(results["y_true"]) == bg_label).sum())
+    rows.append(dict(Class=bg_nm, TP=0, FP=bg_fp, FN=0,
+                     Precision=0.0, Recall=0.0, F1=0.0, AP_PR=0.0,
+                     IoU_mean=0.0, IoU_std=0.0,
+                     Angle_mean_deg=0.0, Angle_std_deg=0.0))
+
+    df_metrics = pd.DataFrame(rows).set_index("Class")
+
+    # ---------- matrices de confusión ------------------------------------
+    mat_labels = classes + [bg_label]
+    mat_names  = class_names + [bg_nm]
+
+    cm_raw  = confusion_matrix(results["y_true"], results["y_pred"], labels=mat_labels)
+    cm_norm = np.nan_to_num(cm_raw.astype(float) / cm_raw.sum(axis=1, keepdims=True))
+
+    df_cm_raw  = pd.DataFrame(cm_raw,  index=mat_names, columns=mat_names)
+    df_cm_norm = pd.DataFrame(cm_norm, index=mat_names, columns=mat_names)
+
+    # ---------- escribir todo en un solo CSV -----------------------------
+    with open(csv_path, "w", newline="") as f:
+        f.write("# --- METRICS PER CLASS -------------------------------------------------\n")
+        df_metrics.to_csv(f, float_format="%.4f")
+        f.write("\n# --- CONFUSION MATRIX RAW ----------------------------------------------\n")
+        df_cm_raw.to_csv(f)
+        f.write("\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------\n")
+        df_cm_norm.to_csv(f, float_format="%.4f")
+
+    print(f"[INFO] Métricas + matrices guardadas en {csv_path}")
+    return csv_path

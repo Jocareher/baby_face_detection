@@ -367,6 +367,8 @@ def main():
 
     # Save run metadata for reproducibility
     save_reproducibility_metadata(output_dir, vars(args))
+    
+    # Create subdirectories for checkpoints, CSV logs, config, figures, grids, and predictions
     ckpt_path = output_dir / "checkpoint.pt"
     csv_path = output_dir / f"{args.run_name}.csv"
     config_path = output_dir / f"{args.run_name}.yaml"

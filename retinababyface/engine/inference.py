@@ -1011,10 +1011,10 @@ def inference(
 
     output_dir = Path(output_dir)
     figures_dir = output_dir / "figures"
-    predictions_img_dir = output_dir / "predictions"
+    predictions_dir = output_dir / "predictions"
 
     # Create output directories if they do not exist
-    for d in (figures_dir, predictions_img_dir):
+    for d in (figures_dir, predictions_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     print("[STEP 1] Preparing anchors...")
@@ -1112,7 +1112,7 @@ def inference(
     metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
 
     print("[STEP 5] Saving individual prediction images...")
-    save_individual_predictions(results["samples"], labels_map, output_dir, mean, std)
+    save_individual_predictions(results["samples"], labels_map, predictions_dir, mean, std)
 
     print("[DONE] Inference and reporting completed.")
 

@@ -420,22 +420,28 @@ def encode_vertices(
         torch.Tensor: Normalized deltas of shape (N, 8), where each value is in Δx/Δy space,
                       clamped to [-1, 1].
     """
+    if gt_angles.dim() > 1:  # (N,1) -> (N,)
+        gt_angles = gt_angles.squeeze(-1)
+
     N = anchors.size(0)
     anc_xy = anchors.view(N, 4, 2)
+    gt_xy = gt_boxes.view(N, 4, 2)
+
+    dx = gt_xy[..., 0] - anc_xy[..., 0]
+    dy = gt_xy[..., 1] - anc_xy[..., 1]
 
     # Compute inverse rotation matrices for each box (by -gt_angle)
-    cos, sin = gt_angles.view(N, 1, 1).cos(), gt_angles.view(N, 1, 1).sin()
-    Rinv = torch.stack(
-        [torch.stack([cos, sin], -1), torch.stack([-sin, cos], -1)], -2
-    )  # (N, 2, 2)
+    cos_t = gt_angles.cos().unsqueeze(1)  # (N,1)
+    sin_t = gt_angles.sin().unsqueeze(1)  # (N,1)
 
-    # Compute anchor diagonal (between vertex 0 and 2), scaled
-    diag = ((anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True) * scale).view(
-        N, 1, 1
-    )
+    # rotación inversa (-θ)
+    rot_x = cos_t * dx + sin_t * dy  # (N,4)
+    rot_y = -sin_t * dx + cos_t * dy  # (N,4)
 
-    # Compute offsets, rotate to canonical orientation, and normalize
-    offs = torch.matmul(gt_boxes.view(N, 4, 2) - anc_xy, Rinv) / diag
+    offs = torch.stack([rot_x, rot_y], dim=-1)  # (N,4,2)
 
-    # Flatten and clamp to [-1, 1]
-    return offs.view(N, 8).clamp_(-1.0, 1.0)
+    # normalización por la diagonal del anchor
+    diag = (anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True)  # (N,1)
+    offs = offs / (diag.unsqueeze(-1) * scale)  # (N,4,2)
+
+    return offs.reshape(N, 8).clamp_(-1.0, 1.0)

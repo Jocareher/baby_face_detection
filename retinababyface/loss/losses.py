@@ -9,6 +9,7 @@ from .utils import (
     probiou,
     xyxyxyxy2xywhr,
     decode_vertices,
+    encode_vertices,
 )
 from data_setup.augmentations import wrap_to_pi
 import config
@@ -365,11 +366,10 @@ class OBBRegressionLoss(nn.Module):
     Oriented Bounding Box (OBB) regression loss for 8-point vertex parameterization.
 
     This loss computes the distance between predicted and ground-truth OBBs in the vertex space.
-    The predicted deltas are decoded into absolute vertex coordinates using the anchor box and
-    predicted angle, and compared to the ground-truth vertices.
+    The predicted deltas are compared to the encoded ground-truth deltas (relative to the anchor and GT angle).
 
     Supports two loss types:
-        - "l1": Standard L1 loss (mean absolute error) between predicted and ground-truth vertices.
+        - "l1": Standard L1 loss (mean absolute error) between predicted and ground-truth deltas.
         - "smooth_l1": Smooth L1 loss (Huber loss) for robustness to outliers.
 
     Args:
@@ -399,20 +399,18 @@ class OBBRegressionLoss(nn.Module):
     def forward(
         self,
         pred_deltas: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
-        pred_angles: torch.Tensor,  # (B=1, N_pos, 1) or (N_pos, 1)
+        gt_angles: torch.Tensor,  # (B=1, N_pos, 1) or (N_pos, 1)
         gt_xy: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
         anchors: torch.Tensor,  # (B=1, N_pos, 8) or (N_pos, 8)
-        image_size: Tuple[int, int],  # (W, H) of the image
     ) -> torch.Tensor:
         """
-        Computes the OBB regression loss between predicted and ground-truth vertices.
+        Computes the OBB regression loss between predicted and ground-truth deltas.
 
         Args:
             pred_deltas (Tensor): Predicted vertex deltas, shape (B=1, N, 8) or (N, 8).
-            pred_angles (Tensor): Predicted angles in radians, shape (B=1, N, 1) or (N, 1).
+            gt_angles (Tensor): Ground-truth angles in radians, shape (B=1, N, 1) or (N, 1).
             gt_xy (Tensor): Ground-truth vertices, shape (B=1, N, 8) or (N, 8).
             anchors (Tensor): Anchor box vertices, shape (B=1, N, 8) or (N, 8).
-            image_size (Tuple[int, int]): Image size as (width, height).
 
         Returns:
             Tensor: Scalar loss value (if reduction is "mean" or "sum"), or per-sample loss.
@@ -420,21 +418,22 @@ class OBBRegressionLoss(nn.Module):
         # Remove leading batch dimension if present (B=1)
         if pred_deltas.dim() == 3 and pred_deltas.size(0) == 1:
             pred_deltas = pred_deltas.squeeze(0)
-            pred_angles = pred_angles.squeeze(0)
+            gt_angles = gt_angles.squeeze(0)
             gt_xy = gt_xy.squeeze(0)
             anchors = anchors.squeeze(0)
 
-        pred_angles = pred_angles.squeeze(-1)
+        if gt_angles.dim() == 2 and gt_angles.size(1) == 1:
+            gt_angles = gt_angles.squeeze(1)
 
-        # Decode predicted deltas into absolute vertex coordinates
-        verts_pred = decode_vertices(pred_deltas, anchors, pred_angles, image_size)
+        # Encode ground-truth vertices as deltas relative to anchors and GT angle
+        gt_deltas = encode_vertices(gt_xy, anchors, gt_angles)
 
-        # Compute the selected loss between predicted and ground-truth vertices
+        # Compute the selected loss between predicted and ground-truth deltas
         if self.loss_type == "l1":
-            return F.l1_loss(verts_pred, gt_xy, reduction=self.reduction)
+            return F.l1_loss(pred_deltas, gt_deltas, reduction=self.reduction)
         else:  # smooth_l1
             return F.smooth_l1_loss(
-                verts_pred, gt_xy, beta=self.beta, reduction=self.reduction
+                pred_deltas, gt_deltas, beta=self.beta, reduction=self.reduction
             )
 
 
@@ -771,21 +770,20 @@ class MultiTaskLoss(nn.Module):
             pred_deltas_2 = deltas[b][abs_pos_idx_2]  # (num_pos_2, 8)
             gt_boxes_2 = targets["boxes"][b][gt_idx_2]  # (num_pos_2, 8)
             anc_xy_2 = anchors_xy[b][abs_pos_idx_2]  # (num_pos_2, 8)
-            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)  # (num_pos_2,)
-            pa_wrapped_2 = wrap_to_pi(pa_2)  # (num_pos_2,)
+            ga_2 = targets["angle"][b][gt_idx_2].squeeze(-1)  # (num_pos_2,)
+            ga_wrapped_2 = wrap_to_pi(ga_2)  # (num_pos_2,)
             obb_loss += self.obb_loss(
                 pred_deltas_2.unsqueeze(0),  # (num_pos_2, 8)
-                pa_wrapped_2.unsqueeze(0).unsqueeze(-1),  # (num_pos_2, 1)
+                ga_wrapped_2.unsqueeze(0).unsqueeze(-1),  # (num_pos_2, 1)
                 gt_boxes_2.unsqueeze(0),  # (num_pos_2, 8)
                 anc_xy_2.unsqueeze(0),  # (num_pos_2, 8)
-                image_sizes[b],  # (W, H)
             )
 
             # -------------------------------------
             # Stage 2: Final rotation loss
             # -------------------------------------
-            ga_2 = targets["angle"][b][gt_idx_2].squeeze(-1)  # (num_pos_2,)
-            ga_wrapped_2 = wrap_to_pi(ga_2)  # (num_pos_2,)
+            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)  # (num_pos_2,)
+            pa_wrapped_2 = wrap_to_pi(pa_2)  # (num_pos_2,)
             rot_loss += self.rot_loss(
                 pa_wrapped_2.unsqueeze(-1), ga_wrapped_2.unsqueeze(-1)
             )

@@ -785,10 +785,12 @@ def plot_qualitative_grid(
     )
     axes = axes.flatten()
 
-    for ax, (img_t, out, fname, gt_b, gt_a, gt_l) in zip(axes, samples[: rows * cols]):
+    for ax, (img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img) in zip(
+        axes, samples[: rows * cols]
+    ):
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
-        ax.set_title(Path(fname).name, fontsize=8)
+        ax.set_title(f"{Path(fname).name}\nFP:{fp_img}  FN:{fn_img}", fontsize=7)
         ax.set_aspect("equal")
 
         # Ground Truth OBBs
@@ -860,7 +862,14 @@ def plot_qualitative_grid(
 def save_individual_predictions(
     samples: List[
         Tuple[
-            Any, Dict[str, torch.Tensor], str, torch.Tensor, torch.Tensor, torch.Tensor
+            Any,
+            Dict[str, torch.Tensor],
+            str,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            int,
+            int,
         ]
     ],
     labels_map: Dict[int, str],
@@ -955,17 +964,18 @@ def save_individual_predictions(
         if not split_by_error:
             save_dir = base_dir
         else:
-            if fp_img == 0 and fn_img == 0:
-                save_dir = base_dir / "tp_only"
-            elif fp_img > 0 and fn_img == 0:
-                save_dir = base_dir / "fp"
-            elif fp_img == 0 and fn_img > 0:
-                save_dir = base_dir / "fn"
-            else:  # hay de ambos tipos
-                save_dir = base_dir / "fp_fn"
+            for img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img in samples:
+                subdir = "TP"
+                if fp_img and not fn_img:
+                    subdir = "FP"
+                elif fn_img and not fp_img:
+                    subdir = "FN"
+                elif fp_img and fn_img:
+                    subdir = "FP_FN"
 
-        save_path = save_dir / Path(fname).name
-        fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.1)
+        save_path = Path(output_dir) / subdir
+        save_path.mkdir(exist_ok=True, parents=True)
+        fig.savefig(save_path / Path(fname).name, dpi=100, bbox_inches="tight")
         plt.close(fig)
 
     print(f"[INFO] Saved individual predictions to {output_dir}")

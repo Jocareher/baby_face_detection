@@ -83,7 +83,7 @@ def save_reproducibility_metadata(
         The path to the generated metadata file.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    metadata_file = output_dir / "run_info.txt"
+    metadata_file = output_dir / "metadata.txt"
 
     # --- Gather Git repository information ---
     repo_root = get_git_repo_root()

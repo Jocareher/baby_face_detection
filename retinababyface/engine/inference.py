@@ -182,6 +182,7 @@ def run_inference(
             for b in range(batch_size):
                 fname = dataset.file_list[global_idx]
                 global_idx += 1
+                fp_img, fn_img = 0, 0
 
                 # --------------------- Ground Truth Processing -------------------
                 valid_mask = targets["valid_mask"][b]
@@ -221,6 +222,7 @@ def run_inference(
 
                         # Update stats and confusion matrix
                         stats[cls_det]["fp"] += 1  # Count as False Positive
+                        fp_img += 1
                         y_true.append(-1)  # Background row
                         y_pred.append(cls_det)  # Predicted class column
 
@@ -233,6 +235,8 @@ def run_inference(
                             gt_boxes.cpu(),
                             gt_angles.cpu(),
                             gt_labels.cpu(),
+                            fp_img,
+                            fn_img,
                         )
                     )
                     continue  # Next image
@@ -292,10 +296,12 @@ def run_inference(
                             # -------------- CLASS CONFUSION ERROR -----------------
                             # Wrong class but good localization
                             stats[cls_det]["fp"] += 1
+                            fp_img += 1
                             per_true[cls_det].append(0)
                             per_score[cls_det].append(score_det)
 
                             stats[true_cls]["fn"] += 1
+                            fn_img += 1
                             gt_matched[best_gt_idx] = True
 
                             y_true.append(true_cls)  # GT class row
@@ -308,6 +314,7 @@ def run_inference(
                         # ---------------- BACKGROUND FALSE POSITIVE --------------
                         # No matching GT with sufficient IoU
                         stats[cls_det]["fp"] += 1
+                        fp_img += 1
                         per_true[cls_det].append(0)
                         per_score[cls_det].append(score_det)
 
@@ -323,6 +330,7 @@ def run_inference(
                     if not gt_matched[i]:
                         cls_gt = int(gt_labels[i])
                         stats[cls_gt]["fn"] += 1
+                        fn_img += 1
                         y_true.append(cls_gt)  # GT class row
                         y_pred.append(-1)  # Background column
 
@@ -335,6 +343,8 @@ def run_inference(
                         gt_boxes.cpu(),
                         gt_angles.cpu(),
                         gt_labels.cpu(),
+                        fp_img,
+                        fn_img,
                     )
                 )
 
@@ -857,6 +867,7 @@ def save_individual_predictions(
     output_dir: str,
     mean: Tuple[float, float, float],
     std: Tuple[float, float, float],
+    split_by_error: bool = True,
 ) -> None:
     """
     Saves individual visualizations of predictions with GT and predicted OBBs.
@@ -868,9 +879,14 @@ def save_individual_predictions(
         mean (Tuple): Mean for denormalization.
         std (Tuple): Std for denormalization.
     """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    base_dir = Path(output_dir)
+    if split_by_error:
+        for sub in ("tp_only", "fp", "fn", "fp_fn"):
+            (base_dir / sub).mkdir(parents=True, exist_ok=True)
+    else:
+        base_dir.mkdir(parents=True, exist_ok=True)
 
-    for img_t, out, fname, gt_b, gt_a, gt_l in samples:
+    for img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img in samples:
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
@@ -936,8 +952,19 @@ def save_individual_predictions(
                 va="top",
                 bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
+        if not split_by_error:
+            save_dir = base_dir
+        else:
+            if fp_img == 0 and fn_img == 0:
+                save_dir = base_dir / "tp_only"
+            elif fp_img > 0 and fn_img == 0:
+                save_dir = base_dir / "fp"
+            elif fp_img == 0 and fn_img > 0:
+                save_dir = base_dir / "fn"
+            else:  # hay de ambos tipos
+                save_dir = base_dir / "fp_fn"
 
-        save_path = os.path.join(output_dir, os.path.basename(fname))
+        save_path = save_dir / Path(fname).name
         fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.1)
         plt.close(fig)
 
@@ -1112,7 +1139,9 @@ def inference(
     metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
 
     print("[STEP 5] Saving individual prediction images...")
-    save_individual_predictions(results["samples"], labels_map, predictions_dir, mean, std)
+    save_individual_predictions(
+        results["samples"], labels_map, predictions_dir, mean, std
+    )
 
     print("[DONE] Inference and reporting completed.")
 

@@ -964,14 +964,14 @@ def save_individual_predictions(
         if not split_by_error:
             save_dir = base_dir
         else:
-            for img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img in samples:
-                subdir = "TP"
-                if fp_img and not fn_img:
-                    subdir = "FP"
-                elif fn_img and not fp_img:
-                    subdir = "FN"
-                elif fp_img and fn_img:
-                    subdir = "FP_FN"
+            if fp_img and not fn_img:
+                subdir = "fp"
+            elif fn_img and not fp_img:
+                subdir = "fn"
+            elif fp_img and fn_img:
+                subdir = "fp_fn"
+            else:
+                subdir = "tp_only"
 
         save_path = Path(output_dir) / subdir
         save_path.mkdir(exist_ok=True, parents=True)

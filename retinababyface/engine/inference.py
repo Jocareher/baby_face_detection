@@ -964,41 +964,58 @@ def inference(
     grid_shape: Tuple[int, int] = (3, 3),
     mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
     std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
+    save_figs: bool = True,
+    close_figs: bool = True,
 ) -> Dict[str, Any]:
     """
-    Complete inference pipeline:
-    1. Prepares anchors
-    2. Runs inference and collects predictions
-    3. Computes evaluation metrics
-    4. Plots visualizations (PR, F1, confusion matrix, boxplots)
-    5. Generates qualitative grids and saves per-image results
+    Complete inference and reporting pipeline for object detection evaluation.
+
+    This function performs the following steps:
+      1. Anchor preparation for inference.
+      2. Runs inference on the test set and collects predictions and ground truths.
+      3. Computes evaluation metrics (mAP, AP per class, confusion matrix, etc.).
+      4. Generates and saves visualizations: PR curves, F1 vs threshold, confusion matrices, boxplots.
+      5. Creates a qualitative grid of predictions and saves individual prediction images.
+      6. Exports metrics and confusion matrices to CSV.
 
     Args:
-        model (torch.nn.Module): Initialized model architecture.
-        test_loader (DataLoader): Dataloader for test set.
-        output_dir (str): Directory to store output visualizations.
-        device (torch.device): Computation device.
+        model (torch.nn.Module): The initialized model architecture.
+        test_loader (DataLoader): DataLoader for the test set.
+        output_dir (Union[str, Path]): Directory to store output visualizations and results.
+        device (torch.device): Computation device (e.g., 'cuda' or 'cpu').
         labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
-        scale_factors (List[float]): Anchor scale factors.
-        ratio_factors (List[float]): Anchor ratio factors.
-        obb_stats_by_size (Dict): Precomputed OBB stats per resize size.
-        conf_thres (float): Confidence threshold for filtering predictions.
-        iou_thres (float): IoU threshold to match GT with predictions.
+        scale_factors (List[float]): Anchor scale factors for anchor generation.
+        ratio_factors (List[float]): Anchor aspect ratio factors for anchor generation.
+        face_thres (float): Confidence threshold for face detection.
+        iou_thres (float): IoU threshold for matching predictions to ground truths.
         class_thres (float): Class score threshold for filtering predictions.
-        alpha_score (float): Weight for combining face detection and OBB scores.
-        grid_shape (Tuple[int, int]): Rows x Columns in qualitative grid.
-        mean (Tuple): Image normalization mean.
-        std (Tuple): Image normalization std.
+        alpha_score (float): Weight for combining face and orientation confidence scores.
+        grid_shape (Tuple[int, int]): (Rows, Columns) for the qualitative grid of predictions.
+        mean (Tuple[float, float, float]): Mean for image normalization (for visualization).
+        std (Tuple[float, float, float]): Std for image normalization (for visualization).
+        save_figs (bool): Whether to save generated figures to disk.
+        close_figs (bool): Whether to close figures after saving (to free memory).
 
     Returns:
-        Dict[str, Any]: Dictionary of figures and computed metrics:
-            - mAP
-            - PR/F1/Confusion plots
-            - IoU and angle boxplots
-            - Qualitative grid
+        Dict[str, Any]: Dictionary containing:
+            - "mAP": Mean Average Precision (float)
+            - "APs": Per-class Average Precision (dict)
     """
 
-    output_dir.mkdir(exist_ok=True)
+    def save_figure(fig: plt.Figure, fname: str):
+        """Helper to save a matplotlib figure if enabled."""
+        if save_figs:
+            fig.savefig(figures_dir / fname, dpi=150, bbox_inches="tight")
+            if close_figs:
+                plt.close(fig)
+
+    output_dir = Path(output_dir)
+    figures_dir = output_dir / "figures"
+    predictions_img_dir = output_dir / "predictions"
+
+    # Create output directories if they do not exist
+    for d in (figures_dir, predictions_img_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
     print("[STEP 1] Preparing anchors...")
     resize_size, anchors_xy, _ = prepare_anchors(
@@ -1022,81 +1039,84 @@ def inference(
         device=device,
         labels_map=labels_map,
     )
-    
-    metrics_csv = dump_metrics_csv(results, labels_map, output_dir)
 
     print("[STEP 3] Computing metrics and plots...")
     mAP, APs = compute_map_and_pr(results["per_true"], results["per_score"])
 
-    fig_pr = plot_precision_recall(
-        per_true=results["per_true"],
-        per_score=results["per_score"],
-        labels_map=labels_map,
-        mAP=mAP,
+    # Precision-Recall curve
+    save_figure(
+        plot_precision_recall(
+            results["per_true"], results["per_score"], labels_map, mAP
+        ),
+        "precision_recall.png",
     )
 
+    # Confusion matrices (raw and normalized)
     cm_figs = plot_confusion_matrix(
         y_true=results["y_true"], y_pred=results["y_pred"], labels_map=labels_map
     )
+    save_figure(cm_figs["raw"], "confusion_matrix_raw.png")
+    save_figure(cm_figs["normalized"], "confusion_matrix_normalized.png")
 
+    # IoU boxplots per class
     iou_data = [
         {"class": labels_map[c], "iou": v}
         for c, vals in results["iou_errs"].items()
         for v in vals
     ]
-    fig_iou = plot_boxplots(
-        data=iou_data,
-        x_field="class",
-        y_field="iou",
-        title="IoU Distribution per Class",
-        labels_map=labels_map,
-        y_lim=(0, 1),
+    save_figure(
+        plot_boxplots(
+            iou_data,
+            "class",
+            "iou",
+            "IoU Distribution per Class",
+            labels_map,
+            y_lim=(0, 1),
+        ),
+        "iou_boxplot.png",
     )
 
-    angle_data = [
+    # Angle error boxplots per class
+    ang_data = [
         {"class": labels_map[c], "error°": v}
         for c, vals in results["angle_errs"].items()
         for v in vals
     ]
-    fig_ang = plot_boxplots(
-        data=angle_data,
-        x_field="class",
-        y_field="error°",
-        title="Angle-Error Distribution per Class",
-        labels_map=labels_map,
-        y_lim=(0, 180),
+    save_figure(
+        plot_boxplots(
+            ang_data,
+            "class",
+            "error°",
+            "Angle-Error Distribution per Class",
+            labels_map,
+            y_lim=(0, 180),
+        ),
+        "angle_boxplot.png",
     )
 
-    fig_f1 = plot_f1_vs_threshold(
-        all_gts=results["all_gts"],
-        all_scores=results["all_scores"],
-        all_preds=results["all_preds"],
-        labels_map=labels_map,
-        default_th=0.5,
+    # F1 score vs. confidence threshold
+    save_figure(
+        plot_f1_vs_threshold(
+            results["all_gts"], results["all_scores"], results["all_preds"], labels_map
+        ),
+        "f1_threshold.png",
     )
 
-    fig_grid = plot_qualitative_grid(
-        samples=results["samples"],
-        labels_map=labels_map,
-        grid_shape=grid_shape,
-        mean=mean,
-        std=std,
+    # Qualitative grid of predictions
+    save_figure(
+        plot_qualitative_grid(results["samples"], labels_map, grid_shape, mean, std),
+        "grid_examples.png",
     )
 
-    print("[STEP 4] Saving individual prediction images...")
+    print("[STEP 4] Exporting metrics and confusion matrix CSV...")
+    metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
+
+    print("[STEP 5] Saving individual prediction images...")
     save_individual_predictions(results["samples"], labels_map, output_dir, mean, std)
 
     print("[DONE] Inference and reporting completed.")
-    return {
-        "mAP": mAP,
-        "pr_figure": fig_pr,
-        "confusion_figure_raw": cm_figs["raw"],
-        "confusion_figure_normalized": cm_figs["normalized"],
-        "iou_boxplot_figure": fig_iou,
-        "angle_boxplot_figure": fig_ang,
-        "f1_threshold_figure": fig_f1,
-        "grid_figure": fig_grid,
-    }
+
+    return {"mAP": mAP, "APs": APs}
 
 
 def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
@@ -1245,76 +1265,116 @@ def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
 
     print(f"[INFO] Training curves saved to: {curves_path}")
 
-def dump_metrics_csv(results: dict,
-                     labels_map: dict[int, str],
-                     out_dir: Path,
-                     fname: str = "metrics.csv") -> Path:
+
+def export_metrics_and_confusion_csv(
+    results: dict, labels_map: dict[int, str], out_dir: Path, fname: str = "metrics.csv"
+) -> Path:
     """
-    Vuelca en *un solo* metrics.csv:
-      · tabla de métricas por clase
-      · confusion_matrix (raw)
-      · confusion_matrix (normalized)
-    Cada bloque va precedido por una línea '# --- nombre ---' que actúa
-    como separador y comentario (pandas.read_csv(..., comment='#') lo ignora).
+    Exports evaluation results to a single CSV file containing:
+      - Per-class metrics table (TP, FP, FN, Precision, Recall, F1, AP, IoU, Angle error)
+      - Raw confusion matrix
+      - Normalized confusion matrix
+
+    Each section is separated by a comment line starting with '# --- SECTION ---'.
+    This allows pandas.read_csv(..., comment='#') to read each table independently.
+
+    Args:
+        results (dict): Output dictionary from the inference pipeline containing metrics and predictions.
+        labels_map (dict[int, str]): Mapping from class indices to human-readable class names.
+        out_dir (Path): Directory where the CSV will be saved.
+        fname (str): Name of the CSV file (default: "metrics.csv").
+
+    Returns:
+        Path: Path to the saved CSV file.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / fname
 
-    classes      = list(labels_map.keys())
-    class_names  = [labels_map[c] for c in classes]
-    bg_label, bg_nm = -1, "BG"
+    classes = list(labels_map.keys())
+    class_names = [labels_map[c] for c in classes]
+    bg_label, bg_name = -1, "BG"
 
-    # ---------- métricas por clase ----------------------------------------
+    # ---------- Per-class metrics table ----------------------------------------
     rows = []
     for c, name in zip(classes, class_names):
         tp = results["stats"][c]["tp"]
         fp = results["stats"][c]["fp"]
         fn = results["stats"][c]["fn"]
 
-        prec = tp / (tp + fp) if tp+fp else 0.0
-        rec  = tp / (tp + fn) if tp+fn else 0.0
-        f1   = 2*tp / (2*tp + fp + fn) if tp else 0.0
-        ap   = average_precision_score(results["per_true"][c],
-                                       results["per_score"][c]) if tp else 0.0
+        prec = tp / (tp + fp) if tp + fp else 0.0
+        rec = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
+        ap = (
+            average_precision_score(results["per_true"][c], results["per_score"][c])
+            if tp
+            else 0.0
+        )
 
-        iou_vals   = results["iou_errs"][c]
+        iou_vals = results["iou_errs"][c]
         angle_vals = results["angle_errs"][c]
 
-        rows.append(dict(Class=name,
-                         TP=tp, FP=fp, FN=fn,
-                         Precision=prec, Recall=rec, F1=f1, AP_PR=ap,
-                         IoU_mean=np.mean(iou_vals)   if iou_vals else 0.0,
-                         IoU_std =np.std(iou_vals)    if iou_vals else 0.0,
-                         Angle_mean_deg=np.mean(angle_vals) if angle_vals else 0.0,
-                         Angle_std_deg =np.std(angle_vals)  if angle_vals else 0.0))
+        rows.append(
+            dict(
+                Class=name,
+                TP=tp,
+                FP=fp,
+                FN=fn,
+                Precision=prec,
+                Recall=rec,
+                F1=f1,
+                AP_PR=ap,
+                IoU_mean=np.mean(iou_vals) if iou_vals else 0.0,
+                IoU_std=np.std(iou_vals) if iou_vals else 0.0,
+                Angle_mean_deg=np.mean(angle_vals) if angle_vals else 0.0,
+                Angle_std_deg=np.std(angle_vals) if angle_vals else 0.0,
+            )
+        )
 
-    # fila background: FPs que predijeron algo donde no había GT
+    # Add background row: counts FPs where prediction was made but no GT exists
     bg_fp = int((np.array(results["y_true"]) == bg_label).sum())
-    rows.append(dict(Class=bg_nm, TP=0, FP=bg_fp, FN=0,
-                     Precision=0.0, Recall=0.0, F1=0.0, AP_PR=0.0,
-                     IoU_mean=0.0, IoU_std=0.0,
-                     Angle_mean_deg=0.0, Angle_std_deg=0.0))
+    rows.append(
+        dict(
+            Class=bg_name,
+            TP=0,
+            FP=bg_fp,
+            FN=0,
+            Precision=0.0,
+            Recall=0.0,
+            F1=0.0,
+            AP_PR=0.0,
+            IoU_mean=0.0,
+            IoU_std=0.0,
+            Angle_mean_deg=0.0,
+            Angle_std_deg=0.0,
+        )
+    )
 
     df_metrics = pd.DataFrame(rows).set_index("Class")
 
-    # ---------- matrices de confusión ------------------------------------
+    # ---------- Confusion matrices (raw and normalized) ------------------------
     mat_labels = classes + [bg_label]
-    mat_names  = class_names + [bg_nm]
+    mat_names = class_names + [bg_name]
 
-    cm_raw  = confusion_matrix(results["y_true"], results["y_pred"], labels=mat_labels)
+    cm_raw = confusion_matrix(results["y_true"], results["y_pred"], labels=mat_labels)
     cm_norm = np.nan_to_num(cm_raw.astype(float) / cm_raw.sum(axis=1, keepdims=True))
 
-    df_cm_raw  = pd.DataFrame(cm_raw,  index=mat_names, columns=mat_names)
+    df_cm_raw = pd.DataFrame(cm_raw, index=mat_names, columns=mat_names)
     df_cm_norm = pd.DataFrame(cm_norm, index=mat_names, columns=mat_names)
 
-    # ---------- escribir todo en un solo CSV -----------------------------
+    # ---------- Write all tables to a single CSV file --------------------------
     with open(csv_path, "w", newline="") as f:
-        f.write("# --- METRICS PER CLASS -------------------------------------------------\n")
+        f.write(
+            "# --- METRICS PER CLASS -------------------------------------------------\n"
+        )
         df_metrics.to_csv(f, float_format="%.4f")
-        f.write("\n# --- CONFUSION MATRIX RAW ----------------------------------------------\n")
+        f.write(
+            "\n# --- CONFUSION MATRIX RAW ----------------------------------------------\n"
+        )
         df_cm_raw.to_csv(f)
-        f.write("\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------\n")
+        f.write(
+            "\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------\n"
+        )
         df_cm_norm.to_csv(f, float_format="%.4f")
 
-    print(f"[INFO] Métricas + matrices guardadas en {csv_path}")
+    print(f"[INFO] Metrics and confusion matrices saved to {csv_path}")
     return csv_path

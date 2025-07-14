@@ -363,19 +363,20 @@ class OBBIoULoss(nn.Module):
 
 class OBBRegressionLoss(nn.Module):
     """
-    Oriented Bounding Box (OBB) regression loss for 8-point vertex parameterization.
+        Oriented Bounding Box (OBB) regression loss for 8-point vertex parameterization.
 
-    This loss computes the distance between predicted and ground-truth OBBs in the vertex space.
-    The predicted deltas are compared to the encoded ground-truth deltas (relative to the anchor and GT angle).
+        This loss computes the distance between predicted and ground-truth OBBs in the vertex space.
+        The predicted deltas are compared to the encoded ground-truth deltas (relative to the anchor and GT angle).
 
-    Supports two loss types:
-        - "l1": Standard L1 loss (mean absolute error) between predicted and ground-truth deltas.
-        - "smooth_l1": Smooth L1 loss (Huber loss) for robustness to outliers.
+        Supports two loss types:
+            - "l1": Standard L1 loss (mean absolu
+    te error) between predicted and ground-truth deltas.
+            - "smooth_l1": Smooth L1 loss (Huber loss) for robustness to outliers.
 
-    Args:
-        loss_type (str): "l1" for L1 loss, "smooth_l1" for Smooth-L1 loss.
-        beta (float): Transition point for Smooth-L1 loss. Ignored if loss_type="l1".
-        reduction (str): Reduction method: "none", "sum", or "mean".
+        Args:
+            loss_type (str): "l1" for L1 loss, "smooth_l1" for Smooth-L1 loss.
+            beta (float): Transition point for Smooth-L1 loss. Ignored if loss_type="l1".
+            reduction (str): Reduction method: "none", "sum", or "mean".
     """
 
     def __init__(

@@ -879,44 +879,66 @@ def save_individual_predictions(
     split_by_error: bool = True,
 ) -> None:
     """
-    Saves individual visualizations of predictions with GT and predicted OBBs.
+    Saves individual visualizations of predictions with ground truth (GT) and predicted oriented bounding boxes (OBBs).
+
+    This function generates and saves images showing both GT and predicted OBBs for qualitative analysis.
+    The images can be optionally split into subdirectories based on error types (e.g., false positives, false negatives).
 
     Args:
-        samples (List): Sample tuples with image tensor, predictions, file name, GT data.
-        labels_map (Dict[int, str]): Mapping from class index to readable label.
-        output_dir (str): Output directory for saving images.
-        mean (Tuple): Mean for denormalization.
-        std (Tuple): Std for denormalization.
+        samples (List): List of tuples containing:
+            - Image tensor (torch.Tensor)
+            - Prediction dictionary (Dict[str, torch.Tensor])
+            - File name (str)
+            - Ground truth boxes (torch.Tensor)
+            - Ground truth angles (torch.Tensor)
+            - Ground truth labels (torch.Tensor)
+            - False positive count (int)
+            - False negative count (int)
+        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
+        output_dir (str): Directory where the visualizations will be saved.
+        mean (Tuple[float, float, float]): Mean values for image normalization (used for denormalization).
+        std (Tuple[float, float, float]): Standard deviation values for image normalization (used for denormalization).
+        split_by_error (bool): Whether to split saved images into subdirectories based on error types.
+
+    Returns:
+        None: Saves visualizations to the specified output directory.
     """
+    # Convert output directory to Path object
     base_dir = Path(output_dir)
+
+    # Create subdirectories for different error types if splitting is enabled
     if split_by_error:
         for sub in ("tp_only", "fp", "fn", "fp_fn"):
             (base_dir / sub).mkdir(parents=True, exist_ok=True)
     else:
         base_dir.mkdir(parents=True, exist_ok=True)
 
+    # Iterate over each sample in the dataset
     for img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img in samples:
+        # Create a new figure for visualization
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
-        ax.axis("off")
-        ax.set_aspect("equal")
 
-        # GT OBBs
+        # Denormalize and display the image
+        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
+        ax.axis("off")  # Remove axis for cleaner visualization
+        ax.set_aspect("equal")  # Maintain aspect ratio
+
+        # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
-            coords = pts.view(4, 2).numpy()
+            coords = pts.view(4, 2).numpy()  # Convert tensor to numpy array
             ax.add_patch(
                 patches.Polygon(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="#008000",  # Dark green
+                    edgecolor="#008000",  # Dark green for GT
                     linewidth=2,
                     linestyle="--",
                 )
             )
             ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=2)
 
-            # Bottom-right corner for GT text
+            # Add label and angle text at the bottom-right corner of the OBB
             br_x, br_y = coords[:, 0].max(), coords[:, 1].max()
             ax.text(
                 br_x,
@@ -930,17 +952,17 @@ def save_individual_predictions(
                 bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
             )
 
-        # Predicted OBBs
+        # Draw predicted OBBs
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
-            coords = pts.cpu().view(4, 2).numpy()
+            coords = pts.cpu().view(4, 2).numpy()  # Convert tensor to numpy array
             ax.add_patch(
                 patches.Polygon(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="#004080",  # Dark blue
+                    edgecolor="#004080",  # Dark blue for predictions
                     linewidth=1.5,
                 )
             )
@@ -948,7 +970,7 @@ def save_individual_predictions(
                 coords[[0, 1], 0], coords[[0, 1], 1], color="#800000", linewidth=1.5
             )
 
-            # Top-left corner for prediction text
+            # Add label, angle, and confidence score text at the top-left corner of the OBB
             tl_x, tl_y = coords[:, 0].min(), coords[:, 1].min()
             ang_pred = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
@@ -961,22 +983,26 @@ def save_individual_predictions(
                 va="top",
                 bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
+
+        # Determine the subdirectory based on error type if splitting is enabled
         if not split_by_error:
             save_dir = base_dir
         else:
             if fp_img and not fn_img:
-                subdir = "fp"
+                subdir = "fp"  # False positives only
             elif fn_img and not fp_img:
-                subdir = "fn"
+                subdir = "fn"  # False negatives only
             elif fp_img and fn_img:
-                subdir = "fp_fn"
+                subdir = "fp_fn"  # Both false positives and false negatives
             else:
-                subdir = "tp_only"
+                subdir = "tp_only"  # True positives only
 
-        save_path = Path(output_dir) / subdir
-        save_path.mkdir(exist_ok=True, parents=True)
-        fig.savefig(save_path / Path(fname).name, dpi=100, bbox_inches="tight")
-        plt.close(fig)
+            save_dir = base_dir / subdir
+            save_dir.mkdir(exist_ok=True, parents=True)
+
+        # Save the visualization to the appropriate directory
+        fig.savefig(save_dir / Path(fname).name, dpi=100, bbox_inches="tight")
+        plt.close(fig)  # Close the figure to free memory
 
     print(f"[INFO] Saved individual predictions to {output_dir}")
 

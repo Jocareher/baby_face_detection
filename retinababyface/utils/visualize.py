@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.patches import Polygon
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -265,7 +265,7 @@ def visualize_predictions(
             # Note: gt_corners[i] is in shape (4, 2)
             # and gt_xywhr[i] is in shape (5,)
             ax.add_patch(
-                MplPolygon(
+                Polygon(
                     gt_corners[i],
                     closed=True,
                     fill=False,
@@ -282,7 +282,7 @@ def visualize_predictions(
             # Note: pred_corners[i] is in shape (4, 2)
             # and pred_xywhr[i] is in shape (5,)
             ax.add_patch(
-                MplPolygon(
+                Polygon(
                     pred_corners[i],
                     closed=True,
                     fill=False,
@@ -396,3 +396,98 @@ def create_training_gif(
     )
 
     print(f"[INFO] GIF saved to {output_gif} ({len(frames)} frames).")
+
+
+def visualize_widerface_grid(
+    dataset_root: str, rows: int = 3, cols: int = 3, figsize=(15, 10)
+) -> None:
+    """
+    Displays a grid of images with annotated bounding boxes (OBBs) from WIDERFACE dataset.
+
+    Args:
+        dataset_root (str): Path to the dataset containing 'images' and 'labels' directories.
+        rows (int): Number of rows in the grid. Default is 3.
+        cols (int): Number of columns in the grid. Default is 3.
+        figsize (tuple): Size of the matplotlib figure. Default is (15, 10).
+
+    The function randomly selects images from the dataset and overlays the bounding boxes
+    (oriented bounding boxes) on the images based on the corresponding label files.
+    Each bounding box is drawn as a polygon with red edges.
+    """
+    # Define paths to the images and labels directories
+    image_dir = os.path.join(dataset_root, "images")
+    label_dir = os.path.join(dataset_root, "labels")
+
+    # Get a list of all image files in the images directory
+    image_files = [f for f in os.listdir(image_dir) if f.endswith(".jpg")]
+
+    # Check if there are any images in the directory
+    if len(image_files) == 0:
+        print("❌ No images found in the dataset.")
+        return
+
+    # Determine the number of images to display in the grid
+    num_images = rows * cols
+    selected_files = random.sample(image_files, min(num_images, len(image_files)))
+
+    # Create a matplotlib figure with subplots
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    axes = axes.flatten()  # Flatten the axes array for easy iteration
+
+    # Iterate over the selected image files and corresponding axes
+    for ax, image_file in zip(axes, selected_files):
+        img_path = os.path.join(image_dir, image_file)
+        label_path = os.path.join(label_dir, os.path.splitext(image_file)[0] + ".txt")
+
+        try:
+            # Open the image and display it on the subplot
+            img = Image.open(img_path).convert("RGB")
+            ax.imshow(img)
+        except Exception as e:
+            print(f"Error opening {img_path}: {e}")
+            continue
+
+        # Get the dimensions of the image
+        width, height = img.size
+
+        # Check if the corresponding label file exists
+        if os.path.exists(label_path):
+            with open(label_path, "r") as f:
+                lines = f.readlines()
+
+            # Iterate over each line in the label file
+            for line in lines:
+                parts = line.strip().split()
+                # Skip lines that do not have the expected number of elements
+                if len(parts) != 11:
+                    continue
+
+                # Extract normalized coordinates from the label file
+                coords = list(map(float, parts[2:10]))
+                # Convert normalized coordinates to absolute pixel positions
+                abs_coords = [
+                    (coords[i] * width if i % 2 == 0 else coords[i] * height)
+                    for i in range(8)
+                ]
+                # Create a list of (x, y) points for the polygon
+                polygon_points = [
+                    (abs_coords[i], abs_coords[i + 1]) for i in range(0, 8, 2)
+                ]
+
+                # Draw the polygon on the image
+                polygon = Polygon(
+                    polygon_points, edgecolor="red", facecolor="none", linewidth=2
+                )
+                ax.add_patch(polygon)
+
+        # Set the title of the subplot to the image file name
+        ax.set_title(image_file, fontsize=8)
+        ax.axis("off")  # Hide axes for a cleaner display
+
+    # Hide any unused subplots if there are fewer images than grid slots
+    for i in range(len(selected_files), len(axes)):
+        axes[i].axis("off")
+
+    # Adjust layout to avoid overlapping elements
+    plt.tight_layout()
+    plt.show()

@@ -398,7 +398,7 @@ def create_training_gif(
     print(f"[INFO] GIF saved to {output_gif} ({len(frames)} frames).")
 
 
-def visualize_widerface_grid(
+def visualize_adultfaces_grid(
     dataset_root: str, rows: int = 3, cols: int = 3, figsize=(15, 10)
 ) -> None:
     """

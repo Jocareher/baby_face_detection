@@ -209,3 +209,91 @@ def bbox2obb(
     with open(os.path.join(out_lbl_dir, label_name), "w") as f:
         f.writelines(label_lines)
     print(f"✅ Saved: {image_name} with {len(bboxes)} faces.")
+
+
+def convert_face_detection_dataset(input_root: str, output_root: str) -> None:
+    """
+    Converts a FACE DETECTION DATASET to the RetinaBabyFace format.
+
+    Args:
+        input_root (str): Path to the original dataset, containing subfolders `images/train`, `labels/train`, etc.
+        output_root (str): Path to the new dataset with structure `train/images`, `train/labels`, etc.
+
+    This function processes the dataset by converting bounding box annotations from center-width-height format
+    to axis-aligned bounding box format with normalized coordinates. It organizes the output dataset into
+    separate folders for images and labels for each split (train, val). Invalid lines in label files are skipped.
+    """
+    total_faces_global = 0  # Counter for total faces across all splits
+
+    for split in ["train", "val"]:
+        # Define input and output directories for images and labels
+        input_img_dir = os.path.join(input_root, "images", split)
+        input_lbl_dir = os.path.join(input_root, "labels", split)
+
+        output_img_dir = os.path.join(output_root, split, "images")
+        output_lbl_dir = os.path.join(output_root, split, "labels")
+        os.makedirs(output_img_dir, exist_ok=True)
+        os.makedirs(output_lbl_dir, exist_ok=True)
+
+        face_count = 0  # Counter for faces in the current split
+
+        for file in os.listdir(input_lbl_dir):
+            # Skip non-.txt files
+            if not file.endswith(".txt"):
+                continue
+
+            label_path = os.path.join(input_lbl_dir, file)
+            image_name = os.path.splitext(file)[0] + ".jpg"
+            image_path = os.path.join(input_img_dir, image_name)
+
+            try:
+                # Open the image to retrieve its dimensions
+                with Image.open(image_path) as img:
+                    width, height = img.size
+            except Exception as e:
+                print(f"❌ Failed to open image: {image_path}. Error: {e}")
+                continue
+
+            # Read the label file
+            with open(label_path, "r") as f:
+                lines = f.readlines()
+
+            label_lines = []  # List to store converted label lines
+            for line in lines:
+                parts = line.strip().split()
+                # Skip invalid lines that do not have the expected number of elements
+                if len(parts) != 5:
+                    continue
+
+                # Parse bounding box coordinates (center-x, center-y, width, height)
+                _, cx, cy, w, h = map(float, parts)
+
+                # Convert from center-width-height to axis-aligned bounding box vertices
+                x1 = cx - w / 2
+                y1 = cy - h / 2
+                x2 = cx + w / 2
+                y2 = cy - h / 2
+                x3 = cx + w / 2
+                y3 = cy + h / 2
+                x4 = cx - w / 2
+                y4 = cy + h / 2
+
+                # Normalize coordinates and format the label line
+                coords = [x1, y1, x2, y2, x3, y3, x4, y4]
+                coords = [
+                    round(c, 6) for c in coords
+                ]  # Coordinates are already normalized
+                new_line = f"-1 0 " + " ".join(map(str, coords)) + " 0\n"
+                label_lines.append(new_line)
+
+            # Save the converted labels and copy the image to the output directory
+            if label_lines:
+                shutil.copy(image_path, os.path.join(output_img_dir, image_name))
+                with open(os.path.join(output_lbl_dir, file), "w") as f:
+                    f.writelines(label_lines)
+                face_count += len(label_lines)
+
+        print(f"✅ Split '{split}' processed with {face_count} faces.")
+        total_faces_global += face_count
+
+    print(f"\n🎯 Total faces in the entire dataset: {total_faces_global}")

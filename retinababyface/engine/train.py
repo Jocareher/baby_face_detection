@@ -241,6 +241,8 @@ def infer_with_rotated_nms(
             - 'scores':   (M,)   combined face/orientation scores
             - 'labels':   (M,)   orientation labels (0–4)
             - 'polygons': (M, 8) 4-corner polygons for visualization
+            - 'child_score': (M,) adult/child score
+            - 'is_child': (M,)   boolean mask indicating if the anchor is a child face
     """
     # If model_or_preds is a model, run inference to get outputs
     if isinstance(model_or_preds, nn.Module):
@@ -309,6 +311,8 @@ def infer_with_rotated_nms(
                 "scores": score[sel][keep_nms],  # (M,)
                 "labels": orient_labels[sel_final].float(),  # (M,)
                 "polygons": verts[keep_nms],  # (M, 8) in (x1, y1, ..., x4, y4)
+                "child_score": child_prob[b][sel][keep_nms],
+                "is_child": torch.ones_like(keep_nms, dtype=torch.bool),
             }
         )
 

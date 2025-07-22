@@ -141,6 +141,9 @@ def run_inference(
             - all_gts: Ground truth labels for F1 vs. threshold.
             - all_preds: Predicted labels for F1 vs. threshold.
             - all_scores: Prediction scores for F1 vs. threshold.
+            - child_stats: TP, FP, FN counts for child face detection.
+            - child_gt: Ground truth labels for child face detection.
+            - child_pred: Predicted labels for child face detection.
             - samples: List of qualitative samples for visualization.
     """
     # Initialize data structures for metrics and qualitative results
@@ -150,12 +153,18 @@ def run_inference(
     y_true, y_pred = [], []
     iou_errs = {c: [] for c in labels_map}
     angle_errs = {c: [] for c in labels_map}
+    child_stats = {"tp": 0, "fp": 0, "fn": 0}
     samples = []
 
     # Additional lists for F1 vs. threshold computation
     all_gts = []  # Ground truth labels
     all_preds = []  # Predicted labels
     all_scores = []  # Prediction scores
+    child_gt, child_pred = [], []
+
+    def log_child(gt_is_baby: bool, pred_is_baby: bool):
+        child_gt.append(1 if gt_is_baby else 0)
+        child_pred.append(1 if pred_is_baby else 0)
 
     dataset = loader.dataset
     global_idx = 0
@@ -191,6 +200,7 @@ def run_inference(
                     -1
                 )  # GT rotation angles
                 gt_labels = targets["class_idx"][b][valid_mask]  # GT class labels
+                gt_child = targets["child_prob"][b][valid_mask] > 0.5  # Child face mask
                 num_gt = gt_boxes.size(0)
 
                 # Convert GT boxes to xywhr format for rotated IoU computation
@@ -205,6 +215,10 @@ def run_inference(
                 )  # Predicted boxes (N_pred, 5)
                 pred_scores = outputs[b]["scores"].to(device)  # Confidence scores
                 pred_labels = outputs[b]["labels"].to(device)  # Predicted class labels
+                pred_child_s = outputs[b]["child_score"].to(
+                    device
+                )  # Adult/child scores
+                pred_is_child = outputs[b]["is_child"].to(device)
                 num_pred = pred_boxes.size(0)
 
                 # ----------------- Handle Images without GT (num_gt==0) ----------
@@ -225,6 +239,15 @@ def run_inference(
                         fp_img += 1
                         y_true.append(-1)  # Background row
                         y_pred.append(cls_det)  # Predicted class column
+
+                        pred_baby = bool(
+                            pred_is_child[det_idx].item()
+                        )  # Is it a child face?
+                        log_child(False, pred_baby)
+                        # Update child stats
+                        if bool(pred_is_child[det_idx].item()):
+                            # Child face detected
+                            child_stats["fp"] += 1
 
                     # Store qualitative sample
                     samples.append(
@@ -269,6 +292,16 @@ def run_inference(
 
                     if best_iou_val >= iou_thres:
                         true_cls = int(gt_labels[best_gt_idx])
+                        gt_baby = bool(gt_child[best_gt_idx].item())
+                        pred_baby = bool(pred_is_child[det_idx].item())
+                        log_child(gt_baby, pred_baby)
+
+                        if pred_baby and gt_baby:
+                            child_stats["tp"] += 1
+                        elif pred_baby and not gt_baby:
+                            child_stats["fp"] += 1
+                        elif (not pred_baby) and gt_baby:
+                            child_stats["fn"] += 1
 
                         if cls_det == true_cls:
                             # -------------------- TRUE POSITIVE --------------------
@@ -317,12 +350,17 @@ def run_inference(
                         fp_img += 1
                         per_true[cls_det].append(0)
                         per_score[cls_det].append(score_det)
+                        pred_baby = bool(pred_is_child[det_idx].item())
+                        log_child(False, pred_baby)
+
+                        if bool(pred_is_child[det_idx]):
+                            child_stats["fp"] += 1
 
                         y_true.append(-1)  # Background row
                         y_pred.append(cls_det)  # Predicted class column
 
                         all_gts.append(-1)
-                        all_preds.append(true_cls)
+                        all_preds.append(cls_det)
                         all_scores.append(score_det)
 
                 # ---- Process unmatched GT boxes as False Negatives -------------
@@ -333,6 +371,11 @@ def run_inference(
                         fn_img += 1
                         y_true.append(cls_gt)  # GT class row
                         y_pred.append(-1)  # Background column
+                        gt_baby = bool(gt_child[i].item())
+                        log_child(gt_baby, False)
+
+                        if bool(gt_child[i].item()):
+                            child_stats["fn"] += 1
 
                 # ---- Store qualitative sample ----------------------------------
                 samples.append(
@@ -364,6 +407,9 @@ def run_inference(
         "all_gts": all_gts,
         "all_preds": all_preds,
         "all_scores": all_scores,
+        "child_stats": child_stats,
+        "child_gt": child_gt,
+        "child_pred": child_pred,
         "samples": samples,
     }
 
@@ -552,6 +598,104 @@ def plot_confusion_matrix(
     fig_norm.tight_layout()
 
     print("[INFO] Confusion matrices plotted (raw and normalized).")
+    return {"raw": fig_raw, "normalized": fig_norm}
+
+
+from typing import List, Tuple, Dict
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
+
+def plot_child_confusion_matrix(
+    y_true_child: List[int],
+    y_pred_child: List[int],
+    figsize: Tuple[int, int] = (4, 4),
+) -> Dict[str, plt.Figure]:
+    """
+    Plot the Adult (0) / Child (1) binary confusion matrix, returning both
+    the raw counts and the row‑normalized version.
+
+    Args:
+        y_true_child (List[int]): Ground‑truth labels (0 = adult, 1 = child).
+        y_pred_child (List[int]): Predicted labels  (0 = adult, 1 = child).
+        figsize (Tuple[int, int]): Size of the output figures.
+
+    Returns:
+        Dict[str, plt.Figure]: A dict with keys **"raw"** and **"normalized"**
+        mapping to the corresponding matplotlib figures.
+    """
+    # ------------------------------------------------------------------ #
+    # 1) Compute raw and normalized matrices
+    # ------------------------------------------------------------------ #
+    cm_raw = confusion_matrix(y_true_child, y_pred_child, labels=[0, 1])
+    cm_norm = cm_raw.astype(float)
+    row_sums = cm_norm.sum(axis=1, keepdims=True)
+    cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
+
+    classes = ["Adult", "Child"]
+
+    # ------------------------------------------------------------------ #
+    # 2) Plot raw confusion matrix
+    # ------------------------------------------------------------------ #
+    fig_raw, ax_raw = plt.subplots(figsize=figsize)
+    im_raw = ax_raw.imshow(cm_raw, cmap="Blues")
+
+    for i in range(2):
+        for j in range(2):
+            val = cm_raw[i, j]
+            if val == 0:
+                continue
+            ax_raw.text(
+                j,
+                i,
+                int(val),
+                ha="center",
+                va="center",
+                color="white" if val > cm_raw.max() / 2 else "black",
+            )
+
+    ax_raw.set_xticks([0, 1])
+    ax_raw.set_yticks([0, 1])
+    ax_raw.set_xticklabels(classes)
+    ax_raw.set_yticklabels(classes)
+    ax_raw.set_xlabel("Predicted", fontsize=11)
+    ax_raw.set_ylabel("True", fontsize=11)
+    ax_raw.set_title("Adult / Child Confusion Matrix (Raw)", fontsize=13)
+    plt.colorbar(im_raw, ax=ax_raw, fraction=0.046, pad=0.04)
+    fig_raw.tight_layout()
+
+    # ------------------------------------------------------------------ #
+    # 3) Plot normalized confusion matrix
+    # ------------------------------------------------------------------ #
+    fig_norm, ax_norm = plt.subplots(figsize=figsize)
+    im_norm = ax_norm.imshow(cm_norm, cmap="Blues", vmin=0.0, vmax=1.0)
+
+    for i in range(2):
+        for j in range(2):
+            val = cm_norm[i, j]
+            if val == 0:
+                continue
+            ax_norm.text(
+                j,
+                i,
+                f"{val:.2f}",
+                ha="center",
+                va="center",
+                color="white" if val > 0.5 else "black",
+            )
+
+    ax_norm.set_xticks([0, 1])
+    ax_norm.set_yticks([0, 1])
+    ax_norm.set_xticklabels(classes)
+    ax_norm.set_yticklabels(classes)
+    ax_norm.set_xlabel("Predicted", fontsize=11)
+    ax_norm.set_ylabel("True", fontsize=11)
+    ax_norm.set_title("Adult / Child Confusion Matrix (Normalized)", fontsize=13)
+    plt.colorbar(im_norm, ax=ax_norm, fraction=0.046, pad=0.04)
+    fig_norm.tight_layout()
+
+    print("[INFO] Adult/Child confusion matrices plotted.")
     return {"raw": fig_raw, "normalized": fig_norm}
 
 
@@ -1116,6 +1260,14 @@ def inference(
 
     # Confusion matrices (raw and normalized)
     cm_figs = plot_confusion_matrix(
+        y_true=results["child_gt"],
+        y_pred=results["child_pred"],
+    )
+    save_figure(cm_figs["raw"], "child_onfusion_matrix_raw.png")
+    save_figure(cm_figs["normalized"], "child_onfusion_matrix_normalized.png")
+
+    # Confusion matrices (raw and normalized)
+    cm_figs = plot_child_confusion_matrix(
         y_true=results["y_true"], y_pred=results["y_pred"], labels_map=labels_map
     )
     save_figure(cm_figs["raw"], "confusion_matrix_raw.png")
@@ -1295,6 +1447,13 @@ def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
         "Orthogonality Regularization Over Training",
         "Loss",
         "regularization_curves",
+    )
+    make_plot(
+        "train_child_loss",
+        "test_child_loss",
+        "Child Loss Over Training",
+        "Loss",
+        "child_curves",
     )
     make_plot(
         "train_total_loss",

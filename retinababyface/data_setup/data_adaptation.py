@@ -382,3 +382,60 @@ def clean_and_split_dataset(root_dir: str, output_dir: str, seed: int = 42) -> N
         print(f"✅ {split}: {len(files)} images")
 
     print(f"\n📁 Split dataset saved in: {output_dir}")
+
+
+def count_annotations_by_split(dataset_root: str) -> None:
+    """
+    Counts the number of annotations per partition (train/val/test) in a dataset.
+
+    This function iterates through the 'train', 'val', and 'test' subdirectories of the dataset,
+    counts the number of label files and the total number of annotations in each split, and
+    prints a summary of the results.
+
+    Args:
+        dataset_root (str): Root directory of the dataset containing 'train', 'val', and 'test' subdirectories.
+
+    Returns:
+        None: The function prints the results to the console.
+    """
+    # Initialize a counter for total annotations across all splits
+    total_annotations = 0
+
+    # Define the dataset splits to process
+    splits = ["train", "val", "test"]
+
+    # Iterate through each split (train, val, test)
+    for split in splits:
+        # Construct the path to the labels directory for the current split
+        label_dir = os.path.join(dataset_root, split, "labels")
+
+        # Check if the labels directory exists
+        if not os.path.exists(label_dir):
+            print(f"⚠️ Label directory missing for split '{split}'")
+            continue
+
+        # Initialize counters for the current split
+        num_files = 0  # Number of label files
+        num_annots = 0  # Number of annotations
+
+        # Iterate through all files in the labels directory
+        for file in os.listdir(label_dir):
+            # Skip non-.txt files
+            if not file.endswith(".txt"):
+                continue
+
+            # Read the label file and count the number of annotations
+            file_path = os.path.join(label_dir, file)
+            with open(file_path, "r") as f:
+                lines = f.readlines()
+                num_annots += len(lines)
+                num_files += 1
+
+        # Update the total annotations counter
+        total_annotations += num_annots
+
+        # Print the summary for the current split
+        print(f"📂 {split}: {num_files} label files | {num_annots} annotations")
+
+    # Print the total annotations across all splits
+    print(f"\n🎯 Total annotations across all splits: {total_annotations}")

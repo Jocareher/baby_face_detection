@@ -1043,7 +1043,10 @@ def val_step(
                 all_pred_labels.append(out["labels"].cpu().detach().long())
 
                 # Ground truth: filter by valid_mask and convert to (cx, cy, w, h, θ)
-                keep = targets["valid_mask"][b] & targets["child_prob"][b].bool()
+                keep = (
+                    targets["valid_mask"][b]
+                    & targets["child_prob"][b].squeeze(-1).bool()
+                )
                 if keep.any():
                     gt_polygons = targets["boxes"][b][keep]  # (M_gt, 8)
                     gt_angles = targets["angle"][b][keep].squeeze(-1)  # (M_gt,)
@@ -1330,27 +1333,22 @@ def train(
             epoch_time = time.time() - epoch_start
             print(
                 f"""
-                    📘 Epoch {epoch+1:02d} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s
+📘 Epoch {epoch+1:02d} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s
 
-                    🔧 Train Metrics:
-                        - Total Loss    : {train_total_loss:.4f}
-                        - Face Loss     : {train_face_loss:.4f}
-                        - Child Loss    : {train_child_loss:.4f}
-                        - Class Loss    : {train_class_loss:.4f}
-                        - OBB Loss      : {train_obb_loss:.4f}
-                        - Angle Loss    : {train_angular_loss:.4f}
-                        - Rect Loss     : {train_rect_loss:.4f}
-
-                    🧪 Test Metrics:
-                        - Total Loss    : {test_total_loss:.4f}
-                        - Face Loss     : {test_face_loss:.4f}
-                        - Child Loss    : {test_child_loss:.4f}
-                        - Class Loss    : {test_class_loss:.4f}
-                        - OBB Loss      : {test_obb_loss:.4f}
-                        - Angle Loss    : {test_angular_loss:.4f}
-                        - Rect Loss     : {test_rect_loss:.4f}
-                        - mAP           : {test_mAP:.4f}
-                    """
+🔧 Metrics Overview:
+    ┌────────────────────┬────────────┬────────────┐
+    │ Metric             │   Train    │    Val     │
+    ├────────────────────┼────────────┼────────────┤
+    │ Total Loss         │ {train_total_loss:10.4f} │ {test_total_loss:10.4f} │
+    │ Face Loss          │ {train_face_loss:10.4f} │ {test_face_loss:10.4f} │
+    │ Child Loss         │ {train_child_loss:10.4f} │ {test_child_loss:10.4f} │
+    │ Class Loss         │ {train_class_loss:10.4f} │ {test_class_loss:10.4f} │
+    │ OBB Loss           │ {train_obb_loss:10.4f} │ {test_obb_loss:10.4f} │
+    │ Angle Loss         │ {train_angular_loss:10.4f} │ {test_angular_loss:10.4f} │
+    │ Rect Loss          │ {train_rect_loss:10.4f} │ {test_rect_loss:10.4f} │
+    │ mAP (Val only)     │      ---   │ {test_mAP:10.4f} │
+    └────────────────────┴────────────┴────────────┘
+"""
             )
 
             if record_metrics:

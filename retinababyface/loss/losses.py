@@ -715,11 +715,7 @@ class MultiTaskLoss(nn.Module):
             )  # Initialize empty mask
             if num_pos_1:
                 # Get the child probabilities for the positive anchors
-                tgt_child = (
-                    targets["child_prob"][b][best_gt_1[pos_idx_1]]
-                    .to(device)
-                    .unsqueeze(1)
-                )
+                tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1]].to(device)
                 # Compute binary cross-entropy loss for child classification
                 child_loss += self.child_loss(child_logits[b][pos_idx_1], tgt_child)
                 # Create a mask for the positive indices that are babies

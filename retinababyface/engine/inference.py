@@ -303,7 +303,7 @@ def run_inference(
                         elif (not pred_baby) and gt_baby:
                             child_stats["fn"] += 1
 
-                        if cls_det == true_cls:
+                        if cls_det == true_cls and true_cls in stats:
                             # -------------------- TRUE POSITIVE --------------------
                             stats[true_cls]["tp"] += 1
                             gt_matched[best_gt_idx] = True
@@ -328,30 +328,34 @@ def run_inference(
                         else:
                             # -------------- CLASS CONFUSION ERROR -----------------
                             # Wrong class but good localization
+                            if cls_det in stats:
+                                stats[cls_det]["fp"] += 1
+                                fp_img += 1
+                                per_true[cls_det].append(0)
+                                per_score[cls_det].append(score_det)
+
+                            if true_cls in stats:
+                                stats[true_cls]["fn"] += 1
+                                fn_img += 1
+                                gt_matched[best_gt_idx] = True
+
+                            if true_cls != -1:
+                                y_true.append(true_cls)  # GT class row
+                                y_pred.append(cls_det)  # Predicted class column
+
+                                all_gts.append(true_cls)
+                                all_preds.append(cls_det)
+                                all_scores.append(score_det)
+                    else:
+                        # ---------------- BACKGROUND FALSE POSITIVE --------------
+                        # No matching GT with sufficient IoU
+                        if cls_det in stats:
                             stats[cls_det]["fp"] += 1
                             fp_img += 1
                             per_true[cls_det].append(0)
                             per_score[cls_det].append(score_det)
-
-                            stats[true_cls]["fn"] += 1
-                            fn_img += 1
-                            gt_matched[best_gt_idx] = True
-
-                            y_true.append(true_cls)  # GT class row
-                            y_pred.append(cls_det)  # Predicted class column
-
-                            all_gts.append(true_cls)
-                            all_preds.append(cls_det)
-                            all_scores.append(score_det)
-                    else:
-                        # ---------------- BACKGROUND FALSE POSITIVE --------------
-                        # No matching GT with sufficient IoU
-                        stats[cls_det]["fp"] += 1
-                        fp_img += 1
-                        per_true[cls_det].append(0)
-                        per_score[cls_det].append(score_det)
-                        pred_baby = bool(pred_is_child[det_idx].item())
-                        log_child(False, pred_baby)
+                            pred_baby = bool(pred_is_child[det_idx].item())
+                            log_child(False, pred_baby)
 
                         if bool(pred_is_child[det_idx]):
                             child_stats["fp"] += 1
@@ -367,12 +371,14 @@ def run_inference(
                 for i in range(num_gt):
                     if not gt_matched[i]:
                         cls_gt = int(gt_labels[i])
-                        stats[cls_gt]["fn"] += 1
-                        fn_img += 1
-                        y_true.append(cls_gt)  # GT class row
-                        y_pred.append(-1)  # Background column
-                        gt_baby = bool(gt_child[i].item())
-                        log_child(gt_baby, False)
+                        if cls_gt in stats:
+                            stats[cls_gt]["fn"] += 1
+                            fn_img += 1
+                        if cls_gt != -1:
+                            y_true.append(cls_gt)  # GT class row
+                            y_pred.append(-1)  # Background column
+                            gt_baby = bool(gt_child[i].item())
+                            log_child(gt_baby, False)
 
                         if bool(gt_child[i].item()):
                             child_stats["fn"] += 1
@@ -608,8 +614,8 @@ from sklearn.metrics import confusion_matrix
 
 
 def plot_child_confusion_matrix(
-    y_true_child: List[int],
-    y_pred_child: List[int],
+    y_true: List[int],
+    y_pred: List[int],
     figsize: Tuple[int, int] = (4, 4),
 ) -> Dict[str, plt.Figure]:
     """
@@ -617,8 +623,8 @@ def plot_child_confusion_matrix(
     the raw counts and the row‑normalized version.
 
     Args:
-        y_true_child (List[int]): Ground‑truth labels (0 = adult, 1 = child).
-        y_pred_child (List[int]): Predicted labels  (0 = adult, 1 = child).
+        y_true (List[int]): Ground‑truth labels (0 = adult, 1 = child).
+        y_pred (List[int]): Predicted labels  (0 = adult, 1 = child).
         figsize (Tuple[int, int]): Size of the output figures.
 
     Returns:
@@ -628,7 +634,7 @@ def plot_child_confusion_matrix(
     # ------------------------------------------------------------------ #
     # 1) Compute raw and normalized matrices
     # ------------------------------------------------------------------ #
-    cm_raw = confusion_matrix(y_true_child, y_pred_child, labels=[0, 1])
+    cm_raw = confusion_matrix(y_true, y_pred, labels=[0, 1])
     cm_norm = cm_raw.astype(float)
     row_sums = cm_norm.sum(axis=1, keepdims=True)
     cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
@@ -955,7 +961,7 @@ def plot_qualitative_grid(
             ax.text(
                 br_x,
                 br_y,
-                f"{labels_map[int(cls)]}: {math.degrees(float(angle)):.1f}°",
+                f"{labels_map.get(int(cls), 'unknown')}: {math.degrees(float(angle)):.1f}°",
                 color="white",
                 fontsize=6,
                 fontweight="bold",
@@ -986,7 +992,7 @@ def plot_qualitative_grid(
             ax.text(
                 tl_x,
                 tl_y,
-                f"{labels_map[int(lbl)]}: {ang:.1f}° / {score:.2f}",
+                f"{labels_map.get(int(lbl), 'unknown')}: {ang:.1f}° / {score:.2f}",
                 color="white",
                 fontsize=6,
                 ha="left",
@@ -1087,7 +1093,7 @@ def save_individual_predictions(
             ax.text(
                 br_x,
                 br_y,
-                f"{labels_map[int(lbl)]}: {math.degrees(float(ang)):.1f}°",
+                f"{labels_map.get(int(lbl), 'unknown')}: {math.degrees(float(ang)):.1f}°",
                 color="white",
                 fontsize=6,
                 fontweight="bold",
@@ -1120,7 +1126,7 @@ def save_individual_predictions(
             ax.text(
                 tl_x,
                 tl_y,
-                f"{labels_map[int(lbl)]}: {ang_pred:.1f}° / {score:.2f}",
+                f"{labels_map.get(int(lbl), 'unknown')}: {ang_pred:.1f}° / {score:.2f}",
                 color="white",
                 fontsize=6,
                 ha="left",
@@ -1259,7 +1265,7 @@ def inference(
     )
 
     # Confusion matrices (raw and normalized)
-    cm_figs = plot_confusion_matrix(
+    cm_figs = plot_child_confusion_matrix(
         y_true=results["child_gt"],
         y_pred=results["child_pred"],
     )
@@ -1267,7 +1273,7 @@ def inference(
     save_figure(cm_figs["normalized"], "child_onfusion_matrix_normalized.png")
 
     # Confusion matrices (raw and normalized)
-    cm_figs = plot_child_confusion_matrix(
+    cm_figs = plot_confusion_matrix(
         y_true=results["y_true"], y_pred=results["y_pred"], labels_map=labels_map
     )
     save_figure(cm_figs["raw"], "confusion_matrix_raw.png")

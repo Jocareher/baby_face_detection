@@ -219,6 +219,12 @@ def parse_args():
         help="Weight for the rectangle loss (default: 0.1).",
     )
     parser.add_argument(
+        "--lambda_child",
+        type=float,
+        default=config.LAMBDA_CHILD,
+        help="Weight for the child face classification loss (default: 1).",
+    )
+    parser.add_argument(
         "--face_pos_weight",
         type=float,
         default=config.FACE_POS_WEIGHT,
@@ -527,6 +533,7 @@ def main():
         args.lambda_rot,
         args.lambda_face,
         args.lambda_rect,
+        args.lambda_child,
         args.pos_iou_thr_1,
         args.neg_iou_thr_1,
         args.pos_iou_thr_2,

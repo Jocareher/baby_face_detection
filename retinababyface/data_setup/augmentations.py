@@ -103,6 +103,7 @@ class RandomHorizontalFlipOBB:
             class_idxs = target[
                 "class_idx"
             ].clone()  # Creates a copy of the class indices tensor.
+            child_prob  = target["child_prob"].clone() # Creates a copy of the child probabilities tensor.
 
             # Flip X coordinates
             boxes = boxes.view(-1, 4, 2)  # (N, 4, 2)
@@ -127,6 +128,7 @@ class RandomHorizontalFlipOBB:
             target[
                 "class_idx"
             ] = class_idxs_flipped  # Updates the class indices in the target dictionary.
+            target["child_prob"] = child_prob  # Updates the child probabilities in the target dictionary.
 
         sample["image"] = image  # Updates the image in the sample.
         sample["target"] = target  # Updates the target in the sample.
@@ -168,9 +170,9 @@ class RandomRotateOBB:
             sample["target"],
         )  # Extracts the image and target from the sample.
         h, w = image.shape[:2]  # Gets the height and width of the image.
-        angle_deg = -random.uniform(
+        angle_deg = random.uniform(
             self.max_angle, -self.max_angle
-        )  # Generates a random angle in degrees.
+        )  # Generates a random rotation angle in degrees (remove (-) sign).
         angle_rad = np.radians(angle_deg)  # Converts the angle to radians.
 
         # Compute new canvas size
@@ -207,6 +209,7 @@ class RandomRotateOBB:
         class_idxs = target[
             "class_idx"
         ].clone()  # Creates a copy of the class indices tensor.
+        child_prob = target["child_prob"].clone()  # Creates a copy of the child probabilities tensor.
 
         # Vectorized rotation of all boxes
         N = boxes.shape[0]
@@ -230,6 +233,7 @@ class RandomRotateOBB:
         target[
             "class_idx"
         ] = class_idxs  # Updates the class indices in the target dictionary.
+        target["child_prob"] = child_prob  # Updates the child probabilities in the target dictionary.
 
         sample["image"] = rotated_image  # Updates the rotated image in the sample.
         sample["target"] = target  # Updates the target in the sample.
@@ -307,6 +311,7 @@ class RandomScaleTranslateOBB:
         boxes = target["boxes"]
         angles = target["angles"]
         class_idxs = target["class_idx"]
+        child_prob = target["child_prob"]
 
         # If there are no boxes, return the transformed image and target.
         if boxes.shape[0] == 0:
@@ -340,6 +345,8 @@ class RandomScaleTranslateOBB:
         keep_angles = wrap_to_pi(angles[valid] - 0)
         # Keep only the valid class indices
         keep_classes = class_idxs[valid]
+        # Keep only the valid child probabilities
+        keep_child_prob = child_prob[valid] 
 
         # Reshape the points to (N,8)
         target["boxes"] = torch.tensor(
@@ -347,6 +354,7 @@ class RandomScaleTranslateOBB:
         )
         target["angles"] = keep_angles
         target["class_idx"] = keep_classes
+        target["child_prob"]  = keep_child_prob 
         target["valid_mask"] = torch.ones(
             len(keep_classes), dtype=torch.bool, device=boxes.device
         )

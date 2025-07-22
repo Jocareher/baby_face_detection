@@ -144,66 +144,80 @@ class EarlyStopping:
 
 
 def nms_rotated(
-    boxes: torch.Tensor,  # (N, 5) - (cx, cy, w, h, θ)
-    scores: torch.Tensor,  # (N,)   - confidence scores
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
     threshold: float = 0.45,
     min_area_ratio: float = 0.5,
 ) -> torch.Tensor:
     """
-    Performs rotated Non-Maximum Suppression (NMS) using probabilistic IoU (pIoU) and additional containment/area filtering.
-
-    This function removes redundant rotated bounding boxes based on two criteria:
-      1. Suppresses boxes that have high overlap (pIoU ≥ threshold) with a higher-scoring box.
-      2. Suppresses boxes that are much smaller (area ratio < min_area_ratio) and are fully contained within a larger box,
-         provided their centers are close (distance < 0.2 * sqrt(area_larger)).
+    Performs Rotated Non-Maximum Suppression (NMS) to filter overlapping bounding boxes based on their scores,
+    probabilistic IoU (pIoU), and containment criteria. This implementation is optimized for GPU usage.
 
     Args:
-        boxes (torch.Tensor): Rotated bounding boxes in (cx, cy, w, h, θ) format, shape (N, 5).
-        scores (torch.Tensor): Confidence scores for each box, shape (N,).
-        threshold (float): IoU threshold for suppression (default: 0.45).
-        min_area_ratio (float): Minimum area ratio to consider a box as "small" for containment suppression (default: 0.3).
+        boxes (Tensor): Tensor of shape (N, 5) containing bounding boxes in (cx, cy, w, h, θ) format.
+        scores (Tensor): Tensor of shape (N,) containing confidence scores for each bounding box.
+        threshold (float): IoU threshold for suppression. Boxes with IoU >= threshold are suppressed.
+        min_area_ratio (float): Minimum area ratio for containment suppression. Boxes with smaller area ratios
+                                and close proximity are suppressed.
 
     Returns:
-        torch.Tensor: Indices of boxes to keep after NMS, as a 1D tensor of type long.
+        Tensor: Tensor containing indices of boxes to keep after suppression.
     """
-    order = scores.argsort(descending=True)
-    keep = []
+    # Return an empty tensor if there are no boxes
+    if boxes.numel() == 0:
+        return torch.empty(0, dtype=torch.long, device=scores.device)
 
-    # While there are boxes to process
+    # Ensure boxes and scores are on the same device, prioritize GPU if available
+    device = (
+        boxes.device
+        if boxes.is_cuda
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    boxes = boxes.to(device)
+    scores = scores.to(device)
+
+    # Sort indices of boxes by descending scores
+    order = scores.argsort(descending=True)
+    keep = []  # List to store indices of boxes to keep
+
+    # Precompute IoU matrix, areas, and centers for all boxes
+    iou_matrix = batch_probiou(boxes, boxes).to(device)  # (N, N) pairwise IoU matrix
+    areas = boxes[:, 2] * boxes[:, 3]  # (N,) areas of boxes
+    centers = boxes[:, :2]  # (N, 2) centers of boxes
+
+    # Iteratively process boxes in descending order of scores
     while order.numel() > 0:
         # Select the box with the highest score
         i = order[0].item()
-        keep.append(i)
+        keep.append(i)  # Add its index to the keep list
 
-        # If only one box remains, we can stop
+        # If only one box remains, stop the loop
         if order.numel() == 1:
             break
 
+        # Get indices of remaining boxes
         rest = order[1:]
-        # Compute pIoU between the current box and the rest
-        ious = batch_probiou(boxes[i : i + 1], boxes[rest]).squeeze(0)
-        suppress_mask = ious >= threshold
 
-        box_i = boxes[i].unsqueeze(0)  # (1, 5)
-        for idx, j in enumerate(rest):
-            # Get the box to compare against
-            box_j = boxes[j].unsqueeze(0)  # (1, 5)
+        # Compute IoU between the selected box and remaining boxes
+        ious = iou_matrix[i, rest]  # (len(rest),)
 
-            # Compute area ratio between boxes
-            area_i = box_i[0, 2] * box_i[0, 3]
-            area_j = box_j[0, 2] * box_j[0, 3]
-            area_ratio = area_j / (area_i + 1e-6)
+        # Compute area ratios between remaining boxes and the selected box
+        area_ratios = areas[rest] / (areas[i] + 1e-6)
 
-            # Compute center distance between boxes
-            center_dist = torch.norm(box_j[0, :2] - box_i[0, :2])
+        # Compute Euclidean distances between centers of remaining boxes and the selected box
+        dists = torch.norm(centers[rest] - centers[i], dim=1)
 
-            # Suppress if box_j is much smaller and close to box_i (likely contained)
-            if area_ratio < min_area_ratio and center_dist < 0.2 * torch.sqrt(area_i):
-                suppress_mask[idx] = True
+        # Suppression criteria:
+        # - IoU >= threshold
+        # - Area ratio < min_area_ratio and distance < 20% of the square root of the selected box's area
+        suppress_mask = (ious >= threshold) | (
+            (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
+        )
 
-        # Keep only boxes not suppressed
+        # Update the order by removing suppressed boxes
         order = rest[~suppress_mask]
 
+    # Return indices of boxes to keep as a tensor
     return torch.tensor(keep, device=boxes.device, dtype=torch.long)
 
 
@@ -1066,6 +1080,7 @@ def val_step(
 
             # Compute loss for the batch
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
+
             (
                 loss,
                 loss_class,
@@ -1075,6 +1090,7 @@ def val_step(
                 loss_rect,
                 loss_child,
             ) = loss_fn(preds, targets, batch_anchors, anchors_xywhr, image_sizes)
+
             total_loss += loss.item()
             class_loss_sum += loss_class
             face_loss_sum += loss_face
@@ -1096,6 +1112,7 @@ def val_step(
     avg_rect_loss = rect_loss_sum / total_batches
 
     # Compute rotated mAP using accumulated predictions and ground truths
+    start_eval = time.perf_counter()
     mAP = compute_map_rotated(
         all_pred_boxes,
         all_pred_scores,
@@ -1105,6 +1122,7 @@ def val_step(
         iou_thr=iou_thres,
         num_classes=5,
     )
+    print(f"🧪 mAP took {time.perf_counter() - start_eval:.2f}s")
 
     return (
         avg_loss,

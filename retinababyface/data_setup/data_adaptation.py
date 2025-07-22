@@ -1,5 +1,6 @@
 import os
 import shutil
+import random
 
 
 def add_child_prob_to_labels(dataset_root: str, child_prob: int = 1) -> None:
@@ -297,3 +298,87 @@ def convert_face_detection_dataset(input_root: str, output_root: str) -> None:
         total_faces_global += face_count
 
     print(f"\n🎯 Total faces in the entire dataset: {total_faces_global}")
+
+
+def clean_and_split_dataset(root_dir: str, output_dir: str, seed: int = 42) -> None:
+    """
+    Cleans label files without matching images, counts annotations, and splits dataset into train/val/test.
+
+    This function performs the following steps:
+    1. Removes orphan label files (label files without corresponding images).
+    2. Counts the total number of annotations in the dataset after cleanup.
+    3. Splits the dataset into train, validation, and test subsets based on a predefined ratio (80% train, 10% val, 10% test).
+
+    Args:
+        root_dir (str): Path to the dataset containing 'images/*.jpg' and 'labels/*.txt'.
+        output_dir (str): Destination root for the new split dataset.
+        seed (int): Random seed for reproducibility of the dataset split.
+
+    Returns:
+        None: The function saves the cleaned and split dataset in the specified output directory.
+    """
+    # Define paths to the images and labels directories
+    image_dir = os.path.join(root_dir, "images")
+    label_dir = os.path.join(root_dir, "labels")
+
+    # Get sets of image and label files
+    image_files = set(f for f in os.listdir(image_dir) if f.endswith(".jpg"))
+    label_files = set(f for f in os.listdir(label_dir) if f.endswith(".txt"))
+
+    # Find matching image-label pairs
+    matched = image_files.intersection(f.replace(".txt", ".jpg") for f in label_files)
+    valid_image_files = sorted(matched)
+
+    # Step 1: Remove orphan label files (labels without corresponding images)
+    orphan_labels = label_files - set(f.replace(".jpg", ".txt") for f in matched)
+    for label in orphan_labels:
+        os.remove(os.path.join(label_dir, label))
+    print(f"🧹 Removed {len(orphan_labels)} orphan label files.")
+
+    # Step 2: Count total annotations in the remaining dataset
+    total_annotations = 0
+    for file in valid_image_files:
+        label_path = os.path.join(label_dir, file.replace(".jpg", ".txt"))
+        with open(label_path, "r") as f:
+            total_annotations += len(f.readlines())
+
+    print(f"📌 Total remaining images: {len(valid_image_files)}")
+    print(f"🎯 Total annotations after cleanup: {total_annotations}")
+
+    # Step 3: Split dataset into train, validation, and test subsets
+    random.seed(seed)  # Set random seed for reproducibility
+    random.shuffle(valid_image_files)  # Shuffle the list of valid image files
+
+    # Calculate the number of images for each subset
+    n_total = len(valid_image_files)
+    n_train = int(n_total * 0.8)  # 80% for training
+    n_val = int(n_total * 0.1)  # 10% for validation
+    n_test = n_total - n_train - n_val  # Remaining 10% for testing
+
+    # Create splits dictionary
+    splits = {
+        "train": valid_image_files[:n_train],
+        "val": valid_image_files[n_train : n_train + n_val],
+        "test": valid_image_files[n_train + n_val :],
+    }
+
+    # Save each split into separate directories
+    for split, files in splits.items():
+        split_img_dir = os.path.join(output_dir, split, "images")
+        split_lbl_dir = os.path.join(output_dir, split, "labels")
+        os.makedirs(split_img_dir, exist_ok=True)
+        os.makedirs(split_lbl_dir, exist_ok=True)
+
+        # Copy images and labels to their respective directories
+        for file in files:
+            shutil.copy(
+                os.path.join(image_dir, file), os.path.join(split_img_dir, file)
+            )
+            shutil.copy(
+                os.path.join(label_dir, file.replace(".jpg", ".txt")),
+                os.path.join(split_lbl_dir, file.replace(".jpg", ".txt")),
+            )
+
+        print(f"✅ {split}: {len(files)} images")
+
+    print(f"\n📁 Split dataset saved in: {output_dir}")

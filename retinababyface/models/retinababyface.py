@@ -147,6 +147,46 @@ class ClassHead(nn.Module):
         )
 
 
+class ChildHead(nn.Module):
+    """
+    Head module for classifying baby (1) / adult (0) per anchor.
+
+    This module predicts a binary logit for each anchor, indicating whether the detected face
+    belongs to a baby (1) or an adult (0). The output shape is similar to FaceHead.
+
+    Output shape:
+        - Input: (B, C, H, W)
+        - Output: (B, N, 1) where N = H × W × num_anchors
+
+    Args:
+        in_ch (int): Number of input channels from the feature map.
+    """
+
+    def __init__(self, in_ch: int):
+        """
+        Initializes the ChildHead module.
+
+        Args:
+            in_ch (int): Number of input channels from the feature map.
+        """
+        super().__init__()
+        # 1x1 convolution to predict binary logits for baby/adult classification
+        self.conv = nn.Conv2d(in_ch, config.NUM_ANCHORS * 1, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the ChildHead module.
+
+        Args:
+            x (torch.Tensor): Input feature map of shape (B, C, H, W).
+
+        Returns:
+            torch.Tensor: Predicted logits of shape (B, N, 1), where N = H × W × num_anchors.
+        """
+        # Apply convolution, permute dimensions, and reshape to (B, N, 1)
+        return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 1)
+
+
 class RetinaBabyFace(nn.Module):
     """
     RetinaBabyFace model for face detection, orientation estimation and pose classification.
@@ -157,6 +197,7 @@ class RetinaBabyFace(nn.Module):
     - SSH context modules for feature refinement
     - Multiple prediction heads:
         - Face head for binary face/no-face detection
+        - Child head for baby/adult classification
         - OBB head for oriented bounding box regression
         - Angle head for rotation angle estimation
         - Class head for pose classification
@@ -169,6 +210,7 @@ class RetinaBabyFace(nn.Module):
         - face_logits: (batch_size, num_anchors_total, 1)
         - obbs: (batch_size, num_anchors_total, 8) - 4 pairs of (x,y) vertex offsets
         - angs: (batch_size, num_anchors_total, 1) - rotation angles in [-π, π]
+        - child_logits: (batch_size, num_anchors_total, 1)
 
     Supported backbones:
         - ResNet50 (ImageNet or VGGFace2 pretrained)
@@ -224,10 +266,12 @@ class RetinaBabyFace(nn.Module):
         # - Angle head for predicting rotation angles of bounding boxes
         # - Class head for predicting class logits
         # - Face head for predicting face/no-face logits
+        # - Child head for predicting baby/adult classification logits
         self.obb_head = OBBHead(out_channel)
         self.angle_head = AngleHead(out_channel)
         self.class_head = ClassHead(out_channel)
         self.face_head = FaceHead(out_channel)
+        self.child_head = ChildHead(out_channel)
 
     def make_backbone(
         self, name: str, pretrained: bool
@@ -417,26 +461,31 @@ class RetinaBabyFace(nn.Module):
         face2_1 = self.face_head(c2_1)  # Face logits for P2
         obb2_1 = self.obb_head(c2_1)  # OBB vertex displacements for P2
         ang2_1 = self.angle_head(c2_1)  # Rotation angles for P2
+        child2_1 = self.child_head(c2_1)  # Baby/Adult classification logits for P2
 
         cls3_1 = self.class_head(c3_1)  # Class logits for P3
         face3_1 = self.face_head(c3_1)  # Face logits for P3
         obb3_1 = self.obb_head(c3_1)  # OBB vertex displacements for P3
         ang3_1 = self.angle_head(c3_1)  # Rotation angles for P3
+        child3_1 = self.child_head(c3_1)  # Baby/Adult classification logits for P3
 
         cls4_1 = self.class_head(c4_1)  # Class logits for P4
         face4_1 = self.face_head(c4_1)  # Face logits for P4
         obb4_1 = self.obb_head(c4_1)  # OBB vertex displacements for P4
         ang4_1 = self.angle_head(c4_1)  # Rotation angles for P4
+        child4_1 = self.child_head(c4_1)  # Baby/Adult classification logits for P4
 
         cls5_1 = self.class_head(c5_1)  # Class logits for P5
         face5_1 = self.face_head(c5_1)  # Face logits for P5
         obb5_1 = self.obb_head(c5_1)  # OBB vertex displacements for P5
         ang5_1 = self.angle_head(c5_1)  # Rotation angles for P5
+        child5_1 = self.child_head(c5_1)  # Baby/Adult classification logits for P5
 
         cls6_1 = self.class_head(c6_1)  # Class logits for P6
         face6_1 = self.face_head(c6_1)  # Face logits for P6
         obb6_1 = self.obb_head(c6_1)  # OBB vertex displacements for P6
         ang6_1 = self.angle_head(c6_1)  # Rotation angles for P6
+        child6_1 = self.child_head(c6_1)  # Baby/Adult classification logits for P6
 
         # 5) Context stage 2 (SSH stage2) → refinement
         c2_2 = self.ssh4_stage2(c2_1)  # Refined P2
@@ -450,60 +499,83 @@ class RetinaBabyFace(nn.Module):
         face2_2 = self.face_head(c2_2)  # Refined face logits for P2
         obb2_2 = self.obb_head(c2_2)  # Refined OBB vertex displacements for P2
         ang2_2 = self.angle_head(c2_2)  # Refined rotation angles for P2
+        child2_2 = self.child_head(
+            c2_2
+        )  # Refined baby/adult classification logits for P2
 
         cls3_2 = self.class_head(c3_2)  # Refined class logits for P3
         face3_2 = self.face_head(c3_2)  # Refined face logits for P3
         obb3_2 = self.obb_head(c3_2)  # Refined OBB vertex displacements for P3
         ang3_2 = self.angle_head(c3_2)  # Refined rotation angles for P3
+        child3_2 = self.child_head(
+            c3_2
+        )  # Refined baby/adult classification logits for P3
 
         cls4_2 = self.class_head(c4_2)  # Refined class logits for P4
         face4_2 = self.face_head(c4_2)  # Refined face logits for P4
         obb4_2 = self.obb_head(c4_2)  # Refined OBB vertex displacements for P4
         ang4_2 = self.angle_head(c4_2)  # Refined rotation angles for P4
+        child4_2 = self.child_head(
+            c4_2
+        )  # Refined baby/adult classification logits for P4
 
         cls5_2 = self.class_head(c5_2)  # Refined class logits for P5
         face5_2 = self.face_head(c5_2)  # Refined face logits for P5
         obb5_2 = self.obb_head(c5_2)  # Refined OBB vertex displacements for P5
         ang5_2 = self.angle_head(c5_2)  # Refined rotation angles for P5
+        child5_2 = self.child_head(
+            c5_2
+        )  # Refined baby/adult classification logits for P5
 
         cls6_2 = self.class_head(c6_2)  # Refined class logits for P6
         face6_2 = self.face_head(c6_2)  # Refined face logits for P6
         obb6_2 = self.obb_head(c6_2)  # Refined OBB vertex displacements for P6
         ang6_2 = self.angle_head(c6_2)  # Refined rotation angles for P6
+        child6_2 = self.child_head(
+            c6_2
+        )  # Refined baby/adult classification logits for P6
 
         # 7) Combine stage1 + stage2 predictions (additive refinement)
         cls2_f = cls2_1 + cls2_2
         face2_f = face2_1 + face2_2
         obb2_f = obb2_1 + obb2_2
         ang2_f = wrap_to_pi(ang2_1 + ang2_2)
+        child2_f = child2_1 + child2_2
 
         cls3_f = cls3_1 + cls3_2
         face3_f = face3_1 + face3_2
         obb3_f = obb3_1 + obb3_2
         ang3_f = wrap_to_pi(ang3_1 + ang3_2)
+        child3_f = child3_1 + child3_2
 
         cls4_f = cls4_1 + cls4_2
         face4_f = face4_1 + face4_2
         obb4_f = obb4_1 + obb4_2
         ang4_f = wrap_to_pi(ang4_1 + ang4_2)
+        child4_f = child4_1 + child4_2
 
         cls5_f = cls5_1 + cls5_2
         face5_f = face5_1 + face5_2
         obb5_f = obb5_1 + obb5_2
         ang5_f = wrap_to_pi(ang5_1 + ang5_2)
+        child5_f = child5_1 + child5_2
 
         cls6_f = cls6_1 + cls6_2
         face6_f = face6_1 + face6_2
         obb6_f = obb6_1 + obb6_2
         ang6_f = wrap_to_pi(ang6_1 + ang6_2)
+        child6_f = child6_1 + child6_2
 
         # 8) Concatenate predictions across the 5 pyramid levels
         orientation_logits = torch.cat([cls2_f, cls3_f, cls4_f, cls5_f, cls6_f], dim=1)
         face_logits = torch.cat([face2_f, face3_f, face4_f, face5_f, face6_f], dim=1)
         obbs = torch.cat([obb2_f, obb3_f, obb4_f, obb5_f, obb6_f], dim=1)
         angs = torch.cat([ang2_f, ang3_f, ang4_f, ang5_f, ang6_f], dim=1)
+        child_logits = torch.cat(
+            [child2_f, child3_f, child4_f, child5_f, child6_f], dim=1
+        )
 
-        return orientation_logits, face_logits, obbs, angs
+        return orientation_logits, face_logits, obbs, angs, child_logits
 
 
 class ViTFeature2D(nn.Module):
@@ -547,7 +619,7 @@ class ViTFeature2D(nn.Module):
 
 def reset_heads(model: nn.Module) -> None:
     """
-    This function resets the weights of the specified prediction heads (`obb_head`, `angle_head`, `class_head`, and `face_head`)
+    This function resets the weights of the specified prediction heads (`obb_head`, `angle_head`, `class_head`, `child_head`,  and `face_head`)
     within the given model. For each head:
     - If the head is `obb_head`, convolutional weights are initialized from a normal distribution (mean=0.0, std=1e-3).
     - For all other heads, convolutional weights are initialized using Kaiming-He (He normal) initialization, suitable for ReLU activations.
@@ -555,15 +627,21 @@ def reset_heads(model: nn.Module) -> None:
 
     This is useful for reinitializing prediction heads before fine-tuning or after modifying the model architecture.
 
-        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head`, and `face_head`.
+        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head`, `child_head`, and `face_head`.
 
     Args:
-        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head` and `face_head`.
+        model (nn.Module): The model containing the submodules `obb_head`, `angle_head`, `class_head`, `child_head`, and `face_head`.
 
     Returns:
         None
     """
-    for head_name in ["obb_head", "angle_head", "class_head", "face_head"]:
+    for head_name in [
+        "obb_head",
+        "angle_head",
+        "class_head",
+        "face_head",
+        "child_head",
+    ]:
         head = getattr(model, head_name)
         for layer in head.modules():
             if isinstance(layer, nn.Conv2d):

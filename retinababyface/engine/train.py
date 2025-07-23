@@ -148,18 +148,22 @@ def nms_rotated(
     scores: torch.Tensor,
     threshold: float = 0.45,
     min_area_ratio: float = 0.5,
+    method: str = "ultralytics",  # "custom" o "ultralytics"
+    use_triu: bool = True,   # solo usado si method == "ultralytics"
 ) -> torch.Tensor:
     """
-    Optimized Rotated NMS with correct indexing using precomputed pIoU matrix and suppression logic.
+    Switchable Rotated NMS between custom and Ultralytics implementation.
 
     Args:
         boxes (Tensor): (N, 5) in (cx, cy, w, h, θ)
         scores (Tensor): (N,)
-        threshold (float): IoU threshold for suppression
-        min_area_ratio (float): Threshold for containment suppression
+        threshold (float): IoU threshold
+        min_area_ratio (float): Only used in custom mode
+        method (str): "custom" | "ultralytics"
+        use_triu (bool): Only used in ultralytics mode
 
     Returns:
-        Tensor: Indices of boxes to keep
+        Tensor: indices of selected boxes
     """
     if boxes.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=scores.device)
@@ -168,37 +172,60 @@ def nms_rotated(
     boxes = boxes.to(device)
     scores = scores.to(device)
 
-    # Sort by score descending
-    order = scores.argsort(descending=True)
-    boxes = boxes[order]  # Now boxes[i] is in the order of descending scores
+    if method == "ultralytics":
+        # Ultralytics-style fast NMS
+        sorted_idx = torch.argsort(scores, descending=True)
+        boxes_sorted = boxes[sorted_idx]
+        ious = batch_probiou(boxes_sorted, boxes_sorted)
 
-    # Precompute everything
-    iou_matrix = batch_probiou(boxes, boxes).to(device)  # (N, N)
-    areas = boxes[:, 2] * boxes[:, 3]
-    centers = boxes[:, :2]
+        if use_triu:
+            ious = ious.triu(diagonal=1)
+            pick = torch.nonzero((ious >= threshold).sum(0) <= 0).squeeze(-1)
+        else:
+            n = boxes_sorted.shape[0]
+            row_idx = torch.arange(n, device=boxes.device).view(-1, 1)
+            col_idx = torch.arange(n, device=boxes.device).view(1, -1)
+            upper_mask = row_idx < col_idx
+            ious = ious * upper_mask
+            suppress = (ious >= threshold).sum(0) > 0
+            scores_filtered = scores[sorted_idx].clone()
+            scores_filtered[suppress] = 0
+            pick = torch.topk(scores_filtered, scores.shape[0]).indices
 
-    keep = []
-    idxs = torch.arange(boxes.size(0), device=device)
+        return sorted_idx[pick]
 
-    while idxs.numel() > 0:
-        i = idxs[0]
-        keep.append(order[i].item())  # Use original index from sorted scores
+    elif method == "custom":
+        # Tu versión con heurística de área y distancia
+        order = scores.argsort(descending=True)
+        boxes = boxes[order]
+        iou_matrix = batch_probiou(boxes, boxes)
+        areas = boxes[:, 2] * boxes[:, 3]
+        centers = boxes[:, :2]
 
-        if idxs.numel() == 1:
-            break
+        keep = []
+        idxs = torch.arange(boxes.size(0), device=device)
 
-        rest = idxs[1:]
+        while idxs.numel() > 0:
+            i = idxs[0]
+            keep.append(order[i].item())
 
-        ious = iou_matrix[i, rest]
-        area_ratios = areas[rest] / (areas[i] + 1e-6)
-        dists = torch.norm(centers[rest] - centers[i], dim=1)
-        suppress_mask = (ious >= threshold) | (
-            (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
-        )
+            if idxs.numel() == 1:
+                break
 
-        idxs = rest[~suppress_mask]
+            rest = idxs[1:]
+            ious = iou_matrix[i, rest]
+            area_ratios = areas[rest] / (areas[i] + 1e-6)
+            dists = torch.norm(centers[rest] - centers[i], dim=1)
+            suppress_mask = (ious >= threshold) | (
+                (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
+            )
+            idxs = rest[~suppress_mask]
 
-    return torch.tensor(keep, dtype=torch.long, device=device)
+        return torch.tensor(keep, dtype=torch.long, device=device)
+
+    else:
+        raise ValueError(f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'.")
+
 
 
 def infer_with_rotated_nms(

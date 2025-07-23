@@ -150,75 +150,55 @@ def nms_rotated(
     min_area_ratio: float = 0.5,
 ) -> torch.Tensor:
     """
-    Performs Rotated Non-Maximum Suppression (NMS) to filter overlapping bounding boxes based on their scores,
-    probabilistic IoU (pIoU), and containment criteria. This implementation is optimized for GPU usage.
+    Optimized Rotated NMS with correct indexing using precomputed pIoU matrix and suppression logic.
 
     Args:
-        boxes (Tensor): Tensor of shape (N, 5) containing bounding boxes in (cx, cy, w, h, θ) format.
-        scores (Tensor): Tensor of shape (N,) containing confidence scores for each bounding box.
-        threshold (float): IoU threshold for suppression. Boxes with IoU >= threshold are suppressed.
-        min_area_ratio (float): Minimum area ratio for containment suppression. Boxes with smaller area ratios
-                                and close proximity are suppressed.
+        boxes (Tensor): (N, 5) in (cx, cy, w, h, θ)
+        scores (Tensor): (N,)
+        threshold (float): IoU threshold for suppression
+        min_area_ratio (float): Threshold for containment suppression
 
     Returns:
-        Tensor: Tensor containing indices of boxes to keep after suppression.
+        Tensor: Indices of boxes to keep
     """
-    # Return an empty tensor if there are no boxes
     if boxes.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=scores.device)
 
-    # Ensure boxes and scores are on the same device, prioritize GPU if available
-    device = (
-        boxes.device
-        if boxes.is_cuda
-        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     boxes = boxes.to(device)
     scores = scores.to(device)
 
-    # Sort indices of boxes by descending scores
+    # Sort by score descending
     order = scores.argsort(descending=True)
-    keep = []  # List to store indices of boxes to keep
+    boxes = boxes[order]  # Now boxes[i] is in the order of descending scores
 
-    # Precompute IoU matrix, areas, and centers for all boxes
-    iou_matrix = batch_probiou(boxes, boxes).to(device)  # (N, N) pairwise IoU matrix
-    areas = boxes[:, 2] * boxes[:, 3]  # (N,) areas of boxes
-    centers = boxes[:, :2]  # (N, 2) centers of boxes
+    # Precompute everything
+    iou_matrix = batch_probiou(boxes, boxes).to(device)  # (N, N)
+    areas = boxes[:, 2] * boxes[:, 3]
+    centers = boxes[:, :2]
 
-    # Iteratively process boxes in descending order of scores
-    while order.numel() > 0:
-        # Select the box with the highest score
-        i = order[0].item()
-        keep.append(i)  # Add its index to the keep list
+    keep = []
+    idxs = torch.arange(boxes.size(0), device=device)
 
-        # If only one box remains, stop the loop
-        if order.numel() == 1:
+    while idxs.numel() > 0:
+        i = idxs[0]
+        keep.append(order[i].item())  # Use original index from sorted scores
+
+        if idxs.numel() == 1:
             break
 
-        # Get indices of remaining boxes
-        rest = order[1:]
+        rest = idxs[1:]
 
-        # Compute IoU between the selected box and remaining boxes
-        ious = iou_matrix[i, rest]  # (len(rest),)
-
-        # Compute area ratios between remaining boxes and the selected box
+        ious = iou_matrix[i, rest]
         area_ratios = areas[rest] / (areas[i] + 1e-6)
-
-        # Compute Euclidean distances between centers of remaining boxes and the selected box
         dists = torch.norm(centers[rest] - centers[i], dim=1)
-
-        # Suppression criteria:
-        # - IoU >= threshold
-        # - Area ratio < min_area_ratio and distance < 20% of the square root of the selected box's area
         suppress_mask = (ious >= threshold) | (
             (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
         )
 
-        # Update the order by removing suppressed boxes
-        order = rest[~suppress_mask]
+        idxs = rest[~suppress_mask]
 
-    # Return indices of boxes to keep as a tensor
-    return torch.tensor(keep, device=boxes.device, dtype=torch.long)
+    return torch.tensor(keep, dtype=torch.long, device=device)
 
 
 def infer_with_rotated_nms(
@@ -271,6 +251,8 @@ def infer_with_rotated_nms(
 
     B = images.size(0)
 
+    device = images.device
+
     child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N, 1) → (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
     outputs = []
@@ -287,10 +269,10 @@ def infer_with_rotated_nms(
         if not keep.any():
             outputs.append(
                 dict(
-                    boxes=torch.empty(0, 5, device=images.device),
-                    scores=torch.empty(0, device=images.device),
-                    labels=torch.empty(0, device=images.device),
-                    polygons=torch.empty(0, 8, device=images.device),
+                    boxes=torch.empty(0, 5, device=device),
+                    scores=torch.empty(0, device=device),
+                    labels=torch.empty(0, device=device),
+                    polygons=torch.empty(0, 8, device=device),
                 )
             )
             continue
@@ -305,7 +287,7 @@ def infer_with_rotated_nms(
         # Decode predicted polygons for selected anchors
         verts = decode_vertices(
             deltas[b][sel],
-            anchors_xy[sel],
+            anchors_xy[sel].to(device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
         )  # (K, 8)
@@ -315,7 +297,9 @@ def infer_with_rotated_nms(
         )  # (K, 5)
 
         # Apply rotated NMS to filter overlapping predictions
-        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
+        keep_nms = nms_rotated(xywhr.to(device), score[sel].to(device), iou_thres)[
+            :max_det
+        ]
         sel_final = sel[keep_nms]
 
         # Prepare output dictionary for this image
@@ -1112,7 +1096,6 @@ def val_step(
     avg_rect_loss = rect_loss_sum / total_batches
 
     # Compute rotated mAP using accumulated predictions and ground truths
-    start_eval = time.perf_counter()
     mAP = compute_map_rotated(
         all_pred_boxes,
         all_pred_scores,
@@ -1122,7 +1105,6 @@ def val_step(
         iou_thr=iou_thres,
         num_classes=5,
     )
-    print(f"🧪 mAP took {time.perf_counter() - start_eval:.2f}s")
 
     return (
         avg_loss,

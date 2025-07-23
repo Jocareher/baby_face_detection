@@ -495,8 +495,7 @@ def orthogonality_loss(
     side_term = (len01 / len23 - 1).pow(2) + (len12 / len30 - 1).pow(2)
 
     # Combine the two terms with their respective weights
-    perim = (len01 + len12 + len23 + len30).clamp_min(4 * eps)
-    loss = (w_angle * ortho_term + w_side * side_term) / perim
+    loss = w_angle * ortho_term + w_side * side_term
     return loss.mean()  # Return the mean loss over the batch
 
 

@@ -149,7 +149,7 @@ def nms_rotated(
     threshold: float = 0.45,
     min_area_ratio: float = 0.5,
     method: str = "ultralytics",  # "custom" o "ultralytics"
-    use_triu: bool = True,   # solo usado si method == "ultralytics"
+    use_triu: bool = True,  # solo usado si method == "ultralytics"
 ) -> torch.Tensor:
     """
     Switchable Rotated NMS between custom and Ultralytics implementation.
@@ -224,8 +224,9 @@ def nms_rotated(
         return torch.tensor(keep, dtype=torch.long, device=device)
 
     else:
-        raise ValueError(f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'.")
-
+        raise ValueError(
+            f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'."
+        )
 
 
 def infer_with_rotated_nms(

@@ -483,6 +483,8 @@ def orthogonality_loss(
 
     # Only two unique angles needed for a rectangle (adjacent edges)
     ortho_term = cos2_between(edge01, edge12) + cos2_between(edge12, edge23)
+    # Clamp to avoid excessive values
+    ortho_term = ortho_term.clamp(max=1.0)
 
     # Opposite side length equality
     len01, len12 = edge01.norm(dim=-1).clamp_min(eps), edge12.norm(dim=-1).clamp_min(
@@ -492,7 +494,10 @@ def orthogonality_loss(
         eps
     )
 
+    # Side length equality term
     side_term = (len01 / len23 - 1).pow(2) + (len12 / len30 - 1).pow(2)
+    # Clamp to avoid excessive values
+    side_term = side_term.clamp(max=4.0)
 
     # Combine the two terms with their respective weights
     loss = w_angle * ortho_term + w_side * side_term

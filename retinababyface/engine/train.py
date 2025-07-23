@@ -157,7 +157,11 @@ def nms_rotated(
     if boxes.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=scores.device)
 
-    device = boxes.device if boxes.is_cuda else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = (
+        boxes.device
+        if boxes.is_cuda
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
     boxes = boxes.to(device)
     scores = scores.to(device)
 
@@ -173,7 +177,9 @@ def nms_rotated(
             pick = torch.nonzero(keep_mask).squeeze(-1)
         else:
             n = boxes_sorted.shape[0]
-            upper_mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1)
+            upper_mask = torch.triu(
+                torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1
+            )
             ious = ious * upper_mask
             suppress = (ious >= threshold).sum(0) > 0
             scores_filtered = scores[sorted_idx].clone()
@@ -201,7 +207,9 @@ def nms_rotated(
             area_i = areas[i]
             dists = torch.norm(centers[rest] - centers[i], dim=1)
             area_ratios = areas[rest] / (area_i + 1e-6)
-            suppress_mask = (area_ratios < min_area_ratio) & (dists < 0.2 * area_i.sqrt())
+            suppress_mask = (area_ratios < min_area_ratio) & (
+                dists < 0.2 * area_i.sqrt()
+            )
             remaining = rest[~suppress_mask]
 
         return torch.tensor(keep, dtype=torch.long, device=device)
@@ -236,8 +244,9 @@ def nms_rotated(
         return torch.tensor(keep, dtype=torch.long, device=device)
 
     else:
-        raise ValueError(f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'.")
-
+        raise ValueError(
+            f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'."
+        )
 
 
 def infer_with_rotated_nms(

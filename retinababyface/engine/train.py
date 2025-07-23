@@ -144,89 +144,67 @@ class EarlyStopping:
 
 
 def nms_rotated(
-    boxes: torch.Tensor,
-    scores: torch.Tensor,
+    boxes: torch.Tensor,  # (N, 5) - (cx, cy, w, h, θ)
+    scores: torch.Tensor,  # (N,)   - confidence scores
     threshold: float = 0.45,
-    min_area_ratio: float = 0.5,
-    method: str = "ultralytics",  # "custom" o "ultralytics"
-    use_triu: bool = True,  # solo usado si method == "ultralytics"
+    min_area_ratio: float = 0.3,
 ) -> torch.Tensor:
     """
-    Switchable Rotated NMS between custom and Ultralytics implementation.
+    Performs rotated Non-Maximum Suppression (NMS) using probabilistic IoU (pIoU) and additional containment/area filtering.
+
+    This function removes redundant rotated bounding boxes based on two criteria:
+      1. Suppresses boxes that have high overlap (pIoU ≥ threshold) with a higher-scoring box.
+      2. Suppresses boxes that are much smaller (area ratio < min_area_ratio) and are fully contained within a larger box,
+         provided their centers are close (distance < 0.2 * sqrt(area_larger)).
 
     Args:
-        boxes (Tensor): (N, 5) in (cx, cy, w, h, θ)
-        scores (Tensor): (N,)
-        threshold (float): IoU threshold
-        min_area_ratio (float): Only used in custom mode
-        method (str): "custom" | "ultralytics"
-        use_triu (bool): Only used in ultralytics mode
+        boxes (torch.Tensor): Rotated bounding boxes in (cx, cy, w, h, θ) format, shape (N, 5).
+        scores (torch.Tensor): Confidence scores for each box, shape (N,).
+        threshold (float): IoU threshold for suppression (default: 0.45).
+        min_area_ratio (float): Minimum area ratio to consider a box as "small" for containment suppression (default: 0.3).
 
     Returns:
-        Tensor: indices of selected boxes
+        torch.Tensor: Indices of boxes to keep after NMS, as a 1D tensor of type long.
     """
-    if boxes.numel() == 0:
-        return torch.empty(0, dtype=torch.long, device=scores.device)
+    order = scores.argsort(descending=True)
+    keep = []
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    boxes = boxes.to(device)
-    scores = scores.to(device)
+    # While there are boxes to process
+    while order.numel() > 0:
+        # Select the box with the highest score
+        i = order[0].item()
+        keep.append(i)
 
-    if method == "ultralytics":
-        # Ultralytics-style fast NMS
-        sorted_idx = torch.argsort(scores, descending=True)
-        boxes_sorted = boxes[sorted_idx]
-        ious = batch_probiou(boxes_sorted, boxes_sorted)
+        # If only one box remains, we can stop
+        if order.numel() == 1:
+            break
 
-        if use_triu:
-            ious = ious.triu(diagonal=1)
-            pick = torch.nonzero((ious >= threshold).sum(0) <= 0).squeeze(-1)
-        else:
-            n = boxes_sorted.shape[0]
-            row_idx = torch.arange(n, device=boxes.device).view(-1, 1)
-            col_idx = torch.arange(n, device=boxes.device).view(1, -1)
-            upper_mask = row_idx < col_idx
-            ious = ious * upper_mask
-            suppress = (ious >= threshold).sum(0) > 0
-            scores_filtered = scores[sorted_idx].clone()
-            scores_filtered[suppress] = 0
-            pick = torch.topk(scores_filtered, scores.shape[0]).indices
+        rest = order[1:]
+        # Compute pIoU between the current box and the rest
+        ious = batch_probiou(boxes[i : i + 1], boxes[rest]).squeeze(0)
+        suppress_mask = ious >= threshold
 
-        return sorted_idx[pick]
+        box_i = boxes[i].unsqueeze(0)  # (1, 5)
+        for idx, j in enumerate(rest):
+            # Get the box to compare against
+            box_j = boxes[j].unsqueeze(0)  # (1, 5)
 
-    elif method == "custom":
-        # Tu versión con heurística de área y distancia
-        order = scores.argsort(descending=True)
-        boxes = boxes[order]
-        iou_matrix = batch_probiou(boxes, boxes)
-        areas = boxes[:, 2] * boxes[:, 3]
-        centers = boxes[:, :2]
+            # Compute area ratio between boxes
+            area_i = box_i[0, 2] * box_i[0, 3]
+            area_j = box_j[0, 2] * box_j[0, 3]
+            area_ratio = area_j / (area_i + 1e-6)
 
-        keep = []
-        idxs = torch.arange(boxes.size(0), device=device)
+            # Compute center distance between boxes
+            center_dist = torch.norm(box_j[0, :2] - box_i[0, :2])
 
-        while idxs.numel() > 0:
-            i = idxs[0]
-            keep.append(order[i].item())
+            # Suppress if box_j is much smaller and close to box_i (likely contained)
+            if area_ratio < min_area_ratio and center_dist < 0.2 * torch.sqrt(area_i):
+                suppress_mask[idx] = True
 
-            if idxs.numel() == 1:
-                break
+        # Keep only boxes not suppressed
+        order = rest[~suppress_mask]
 
-            rest = idxs[1:]
-            ious = iou_matrix[i, rest]
-            area_ratios = areas[rest] / (areas[i] + 1e-6)
-            dists = torch.norm(centers[rest] - centers[i], dim=1)
-            suppress_mask = (ious >= threshold) | (
-                (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
-            )
-            idxs = rest[~suppress_mask]
-
-        return torch.tensor(keep, dtype=torch.long, device=device)
-
-    else:
-        raise ValueError(
-            f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'."
-        )
+    return torch.tensor(keep, device=boxes.device, dtype=torch.long)
 
 
 def infer_with_rotated_nms(

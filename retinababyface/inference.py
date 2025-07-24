@@ -182,6 +182,9 @@ def main():
         3: "3/4 Rightside",
         4: "Rightside",
     }
+    anchor_cache_path = config.ANCHORS_CACHE_PATH
+    print(f"[INFO] Using anchors cache path: {anchor_cache_path}")
+
     # 4. Run inference
     print("[INFO] Running inference...")
     figures = inference(
@@ -199,6 +202,7 @@ def main():
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,
+        anchors_cache_path=anchors_cache_path,
     )
 
     # 5. Save inference results

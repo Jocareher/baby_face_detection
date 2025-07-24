@@ -62,6 +62,7 @@ def prepare_anchors(
     device: torch.device,
     scale_factors: List[float],
     ratio_factors: List[float],
+    anchors_cache_path: str,
 ) -> Tuple[Tuple[int, int], torch.Tensor, torch.Tensor]:
     """
     Prepares anchors for inference using the base OBB statistics and given scale/ratio factors.
@@ -72,6 +73,7 @@ def prepare_anchors(
         device (torch.device): Device for tensor creation (usually 'cuda' or 'cpu').
         scale_factors (List[float]): List of scaling factors for anchor generation.
         ratio_factors (List[float]): List of aspect ratio factors for anchors.
+        anchors_cache_path (str): Path to cache the generated anchors for reuse.
     Returns:
         Tuple containing:
             - resize_size (Tuple[int, int]): Target size used to resize images.
@@ -88,6 +90,7 @@ def prepare_anchors(
         device=device,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
+        anchors_cache_path=anchors_cache_path,
     )
 
     print(
@@ -1179,6 +1182,7 @@ def inference(
     std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
     save_figs: bool = True,
     close_figs: bool = True,
+    anchors_cache_path: Union[str, Path] = None,
 ) -> Dict[str, Any]:
     """
     Complete inference and reporting pipeline for object detection evaluation.
@@ -1208,6 +1212,7 @@ def inference(
         std (Tuple[float, float, float]): Std for image normalization (for visualization).
         save_figs (bool): Whether to save generated figures to disk.
         close_figs (bool): Whether to close figures after saving (to free memory).
+        anchors_cache_path (Union[str, Path], optional): Path to cache anchors for reuse.
 
     Returns:
         Dict[str, Any]: Dictionary containing:
@@ -1237,6 +1242,7 @@ def inference(
         device=device,
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
+        anchors_cache_path=anchors_cache_path,
     )
 
     print("[STEP 2] Running inference...")

@@ -553,6 +553,8 @@ def main():
     # ------------------------------------------------------------------------
     # V. Training
     # ------------------------------------------------------------------------
+    anchor_cache_path = config.ANCHORS_CACHE_PATH
+    print(f"[INFO] Using anchors cache path: {anchor_cache_path}")
 
     print("[INFO] Starting training...")
     train(
@@ -580,6 +582,7 @@ def main():
         alpha_score=args.alpha_score,
         csv_path=csv_path,
         anchor_preview_path=anchor_preview_path,
+        anchors_cache_path=anchor_cache_path,
         inference_preview=inference_preview,
     )
 
@@ -662,6 +665,7 @@ def main():
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,
+        anchors_cache_path=anchor_cache_path,
     )
 
     # Plot training curves from the CSV file

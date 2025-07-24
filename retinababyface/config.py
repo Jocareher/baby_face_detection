@@ -1,4 +1,4 @@
-import math
+import os
 
 from torchvision import transforms
 from data_setup.augmentations import (
@@ -91,6 +91,13 @@ SCALE_FACTORS = [
 RATIO_FACTORS = [1.0]
 ANGLES = [0.0]
 NUM_ANCHORS = len(SCALE_FACTORS) * len(RATIO_FACTORS) * len(ANGLES)
+ANCHORS_CACHE_PATH = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "weights",
+        "anchors_cache.pt",
+    )
+)
 
 
 # =======================

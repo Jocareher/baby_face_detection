@@ -546,8 +546,8 @@ def get_resize_size(dataloader: DataLoader) -> Tuple[int, int]:
     Returns:
         Tuple[int, int]: The resize size (width, height).
     """
-    # Get the first batch from the dataloader
-    sample = next(iter(dataloader))
+    # Get the first sample from the dataloader
+    sample = dataloader.dataset[0]
     # Assuming the dataloader returns a dictionary with an "image" key
     # and the image is in the format (C, H, W)
     # Get the image shape
@@ -612,6 +612,7 @@ def generate_anchors_for_training(
     scale_factors: List[float],
     ratio_factors: List[float],
     anchor_preview_path: Optional[Union[str, Path]] = None,
+    anchors_cache_path: Optional[Union[str, Path]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Generates oriented anchor boxes (OBBs) for the training stage of the model, based on the
@@ -629,12 +630,17 @@ def generate_anchors_for_training(
         scale_factors (List[float]): List of scale multipliers to generate anchors of various sizes.
         ratio_factors (List[float]): List of aspect ratio multipliers to create anchors of different shapes.
         anchor_preview_path (Optional[Union[str, Path]]): Path to save a preview of the generated anchors.
+        anchors_cache_path (Optional[Union[str, Path]]): Path to cache the generated anchors for reuse.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
             - anchors_xy (torch.Tensor): Anchor boxes in vertex format (N, 8).
             - anchors_xywhr (torch.Tensor): Anchor boxes in (cx, cy, w, h, angle) format (N, 5).
     """
+    if anchors_cache_path and os.path.exists(anchors_cache_path):
+        data = torch.load(anchors_cache_path, map_location=device)
+        return data["anchors_xy"].to(device), data["anchors_xywhr"].to(device)
+
     # Get the output feature map shapes for each FPN level from the model
     feature_shapes = get_feature_map_shapes(
         model, input_shape=(1, 3, resize_size[1], resize_size[0])
@@ -704,6 +710,12 @@ def generate_anchors_for_training(
         plt.savefig(anchor_preview_path, dpi=150)
         plt.close(fig)
         print(f"[INFO] Anchor preview saved to {anchor_preview_path}")
+
+    if anchors_cache_path:
+        torch.save(
+            {"anchors_xy": anchors_xy.cpu(), "anchors_xywhr": anchors_xywhr.cpu()},
+            anchors_cache_path,
+        )
 
     return anchors_xy, anchors_xywhr
 
@@ -873,6 +885,8 @@ def train_step(
     scheduler: lr_scheduler._LRScheduler,
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    autocast_context: Optional[torch.cuda.amp.autocast] = None,
 ) -> Tuple[float, float, float, float, float]:
     """
     Performs a single training step for the model.
@@ -887,6 +901,8 @@ def train_step(
         scheduler (lr_scheduler._LRScheduler): Learning rate scheduler.
         device (torch.device): Device to use for training.
         anchors (torch.Tensor): Anchor boxes tensor.
+        scaler (Optional[torch.cuda.amp.GradScaler]): Scaler for mixed precision training.
+        autocast_context (Optional[torch.cuda.amp.autocast]): Context manager for mixed precision.
 
     Returns:
         Tuple[float, float, float, float, float, float]:
@@ -906,23 +922,6 @@ def train_step(
     child_loss_sum = 0.0
     rect_loss_sum = 0.0
     total_batches = 0
-
-    # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
-    use_amp = device.type == "cuda"
-
-    if use_amp:
-        try:
-            from torch.amp import GradScaler, autocast  # PyTorch >= 2.0
-        except ImportError:
-            from torch.cuda.amp import GradScaler, autocast  # PyTorch < 2.0 fallback
-        scaler = GradScaler()  # Scales gradients to prevent underflow in float16
-        autocast_context = autocast(
-            device_type="cuda", enabled=True
-        )  # Context manager for mixed precision
-        print("[INFO] Using Automatic Mixed Precision (AMP) for training.")
-    else:
-        scaler = None
-        autocast_context = nullcontext()  # No-op context for CPU or no AMP
 
     # Progress bar for training batches
     bar = tqdm(
@@ -957,7 +956,7 @@ def train_step(
                 loss_child,
             ) = loss_fn(pred, targets, batch_anchors, anchors_xywhr, image_sizes)
 
-        if use_amp:
+        if scaler is not None:
             scaler.scale(loss).backward()  # Backward pass with gradient scaling
 
             if clip_value is not None:
@@ -1213,6 +1212,7 @@ def train(
     grid_shape: Tuple[int, int] = (3, 3),
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
+    anchors_cache_path: Optional[Union[str, Path]] = None,
     inference_preview: Optional[Union[str, Path]] = None,
     show_every_epoch: int = 5,
 ) -> Dict[str, List[float]]:
@@ -1250,6 +1250,7 @@ def train(
         csv_path (Union[str, Path], optional): Path to save training metrics CSV.
         alpha_score (float): Weighting factor for combining face and orientation confidence.
         anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
+        anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors for reuse.
         inference_preview (Union[str, Path], optional): Path to save inference preview image.
         show_every_epoch (int, optional): Frequency of showing inference previews during training.
 
@@ -1335,8 +1336,26 @@ def train(
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
         anchor_preview_path=anchor_preview_path,
+        anchors_cache_path=anchors_cache_path,
     )
     anchors_tuple = (anchors_xy, anchors_xywhr)
+
+    # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
+    use_amp = device.type == "cuda"
+
+    if use_amp:
+        try:
+            from torch.amp import GradScaler, autocast  # PyTorch >= 2.0
+        except ImportError:
+            from torch.cuda.amp import GradScaler, autocast  # PyTorch < 2.0 fallback
+        scaler = GradScaler()  # Scales gradients to prevent underflow in float16
+        autocast_context = autocast(
+            device_type="cuda", enabled=True
+        )  # Context manager for mixed precision
+        print("[INFO] Using Automatic Mixed Precision (AMP) for training.")
+    else:
+        scaler = None
+        autocast_context = nullcontext()  # No-op context for CPU or no AMP
 
     start_time = time.time()
     if record_metrics:
@@ -1367,6 +1386,8 @@ def train(
                 scheduler=scheduler,
                 device=device,
                 anchors=anchors_tuple,
+                scaler=scaler,
+                autocast_context=autocast_context,
             )
 
             # Perform a validation step

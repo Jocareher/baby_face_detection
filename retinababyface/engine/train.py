@@ -218,6 +218,9 @@ def nms_rotated(
         boxes_sel = boxes[selected]
         areas = boxes_sel[:, 2] * boxes_sel[:, 3]  # Compute areas of selected boxes
         centers = boxes_sel[:, :2]  # Extract centers of selected boxes
+        w = boxes_sel[:, 2]
+        h = boxes_sel[:, 3]
+        diag = torch.sqrt(w * w + h * h)
 
         keep = []
         remaining = torch.arange(len(selected), device=device)
@@ -235,9 +238,10 @@ def nms_rotated(
                 centers[rest] - centers[i], dim=1
             )  # Compute distances to other centers
             area_ratios = areas[rest] / (area_i + 1e-6)  # Compute area ratios
-            suppress_mask = (area_ratios < min_area_ratio) & (
-                dists < 0.2 * area_i.sqrt()
-            )
+            # Suppress boxes based on area ratio and distance
+            radius_i = 0.2 * diag[i]
+            # Suppress boxes with high IoU or small area ratio
+            suppress_mask = (area_ratios < min_area_ratio) & (dists < radius_i)
             remaining = rest[
                 ~suppress_mask
             ]  # Remove suppressed boxes from the remaining list

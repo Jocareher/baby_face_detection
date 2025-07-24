@@ -148,105 +148,118 @@ def nms_rotated(
     scores: torch.Tensor,
     threshold: float = 0.45,
     min_area_ratio: float = 0.5,
-    method: str = "ultralytics",  # "custom" o "ultralytics"
+    method: str = "ultralytics",  # "custom" or "ultralytics"
     use_triu: bool = True,
 ) -> torch.Tensor:
     """
-    Switchable Rotated NMS with optional suppression of small redundant predictions.
+    Performs Non-Maximum Suppression (NMS) for rotated bounding boxes, with support for two methods:
+    "ultralytics" (fast NMS) and "custom" (heuristic NMS). Optionally suppresses small redundant predictions.
+
+    Args:
+        boxes (torch.Tensor): Tensor of rotated bounding boxes in (cx, cy, w, h, θ) format, shape (N, 5).
+        scores (torch.Tensor): Tensor of confidence scores for each box, shape (N,).
+        threshold (float): IoU threshold for suppressing overlapping boxes (default: 0.45).
+        min_area_ratio (float): Minimum area ratio for suppressing small redundant boxes (default: 0.5).
+        method (str): NMS method to use, either "ultralytics" (default) or "custom".
+        use_triu (bool): Whether to use the upper triangular mask for faster suppression (default: True).
+
+    Returns:
+        torch.Tensor: Indices of the selected boxes after NMS, shape (M,).
+
+    Raises:
+        ValueError: If an invalid method is provided.
+
+    Notes:
+        - "ultralytics" method uses a fast pIoU-based approach with optional upper triangular masking.
+        - "custom" method applies heuristic suppression based on IoU, area ratios, and center distances.
     """
     if boxes.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=scores.device)
 
-    device = (
-        boxes.device
-        if boxes.is_cuda
-        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    # Ensure boxes and scores are on the appropriate device
+    device = boxes.device if boxes.is_cuda else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     boxes = boxes.to(device)
     scores = scores.to(device)
 
     if method == "ultralytics":
         # Ultralytics-style fast NMS (pIoU-based)
-        sorted_idx = torch.argsort(scores, descending=True)
-        boxes_sorted = boxes[sorted_idx]
-        ious = batch_probiou(boxes_sorted, boxes_sorted)
+        sorted_idx = torch.argsort(scores, descending=True)  # Sort boxes by descending scores
+        boxes_sorted = boxes[sorted_idx]  # Reorder boxes based on sorted indices
+        ious = batch_probiou(boxes_sorted, boxes_sorted)  # Compute pairwise IoU matrix
 
         if use_triu:
+            # Use upper triangular mask to avoid redundant comparisons
             ious = ious.triu(diagonal=1)
-            keep_mask = (ious >= threshold).sum(0) <= 0
-            pick = torch.nonzero(keep_mask).squeeze(-1)
+            keep_mask = (ious >= threshold).sum(0) <= 0  # Suppress boxes with high overlap
+            pick = torch.nonzero(keep_mask).squeeze(-1)  # Indices of boxes to keep
         else:
+            # Alternative suppression without upper triangular mask
             n = boxes_sorted.shape[0]
-            upper_mask = torch.triu(
-                torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1
-            )
+            upper_mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1)
             ious = ious * upper_mask
             suppress = (ious >= threshold).sum(0) > 0
             scores_filtered = scores[sorted_idx].clone()
-            scores_filtered[suppress] = 0
+            scores_filtered[suppress] = 0  # Suppress scores of overlapping boxes
             pick = torch.topk(scores_filtered, scores.shape[0]).indices
 
-        selected = sorted_idx[pick]
+        selected = sorted_idx[pick]  # Map selected indices back to original order
 
         # === Post-process to remove small redundant boxes ===
         boxes_sel = boxes[selected]
-        areas = boxes_sel[:, 2] * boxes_sel[:, 3]
-        centers = boxes_sel[:, :2]
+        areas = boxes_sel[:, 2] * boxes_sel[:, 3]  # Compute areas of selected boxes
+        centers = boxes_sel[:, :2]  # Extract centers of selected boxes
 
         keep = []
         remaining = torch.arange(len(selected), device=device)
 
         while remaining.numel() > 0:
-            i = remaining[0]
-            keep.append(selected[i].item())
+            i = remaining[0]  # Select the first box in the remaining list
+            keep.append(selected[i].item())  # Add it to the keep list
 
             if remaining.numel() == 1:
                 break
 
-            rest = remaining[1:]
-            area_i = areas[i]
-            dists = torch.norm(centers[rest] - centers[i], dim=1)
-            area_ratios = areas[rest] / (area_i + 1e-6)
-            suppress_mask = (area_ratios < min_area_ratio) & (
-                dists < 0.2 * area_i.sqrt()
-            )
-            remaining = rest[~suppress_mask]
+            rest = remaining[1:]  # Remaining boxes after the first
+            area_i = areas[i]  # Area of the current box
+            dists = torch.norm(centers[rest] - centers[i], dim=1)  # Compute distances to other centers
+            area_ratios = areas[rest] / (area_i + 1e-6)  # Compute area ratios
+            suppress_mask = (area_ratios < min_area_ratio) & (dists < 0.2 * area_i.sqrt())
+            remaining = rest[~suppress_mask]  # Remove suppressed boxes from the remaining list
 
         return torch.tensor(keep, dtype=torch.long, device=device)
 
     elif method == "custom":
         # Custom heuristic NMS with vectorized pIoU + area filtering
-        order = scores.argsort(descending=True)
-        boxes = boxes[order]
-        iou_matrix = batch_probiou(boxes, boxes)
-        areas = boxes[:, 2] * boxes[:, 3]
-        centers = boxes[:, :2]
+        order = scores.argsort(descending=True)  # Sort boxes by descending scores
+        boxes = boxes[order]  # Reorder boxes based on sorted indices
+        iou_matrix = batch_probiou(boxes, boxes)  # Compute pairwise IoU matrix
+        areas = boxes[:, 2] * boxes[:, 3]  # Compute areas of boxes
+        centers = boxes[:, :2]  # Extract centers of boxes
 
         keep = []
         idxs = torch.arange(boxes.size(0), device=device)
 
         while idxs.numel() > 0:
-            i = idxs[0]
-            keep.append(order[i].item())
+            i = idxs[0]  # Select the first box in the remaining list
+            keep.append(order[i].item())  # Add it to the keep list
 
             if idxs.numel() == 1:
                 break
 
-            rest = idxs[1:]
-            ious = iou_matrix[i, rest]
-            area_ratios = areas[rest] / (areas[i] + 1e-6)
-            dists = torch.norm(centers[rest] - centers[i], dim=1)
+            rest = idxs[1:]  # Remaining boxes after the first
+            ious = iou_matrix[i, rest]  # IoU values between the current box and the rest
+            area_ratios = areas[rest] / (areas[i] + 1e-6)  # Compute area ratios
+            dists = torch.norm(centers[rest] - centers[i], dim=1)  # Compute distances to other centers
             suppress_mask = (ious >= threshold) | (
                 (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
             )
-            idxs = rest[~suppress_mask]
+            idxs = rest[~suppress_mask]  # Remove suppressed boxes from the remaining list
 
         return torch.tensor(keep, dtype=torch.long, device=device)
 
     else:
-        raise ValueError(
-            f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'."
-        )
+        raise ValueError(f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'.")
+
 
 
 def infer_with_rotated_nms(
@@ -262,57 +275,40 @@ def infer_with_rotated_nms(
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference with a RetinaBabyFace-like model that includes an additional face/no-face head,
-    applying rotated Non-Maximum Suppression (NMS) to filter predictions.
+    Performs inference with rotated NMS, filtering by child probability and ranking by orientation confidence.
 
     Args:
-        model_or_preds (Union[nn.Module, Tuple]): Either a model that outputs predictions or a tuple of precomputed outputs.
-        images (Tensor): Batch of input images, shape (B, 3, H, W).
-        anchors_xy (Tensor): Anchor polygons in (N, 8) format (4 corners per anchor).
-        image_size (Tuple[int, int]): Size of input images as (W, H).
-        face_thres (float): Minimum face probability to consider a detection.
-        iou_thres (float): IoU threshold for rotated NMS.
-        class_thres (float): Minimum orientation confidence to consider a detection.
-        alpha_score (float): Weighting factor for combining face and orientation confidence.
-        pre_nms_topk (int): Maximum number of top-scoring predictions to keep before NMS.
-        max_det (int): Maximum number of final predictions per image after NMS.
+        model_or_preds: Model or precomputed outputs (orient_logits, _, deltas, pred_angles, child_logits)
+        images: Input batch (B, 3, H, W)
+        anchors_xy: (N, 8) anchor polygons
+        image_size: (W, H)
+        face_thres: Threshold for child face detection (probability)
+        iou_thres: IoU threshold for rotated NMS
+        class_thres: Minimum orientation confidence
+        pre_nms_topk: Top-k scores to keep before NMS
+        max_det: Maximum detections per image
 
     Returns:
-        List[Dict[str, Tensor]]: List of length B, each dict contains:
-            - 'boxes':    (M, 5) boxes in (cx, cy, w, h, θ) format
-            - 'scores':   (M,)   combined face/orientation scores
-            - 'labels':   (M,)   orientation labels (0–4)
-            - 'polygons': (M, 8) 4-corner polygons for visualization
-            - 'child_score': (M,) adult/child score
-            - 'is_child': (M,)   boolean mask indicating if the anchor is a child face
+        List[Dict[str, Tensor]]: Per-image dictionaries with final predictions
     """
-    # If model_or_preds is a model, run inference to get outputs
     if isinstance(model_or_preds, nn.Module):
         orient_logits, _, deltas, pred_angles, child_logits = model_or_preds(images)
-    # If model_or_preds is already a tuple of outputs, unpack them
     else:
         orient_logits, _, deltas, pred_angles, child_logits = model_or_preds
-        # chequeo rápido de forma
-        assert orient_logits.shape[0] == images.size(
-            0
-        ), "Batch size mismatch between model outputs and input images"
+        assert orient_logits.shape[0] == images.size(0), "Batch size mismatch"
 
     B = images.size(0)
-
     device = images.device
-
-    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N, 1) → (B, N)
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
+
     outputs = []
 
     for b in range(B):
-        # Get the most probable orientation label and its confidence for each anchor
-        orient_conf, orient_labels = orientation_probs[b].max(-1)
+        orient_conf, orient_labels = orientation_probs[b].max(-1)  # (N,)
+        score = orient_conf  # 💡 Usamos solo confianza de orientación como score principal
 
-        # Compute a combined score using face probability and orientation confidence
-        score = (child_prob[b] ** alpha_score) * (orient_conf ** (1 - alpha_score))
-
-        # Filter anchors based on face probability and orientation confidence thresholds
+        # ✅ Filtramos solo si es una cara de bebé con suficiente confianza y orientación confiable
         keep = (child_prob[b] >= face_thres) & (orient_conf >= class_thres)
         if not keep.any():
             outputs.append(
@@ -321,48 +317,47 @@ def infer_with_rotated_nms(
                     scores=torch.empty(0, device=device),
                     labels=torch.empty(0, device=device),
                     polygons=torch.empty(0, 8, device=device),
+                    child_score=torch.empty(0, device=device),
+                    is_child=torch.empty(0, device=device, dtype=torch.bool),
                 )
             )
             continue
 
-        # Get indices of anchors that passed the filtering
         idx = keep.nonzero(as_tuple=False).squeeze(1)
-        # Select top-K anchors by combined score before NMS
         K = min(pre_nms_topk, idx.numel())
         topk = score[idx].topk(K, sorted=True).indices
         sel = idx[topk]  # (K,)
 
-        # Decode predicted polygons for selected anchors
         verts = decode_vertices(
             deltas[b][sel],
             anchors_xy[sel].to(device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
         )  # (K, 8)
-        # Convert polygons to (cx, cy, w, h, θ) format
+
         xywhr = xyxyxyxy2xywhr(
             verts, pred_angles[b][sel].squeeze(-1), image_size
         )  # (K, 5)
 
-        # Apply rotated NMS to filter overlapping predictions
+        # 📌 NMS con orientación
         keep_nms = nms_rotated(xywhr.to(device), score[sel].to(device), iou_thres)[
             :max_det
         ]
         sel_final = sel[keep_nms]
 
-        # Prepare output dictionary for this image
         outputs.append(
             {
-                "boxes": xywhr[keep_nms],  # (M, 5) in (cx, cy, w, h, θ)
-                "scores": score[sel][keep_nms],  # (M,)
-                "labels": orient_labels[sel_final].float(),  # (M,)
-                "polygons": verts[keep_nms],  # (M, 8) in (x1, y1, ..., x4, y4)
+                "boxes": xywhr[keep_nms],
+                "scores": score[sel][keep_nms],
+                "labels": orient_labels[sel_final].float(),
+                "polygons": verts[keep_nms],
                 "child_score": child_prob[b][sel][keep_nms],
-                "is_child": torch.ones_like(keep_nms, dtype=torch.bool),
+                "is_child": torch.ones_like(keep_nms, dtype=torch.bool),  # ya filtramos por bebés
             }
         )
 
     return outputs
+
 
 
 def compute_map_rotated(

@@ -1,6 +1,8 @@
 import os
 import shutil
 import random
+from pathlib import Path
+from PIL import Image
 
 
 def add_child_prob_to_labels(dataset_root: str, child_prob: int = 1) -> None:
@@ -70,11 +72,6 @@ def add_child_prob_to_labels(dataset_root: str, child_prob: int = 1) -> None:
 
     print("🎯 Processing completed.")
 
-
-import os
-import shutil
-from pathlib import Path
-from PIL import Image
 
 
 def convert_widerface_annotations(

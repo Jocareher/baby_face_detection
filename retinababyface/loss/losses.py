@@ -614,45 +614,18 @@ class MultiTaskLoss(nn.Module):
     def forward(
         self,
         preds: Tuple[
-            torch.Tensor,  # orient_logits: (B, N, 5)
-            torch.Tensor,  # face_logits:   (B, N, 1)
-            torch.Tensor,  # deltas:        (B, N, 8)
-            torch.Tensor,  # angles:        (B, N, 1)
-            torch.Tensor,  # child_logits:  (B, N, 1)
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
         ],
-        targets: Dict[
-            str, torch.Tensor
-        ],  # GT dict: boxes, angle, class_idx, valid_mask
-        anchors_xy: torch.Tensor,  # (B, N, 8) anchor vertices
-        anchors_xywhr: torch.Tensor,  # (N, 5) anchors in xywhr
-        image_sizes: List[Tuple[int, int]],  # (W, H) for each image
-    ) -> Tuple[torch.Tensor, float, float, float, float, float]:
-        """
-        Computes the total multi-task loss and returns all components:
-
-        Args:
-            preds (Tuple[Tensor]): Output tuple (orient_logits, face_logits, deltas, angles) from the model.
-            targets (Dict[str, Tensor]): Ground-truth information per image.
-            anchors_xy (Tensor): Anchor boxes in xyxyxyxy format (B, N, 8).
-            anchors_xywhr (Tensor): Anchor boxes in (cx, cy, w, h, θ) format (N, 5).
-            image_sizes (List[Tuple[int, int]]): Image sizes in (width, height) format.
-
-        Returns:
-            Tuple[Tensor, float, float, float, float, float, float, float]:
-                - total_loss   : Combined loss tensor.
-                - cls_loss     : Classification loss.
-                - face_loss    : Face classification loss.
-                - obb_loss     : Oriented bounding box regression loss.
-                - rot_loss     : Rotation angle regression loss.
-                - rect_loss    : Orthogonality loss for rectangle regularization.
-                - child_loss   : Child probability loss.
-        """
-        # Unpack predictions
+        targets: Dict[str, torch.Tensor],
+        anchors_xy: torch.Tensor,  # (B, N, 8)
+        anchors_xywhr: torch.Tensor,  # (N, 5)
+        image_sizes: List[Tuple[int, int]],
+    ):
         orient_logits, face_logits, deltas, pred_angles, child_logits = preds
         B, N, _ = orient_logits.shape
         device = orient_logits.device
 
-        # Ensure targets are on the same device as predictions
+        # Acumuladores de loss
         cls_loss = torch.tensor(0.0, device=device)
         face_loss = torch.tensor(0.0, device=device)
         obb_loss = torch.tensor(0.0, device=device)
@@ -660,15 +633,14 @@ class MultiTaskLoss(nn.Module):
         rect_loss = torch.tensor(0.0, device=device)
         child_loss = torch.tensor(0.0, device=device)
 
-        # Count valid batches for classification loss
-        valid_batches = 0
-        num_cls_batches = 0
+        # Contadores para normalización
+        face_batches = 0  # imágenes con al menos un positivo stage1
+        child_batches = 0  # imágenes con anchors positivos que además son baby
+        cls_batches = 0  # imágenes donde se calculó cls_loss
+        stage2_batches = 0  # imágenes con positivos válidos en stage2
 
-        # Iterate over each image in the batch
         for b in range(B):
-            # -------------------------------------
-            # Stage 1: Match anchors using IoU thresholds 1 (for face + classification)
-            # -------------------------------------
+            # ---------- Stage 1: matching ----------
             pos_mask_1, neg_mask_1, best_gt_1 = match_anchors_to_targets(
                 anchors_xywhr,
                 targets["boxes"][b],
@@ -677,128 +649,81 @@ class MultiTaskLoss(nn.Module):
                 pos_iou_thr=self.pos_iou_thr_1,
                 neg_iou_thr=self.neg_iou_thr_1,
             )
-            # Collect positive and negative indices for face loss
-            pos_idx_1 = pos_mask_1.nonzero(as_tuple=False).squeeze(1)  # (num_pos_1,)
-            neg_idx_1 = neg_mask_1.nonzero(as_tuple=False).squeeze(1)  # (num_neg_1,)
-
+            pos_idx_1 = pos_mask_1.nonzero(as_tuple=False).squeeze(1)
+            neg_idx_1 = neg_mask_1.nonzero(as_tuple=False).squeeze(1)
             num_pos_1 = pos_idx_1.numel()
+
             if num_pos_1 > 0:
-                # a) Compute per-candidate negative face loss to select hard negatives
-                neg_logits_all = face_logits[b][neg_idx_1]  # (num_neg_1, 1)
+                # Hay al menos un positivo para face_loss
+                face_batches += 1
+
+                # Hard negative mining para face
+                neg_logits_all = face_logits[b][neg_idx_1]
                 with torch.no_grad():
                     per_neg_loss = F.binary_cross_entropy_with_logits(
                         neg_logits_all,
                         torch.zeros_like(neg_logits_all),
                         reduction="none",
-                    ).view(
-                        -1
-                    )  # (num_neg_1,)
-
-                # b) Sort negatives by descending loss (hard negatives first)
+                    ).view(-1)
                 _, hard_order = per_neg_loss.sort(descending=True)
-
-                # c) Select up to neg_samples_ratio * num_pos_1 hard negatives
                 num_hard = min(hard_order.numel(), num_pos_1 * self.neg_samples_ratio)
                 hard_neg_idx = neg_idx_1[hard_order[:num_hard]]
-
-                # d) Combine positive and selected hard-negative indices
                 sel_idx_1 = torch.cat([pos_idx_1, hard_neg_idx], dim=0)
-
-                # e) Build face targets: 1 for positives, 0 for selected negatives
-                tgt_face = pos_mask_1.float().unsqueeze(1)[
-                    sel_idx_1
-                ]  # (num_pos_1 + num_hard, 1)
-
-                # Compute binary cross-entropy loss on selected anchors
+                tgt_face = pos_mask_1.float().unsqueeze(1)[sel_idx_1]
                 face_loss += self.face_loss(face_logits[b][sel_idx_1], tgt_face)
 
-            # Child loss computation
-            # Only compute child loss if there are positive anchors
-            baby_mask = torch.zeros(
-                0, dtype=torch.bool, device=device
-            )  # Initialize empty mask
-            if num_pos_1:
-                # Get the best ground truth indices for positive anchors
+                # ---------- Child loss ----------
                 valid_child_mask = best_gt_1[pos_idx_1] != -1
-                # If there are valid children, compute child loss
-                # valid_child_mask is a boolean mask indicating which positive anchors have a valid child
                 if valid_child_mask.any():
-                    # Filter positive indices to only those with valid children
                     pos_idx_1_valid = pos_idx_1[valid_child_mask]
-                    # Get the child probabilities for these valid positive anchors
-                    # best_gt_1 contains the indices of the best matching ground truth for each positive anchor
-                    # tgt_child will be the child probabilities for the positive anchors that are babies
                     tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1_valid]].to(
                         device
                     )
-                    # Compute binary cross-entropy loss for child classification
                     child_loss += self.child_loss(
                         child_logits[b][pos_idx_1_valid], tgt_child
                     )
-                    # Create a mask for the positive indices that are babies
+                    child_batches += 1  # se acumuló child_loss en esta imagen
+
+                    # Anchors positivos que son bebés (mask para clasificación)
                     baby_mask = tgt_child.squeeze(1).bool()
                 else:
-                    # If no valid children, set baby_mask to empty
-                    # This means no positive anchors are babies, so no classification loss will be computed
                     baby_mask = torch.zeros(0, dtype=torch.bool, device=device)
 
-            # -------------------------------------
-            # Stage 1: Classification loss (orient_logits)
-            # -------------------------------------
-            # Only compute classification loss if there are positive anchors
-            if num_pos_1 and baby_mask.any():
-                # Compute classification loss only for positive anchors that are babies
-                pos_idx_1_baby = pos_idx_1[baby_mask]
-                # best_gt_1 contains the indices of the best matching ground truth for each positive anchor
-                valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
-                # valid_cls_mask is a boolean mask indicating which positive anchors have a valid class
-                # If there are valid classes, compute classification loss
-                if valid_cls_mask.any():
-                    # Filter positive indices to only those with valid classes
-                    pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
-                    # Get the target class indices for these valid positive anchors
-                    tgt_cls_baby = targets["class_idx"][b][
-                        best_gt_1[pos_idx_1_baby_valid]
-                    ]
-                    # Compute the classification loss for these valid positive anchors
-                    # orient_logits[b] is the logits for the current batch
-                    # pos_idx_1_baby_valid contains the indices of the positive anchors that are babies
-                    # and have a valid class
-                    cls_loss += self.cls_loss_fn(
-                        orient_logits[b][pos_idx_1_baby_valid], tgt_cls_baby
-                    )
-                    num_cls_batches += 1
-
-            # -------------------------------------
-            # Stage 2: Generate provisional OBBs from stage 1 outputs
-            # -------------------------------------
-            if not num_pos_1 or not baby_mask.any():
+                # ---------- Clasificación orientación (solo babies) ----------
+                if baby_mask.numel() and baby_mask.any():
+                    pos_idx_1_baby = pos_idx_1[baby_mask]
+                    valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
+                    if valid_cls_mask.any():
+                        pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
+                        tgt_cls_baby = targets["class_idx"][b][
+                            best_gt_1[pos_idx_1_baby_valid]
+                        ]
+                        cls_loss += self.cls_loss_fn(
+                            orient_logits[b][pos_idx_1_baby_valid], tgt_cls_baby
+                        )
+                        cls_batches += 1
+            else:
+                # No positivos stage1 ⇒ no continuamos a stage2
                 continue
 
-            # Create a mask for the positive indices that are babies
+            # ---------- Stage 2: generar OBB provisionales ----------
+            if not (baby_mask.numel() and baby_mask.any()):
+                continue
+
             pos_mask_1_baby = torch.zeros_like(pos_mask_1)
             pos_mask_1_baby[pos_idx_1[baby_mask]] = True
 
-            # Decode provisional vertices and angles without gradient
             with torch.no_grad():
-                pred_deltas_1 = deltas[b][pos_mask_1_baby]  # (num_pos_1, 8)
-                anc_xy_1 = anchors_xy[b][pos_mask_1_baby]  # (num_pos_1, 8)
-                ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)  # (num_pos_1,)
+                pred_deltas_1 = deltas[b][pos_mask_1_baby]
+                anc_xy_1 = anchors_xy[b][pos_mask_1_baby]
+                ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)
                 verts_1 = decode_vertices(
-                    pred_deltas_1,
-                    anc_xy_1,
-                    ang_1,
-                    image_sizes[b],
-                )  # (num_pos_1, 8)
+                    pred_deltas_1, anc_xy_1, ang_1, image_sizes[b]
+                )
+                anc_xywhr_1 = xyxyxyxy2xywhr(verts_1, ang_1, image_sizes[b])
 
-                anc_xywhr_1 = xyxyxyxy2xywhr(
-                    verts_1, ang_1, image_sizes[b]
-                )  # (num_pos_1, 5)
-
-            # -------------------------------------
-            # Stage 2: Match provisional OBBs to GT using IoU thresholds 2
-            # -------------------------------------
-            pos_mask_2, neg_mask_2, best_gt_2 = match_anchors_to_targets(
+            # ---------- Stage 2: matching ----------
+            pos_mask_2, _, best_gt_2 = match_anchors_to_targets(
                 anc_xywhr_1,
                 targets["boxes"][b],
                 targets["angle"][b].squeeze(-1),
@@ -806,77 +731,48 @@ class MultiTaskLoss(nn.Module):
                 pos_iou_thr=self.pos_iou_thr_2,
                 neg_iou_thr=self.neg_iou_thr_2,
             )
-            # pos_mask_2 is shape (num_pos_1,) indicating which provisional are positive
-
-            # Filter out stage 2 positives that do not have valid ground-truth matches
             valid_gt_mask_2 = best_gt_2[pos_mask_2] != -1
             if not valid_gt_mask_2.any():
                 continue
 
-            # Get the absolute indices of stage 2 positives and their corresponding ground-truth indices
             abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[
                 pos_mask_2
             ][valid_gt_mask_2]
-            # Get the ground-truth indices for stage 2 positives
-            # best_gt_2 contains the indices of the best matching ground truth for each provisional anchor
-            # pos_mask_2 is a boolean mask indicating which provisional anchors are positive
             gt_idx_2 = best_gt_2[pos_mask_2][valid_gt_mask_2]
 
-            # -------------------------------------
-            # Stage 2: Final OBB regression loss (only for stage-2 positives)
-            # -------------------------------------
-            pred_deltas_2 = deltas[b][abs_pos_idx_2]  # (num_pos_2, 8)
-            gt_boxes_2 = targets["boxes"][b][gt_idx_2]  # (num_pos_2, 8)
-            anc_xy_2 = anchors_xy[b][abs_pos_idx_2]  # (num_pos_2, 8)
+            pred_deltas_2 = deltas[b][abs_pos_idx_2]
+            gt_boxes_2 = targets["boxes"][b][gt_idx_2]
+            anc_xy_2 = anchors_xy[b][abs_pos_idx_2]
+            ga_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
 
-            # Get ground-truth angles for stage 2 positives
-            ga_2 = targets["angle"][b][gt_idx_2].squeeze(-1)  # (num_pos_2,)
-            ga_wrapped_2 = wrap_to_pi(ga_2)  # (num_pos_2,)
-
-            # Compute the OBB regression loss for stage 2 positives
             obb_loss += self.obb_loss(
-                pred_deltas_2.unsqueeze(0),  # (num_pos_2, 8)
-                ga_wrapped_2.unsqueeze(0).unsqueeze(-1),  # (num_pos_2, 1)
-                gt_boxes_2.unsqueeze(0),  # (num_pos_2, 8)
-                anc_xy_2.unsqueeze(0),  # (num_pos_2, 8)
+                pred_deltas_2.unsqueeze(0),
+                ga_2.unsqueeze(0).unsqueeze(-1),
+                gt_boxes_2.unsqueeze(0),
+                anc_xy_2.unsqueeze(0),
             )
 
-            # -------------------------------------
-            # Stage 2: Final rotation loss
-            # -------------------------------------
-            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)  # (num_pos_2,)
-            pa_wrapped_2 = wrap_to_pi(pa_2)  # (num_pos_2,)
+            pa_2 = wrap_to_pi(pred_angles[b][abs_pos_idx_2].squeeze(-1))
+            rot_loss += self.rot_loss(pa_2.unsqueeze(-1), ga_2.unsqueeze(-1))
 
-            # Compute the rotation loss for stage 2 positives
-            rot_loss += self.rot_loss(
-                pa_wrapped_2.unsqueeze(-1), ga_wrapped_2.unsqueeze(-1)
-            )
-
-            # ---------   ORTHOGONALITY REGULARISATION   --------------------------
             verts_pred = decode_vertices(
-                pred_deltas_2,
-                anc_xy_2,
-                pa_wrapped_2,
-                image_sizes[b],
-            ).view(
-                -1, 4, 2
-            )  # (num_pos_2, 4, 2)
+                pred_deltas_2, anc_xy_2, pa_2, image_sizes[b]
+            ).view(-1, 4, 2)
             rect_loss += orthogonality_loss(verts_pred)
-            valid_batches += 1  # Increment valid batch count
 
-        # -------------------------------------
-        # Normalize and combine all losses
-        # -------------------------------------
+            stage2_batches += 1  # hubo positivos válidos stage2 en esta imagen
 
-        # Classification loss normalized by number of batches
-        if num_cls_batches:
-            cls_loss = cls_loss / num_cls_batches
-
-        face_loss = face_loss / B if B else face_loss
-        child_loss /= B if B else child_loss
-        obb_loss = obb_loss / valid_batches if valid_batches else obb_loss
-        rot_loss = rot_loss / valid_batches if valid_batches else rot_loss
-        rect_loss = rect_loss / valid_batches if valid_batches else rect_loss
+        # ---------- Normalización por número de imágenes válidas ----------
+        if cls_batches:
+            cls_loss /= cls_batches
+        if face_batches:
+            face_loss /= face_batches
+        if child_batches:
+            child_loss /= child_batches
+        if stage2_batches:
+            obb_loss /= stage2_batches
+            rot_loss /= stage2_batches
+            rect_loss /= stage2_batches
 
         total_loss = (
             self.lambda_cls * cls_loss
@@ -887,10 +783,6 @@ class MultiTaskLoss(nn.Module):
             + self.lambda_rect * rect_loss
         )
 
-        # Return the total loss and individual components
-        # Note: cls_loss, face_loss, obb_loss, rot_loss, rect_loss
-        # are already averaged over the valid batches
-        # and do not need further averaging.
         return (
             total_loss,
             cls_loss.item(),

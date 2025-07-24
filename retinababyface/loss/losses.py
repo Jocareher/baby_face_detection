@@ -814,7 +814,9 @@ class MultiTaskLoss(nn.Module):
                 continue
 
             # Get the absolute indices of stage 2 positives and their corresponding ground-truth indices
-            abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[pos_mask_2][valid_gt_mask_2]
+            abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[
+                pos_mask_2
+            ][valid_gt_mask_2]
             # Get the ground-truth indices for stage 2 positives
             # best_gt_2 contains the indices of the best matching ground truth for each provisional anchor
             # pos_mask_2 is a boolean mask indicating which provisional anchors are positive

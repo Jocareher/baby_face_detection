@@ -659,7 +659,7 @@ def reset_heads(model: nn.Module) -> None:
 
 def set_backbone_frozen(
     model: nn.Module,
-    mode: str = "feature_extract",  # "feature_extract" | "fine_tune" | "train_all"
+    mode: str = "feature_extractor",  # "feature_extract" | "fine_tune" | "train_all"
     last_block_tokens=(
         "denseblock4",
         "layer4",
@@ -673,14 +673,14 @@ def set_backbone_frozen(
     This function allows for flexible control over the training behavior of the backbone
     in a neural network model. It supports three modes:
       - "feature_extract": All backbone layers are frozen, and BatchNorm layers are set to evaluation mode.
-      - "fine_tune": Only the last block of the backbone and its BatchNorm layers are trainable.
+      - "fine_tuning": Only the last block of the backbone and its BatchNorm layers are trainable.
       - "train_all": All backbone layers are trainable, including BatchNorm layers.
 
     Args:
         model (nn.Module): The model containing the backbone.
         mode (str): Training mode for the backbone. Options are:
-            - "feature_extract": Freeze all layers.
-            - "fine_tune": Train only the last block.
+            - "feature_extractor": Freeze all layers.
+            - "fine_tuning": Train only the last block.
             - "train_all": Train all layers.
         last_block_tokens (tuple): Identifiers for the last block layers in the backbone.
             These tokens are used to determine which layers belong to the last block.
@@ -709,7 +709,7 @@ def set_backbone_frozen(
     # 3) Handle BatchNorm layers based on the mode
     for name, m in model.backbone.named_modules():
         if isinstance(m, nn.BatchNorm2d):
-            if mode == "feature_extract":
+            if mode == "feature_extractor":
                 m.eval()  # Set BatchNorm layers to evaluation mode (fixed statistics)
                 m.weight.requires_grad = False  # Freeze BatchNorm weights
                 m.bias.requires_grad = False  # Freeze BatchNorm biases

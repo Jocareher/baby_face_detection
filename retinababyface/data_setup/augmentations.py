@@ -175,7 +175,7 @@ class RandomRotateOBB:
         )  # Extracts the image and target from the sample.
         h, w = image.shape[:2]  # Gets the height and width of the image.
         angle_deg = random.uniform(
-            self.max_angle, -self.max_angle
+            -self.max_angle, self.max_angle
         )  # Generates a random rotation angle in degrees (remove (-) sign).
         angle_rad = np.radians(angle_deg)  # Converts the angle to radians.
 
@@ -350,7 +350,7 @@ class RandomScaleTranslateOBB:
         # Keep only the valid points
         keep_pts = pts_t[valid]
         # Keep only the valid angles
-        keep_angles = wrap_to_pi(angles[valid] - 0)
+        keep_angles = wrap_to_pi(angles[valid])
         # Keep only the valid class indices
         keep_classes = class_idxs[valid]
         # Keep only the valid child probabilities
@@ -677,7 +677,6 @@ class RandomGrayOBB:
             prob (float): The probability of applying the transform. Defaults to 0.1.
         """
         # Checks if the transform should be applied.
-        self.prob = prob
         self.prob = prob
 
     def __call__(self, sample):

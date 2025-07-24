@@ -1269,15 +1269,15 @@ def inference(
         y_true=results["child_gt"],
         y_pred=results["child_pred"],
     )
-    save_figure(cm_figs["raw"], "child_onfusion_matrix_raw.png")
-    save_figure(cm_figs["normalized"], "child_onfusion_matrix_normalized.png")
+    save_figure(cm_figs["raw"], "child_cm_raw.png")
+    save_figure(cm_figs["normalized"], "child_cm_normalized.png")
 
     # Confusion matrices (raw and normalized)
     cm_figs = plot_confusion_matrix(
         y_true=results["y_true"], y_pred=results["y_pred"], labels_map=labels_map
     )
-    save_figure(cm_figs["raw"], "confusion_matrix_raw.png")
-    save_figure(cm_figs["normalized"], "confusion_matrix_normalized.png")
+    save_figure(cm_figs["raw"], "class_cm_raw.png")
+    save_figure(cm_figs["normalized"], "class_cm_normalized.png")
 
     # IoU boxplots per class
     iou_data = [

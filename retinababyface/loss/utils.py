@@ -181,7 +181,9 @@ def match_anchors_to_targets(
         return (
             torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # pos
             torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # neg
-            torch.zeros(N, dtype=torch.long, device=anchors_xywhr.device),  # best_gt
+            torch.full(
+                (N,), -1, dtype=torch.long, device=anchors_xywhr.device
+            ),  # best_gt
         )
 
     # Get the image size

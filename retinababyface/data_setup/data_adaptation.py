@@ -73,7 +73,6 @@ def add_child_prob_to_labels(dataset_root: str, child_prob: int = 1) -> None:
     print("🎯 Processing completed.")
 
 
-
 def convert_widerface_annotations(
     images_root: str, label_txt_path: str, output_root: str
 ) -> None:

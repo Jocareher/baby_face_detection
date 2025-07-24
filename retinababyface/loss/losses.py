@@ -718,12 +718,29 @@ class MultiTaskLoss(nn.Module):
                 0, dtype=torch.bool, device=device
             )  # Initialize empty mask
             if num_pos_1:
-                # Get the child probabilities for the positive anchors
-                tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1]].to(device)
-                # Compute binary cross-entropy loss for child classification
-                child_loss += self.child_loss(child_logits[b][pos_idx_1], tgt_child)
-                # Create a mask for the positive indices that are babies
-                baby_mask = tgt_child.squeeze(1).bool()
+                # Get the best ground truth indices for positive anchors
+                valid_child_mask = best_gt_1[pos_idx_1] != -1
+                # If there are valid children, compute child loss
+                # valid_child_mask is a boolean mask indicating which positive anchors have a valid child
+                if valid_child_mask.any():
+                    # Filter positive indices to only those with valid children
+                    pos_idx_1_valid = pos_idx_1[valid_child_mask]
+                    # Get the child probabilities for these valid positive anchors
+                    # best_gt_1 contains the indices of the best matching ground truth for each positive anchor
+                    # tgt_child will be the child probabilities for the positive anchors that are babies
+                    tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1_valid]].to(
+                        device
+                    )
+                    # Compute binary cross-entropy loss for child classification
+                    child_loss += self.child_loss(
+                        child_logits[b][pos_idx_1_valid], tgt_child
+                    )
+                    # Create a mask for the positive indices that are babies
+                    baby_mask = tgt_child.squeeze(1).bool()
+                else:
+                    # If no valid children, set baby_mask to empty
+                    # This means no positive anchors are babies, so no classification loss will be computed
+                    baby_mask = torch.zeros(0, dtype=torch.bool, device=device)
 
             # -------------------------------------
             # Stage 1: Classification loss (orient_logits)
@@ -732,15 +749,25 @@ class MultiTaskLoss(nn.Module):
             if num_pos_1 and baby_mask.any():
                 # Compute classification loss only for positive anchors that are babies
                 pos_idx_1_baby = pos_idx_1[baby_mask]
-                # Get the target class indices for these positive anchors
                 # best_gt_1 contains the indices of the best matching ground truth for each positive anchor
-                # tgt_cls_baby will be the class indices for the positive anchors that are babies
-                tgt_cls_baby = targets["class_idx"][b][best_gt_1[pos_idx_1_baby]]
-                cls_loss += self.cls_loss_fn(
-                    orient_logits[b][pos_idx_1_baby], tgt_cls_baby
-                )
-                # Increment the count of valid batches for classification loss
-                num_cls_batches += 1
+                valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
+                # valid_cls_mask is a boolean mask indicating which positive anchors have a valid class
+                # If there are valid classes, compute classification loss
+                if valid_cls_mask.any():
+                    # Filter positive indices to only those with valid classes
+                    pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
+                    # Get the target class indices for these valid positive anchors
+                    tgt_cls_baby = targets["class_idx"][b][
+                        best_gt_1[pos_idx_1_baby_valid]
+                    ]
+                    # Compute the classification loss for these valid positive anchors
+                    # orient_logits[b] is the logits for the current batch
+                    # pos_idx_1_baby_valid contains the indices of the positive anchors that are babies
+                    # and have a valid class
+                    cls_loss += self.cls_loss_fn(
+                        orient_logits[b][pos_idx_1_baby_valid], tgt_cls_baby
+                    )
+                    num_cls_batches += 1
 
             # -------------------------------------
             # Stage 2: Generate provisional OBBs from stage 1 outputs
@@ -781,7 +808,9 @@ class MultiTaskLoss(nn.Module):
             )
             # pos_mask_2 is shape (num_pos_1,) indicating which provisional are positive
 
-            if not pos_mask_2.any():
+            # Filter out stage 2 positives that do not have valid ground-truth matches
+            valid_gt_mask_2 = best_gt_2[pos_mask_2] != -1
+            if not valid_gt_mask_2.any():
                 continue
 
             # Map positive indices from stage 1 to stage 2

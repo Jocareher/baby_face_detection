@@ -177,25 +177,35 @@ def nms_rotated(
         return torch.empty(0, dtype=torch.long, device=scores.device)
 
     # Ensure boxes and scores are on the appropriate device
-    device = boxes.device if boxes.is_cuda else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = (
+        boxes.device
+        if boxes.is_cuda
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
     boxes = boxes.to(device)
     scores = scores.to(device)
 
     if method == "ultralytics":
         # Ultralytics-style fast NMS (pIoU-based)
-        sorted_idx = torch.argsort(scores, descending=True)  # Sort boxes by descending scores
+        sorted_idx = torch.argsort(
+            scores, descending=True
+        )  # Sort boxes by descending scores
         boxes_sorted = boxes[sorted_idx]  # Reorder boxes based on sorted indices
         ious = batch_probiou(boxes_sorted, boxes_sorted)  # Compute pairwise IoU matrix
 
         if use_triu:
             # Use upper triangular mask to avoid redundant comparisons
             ious = ious.triu(diagonal=1)
-            keep_mask = (ious >= threshold).sum(0) <= 0  # Suppress boxes with high overlap
+            keep_mask = (ious >= threshold).sum(
+                0
+            ) <= 0  # Suppress boxes with high overlap
             pick = torch.nonzero(keep_mask).squeeze(-1)  # Indices of boxes to keep
         else:
             # Alternative suppression without upper triangular mask
             n = boxes_sorted.shape[0]
-            upper_mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1)
+            upper_mask = torch.triu(
+                torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1
+            )
             ious = ious * upper_mask
             suppress = (ious >= threshold).sum(0) > 0
             scores_filtered = scores[sorted_idx].clone()
@@ -221,10 +231,16 @@ def nms_rotated(
 
             rest = remaining[1:]  # Remaining boxes after the first
             area_i = areas[i]  # Area of the current box
-            dists = torch.norm(centers[rest] - centers[i], dim=1)  # Compute distances to other centers
+            dists = torch.norm(
+                centers[rest] - centers[i], dim=1
+            )  # Compute distances to other centers
             area_ratios = areas[rest] / (area_i + 1e-6)  # Compute area ratios
-            suppress_mask = (area_ratios < min_area_ratio) & (dists < 0.2 * area_i.sqrt())
-            remaining = rest[~suppress_mask]  # Remove suppressed boxes from the remaining list
+            suppress_mask = (area_ratios < min_area_ratio) & (
+                dists < 0.2 * area_i.sqrt()
+            )
+            remaining = rest[
+                ~suppress_mask
+            ]  # Remove suppressed boxes from the remaining list
 
         return torch.tensor(keep, dtype=torch.long, device=device)
 
@@ -247,19 +263,26 @@ def nms_rotated(
                 break
 
             rest = idxs[1:]  # Remaining boxes after the first
-            ious = iou_matrix[i, rest]  # IoU values between the current box and the rest
+            ious = iou_matrix[
+                i, rest
+            ]  # IoU values between the current box and the rest
             area_ratios = areas[rest] / (areas[i] + 1e-6)  # Compute area ratios
-            dists = torch.norm(centers[rest] - centers[i], dim=1)  # Compute distances to other centers
+            dists = torch.norm(
+                centers[rest] - centers[i], dim=1
+            )  # Compute distances to other centers
             suppress_mask = (ious >= threshold) | (
                 (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
             )
-            idxs = rest[~suppress_mask]  # Remove suppressed boxes from the remaining list
+            idxs = rest[
+                ~suppress_mask
+            ]  # Remove suppressed boxes from the remaining list
 
         return torch.tensor(keep, dtype=torch.long, device=device)
 
     else:
-        raise ValueError(f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'.")
-
+        raise ValueError(
+            f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'."
+        )
 
 
 def infer_with_rotated_nms(
@@ -306,7 +329,9 @@ def infer_with_rotated_nms(
 
     for b in range(B):
         orient_conf, orient_labels = orientation_probs[b].max(-1)  # (N,)
-        score = orient_conf  # 💡 Usamos solo confianza de orientación como score principal
+        score = (
+            orient_conf  # 💡 Usamos solo confianza de orientación como score principal
+        )
 
         # ✅ Filtramos solo si es una cara de bebé con suficiente confianza y orientación confiable
         keep = (child_prob[b] >= face_thres) & (orient_conf >= class_thres)
@@ -352,12 +377,13 @@ def infer_with_rotated_nms(
                 "labels": orient_labels[sel_final].float(),
                 "polygons": verts[keep_nms],
                 "child_score": child_prob[b][sel][keep_nms],
-                "is_child": torch.ones_like(keep_nms, dtype=torch.bool),  # ya filtramos por bebés
+                "is_child": torch.ones_like(
+                    keep_nms, dtype=torch.bool
+                ),  # ya filtramos por bebés
             }
         )
 
     return outputs
-
 
 
 def compute_map_rotated(

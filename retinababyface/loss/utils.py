@@ -181,7 +181,9 @@ def match_anchors_to_targets(
         return (
             torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # pos
             torch.zeros(N, dtype=torch.bool, device=anchors_xywhr.device),  # neg
-            torch.zeros(N, dtype=torch.long, device=anchors_xywhr.device),  # best_gt
+            torch.full(
+                (N,), -1, dtype=torch.long, device=anchors_xywhr.device
+            ),  # best_gt
         )
 
     # Get the image size
@@ -280,53 +282,59 @@ def probiou(
 def decode_vertices(
     deltas: torch.Tensor,  # (N, 8) — Predicted normalized offsets from anchor vertices
     anchors: torch.Tensor,  # (N, 8) — Anchor box vertices in pixel coordinates
+    pred_angles: torch.Tensor,  # (N,) — Predicted box rotation angles in radians
     image_size: Tuple[int, int],  # (W, H)
-    use_diag: bool = True,  # Whether to scale offsets by the anchor's diagonal
     scale: float = 0.5,  # Scale factor for offsets
 ) -> torch.Tensor:
     """
-    Decodes predicted OBB vertex offsets back to absolute vertex coordinates.
+    Decodes predicted normalized vertex offsets into absolute OBB vertex coordinates.
 
-    The deltas are learned displacements for each of the 4 vertices of an OBB, normalized
-    to [-1, 1] via a tanh activation. This function rescales and shifts these deltas
-    with respect to the given anchor boxes.
+    This function reconstructs the absolute positions of the 4 vertices of an oriented bounding box (OBB)
+    from predicted normalized offsets (deltas) relative to anchor box vertices. The deltas are first
+    scaled by the anchor's diagonal length (for scale invariance), then rotated by the predicted angle,
+    and finally added to the anchor vertices to obtain the decoded absolute positions in pixel coordinates.
+    The resulting vertices are clamped to the image bounds.
 
     Args:
-        - deltas (torch.Tensor): Tensor of shape (N, 8) containing predicted offsets for each
-            of the 4 vertices (x, y) of the OBB, normalized to [-1, 1] (typically via tanh).
-        - anchors (torch.Tensor): Tensor of shape (N, 8) with anchor box vertex coordinates
-            in pixel space, ordered as (x0, y0, x1, y1, x2, y2, x3, y3).
-        - image_size (Tuple[int, int]): Tuple (width, height) specifying the image dimensions
-            for clamping the decoded vertices.
-        - use_diag (bool, optional): If True, scales the predicted offsets by the average
-            diagonal length of the anchor box (providing scale invariance). If False,
-            offsets are interpreted as pixel displacements. Default is True.
-        - scale (float, optional): Scaling factor applied to the offset magnitude when
-            use_diag is True. Default is 0.5.
+        deltas (torch.Tensor): Tensor of shape (N, 8) containing predicted normalized offsets for each
+            of the 4 vertices (x, y) of the OBB, typically in [-1, 1].
+        anchors (torch.Tensor): Tensor of shape (N, 8) with anchor box vertex coordinates in pixel space,
+            ordered as (x0, y0, x1, y1, x2, y2, x3, y3).
+        pred_angles (torch.Tensor): Tensor of shape (N,) with predicted rotation angles in radians.
+        image_size (Tuple[int, int]): Tuple (width, height) specifying the image dimensions for clamping.
+        scale (float, optional): Scaling factor applied to the offset magnitude. Default is 0.5.
 
     Returns:
-        torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex
-            positions for each OBB, clamped to the image bounds.
+        torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex positions for each OBB,
+            clamped to the image bounds.
     """
+    # Get the image dimensions and number of anchors
     W, H = image_size
+    # Get the number of anchors
+    N = anchors.size(0)
+    # Reshape angles and anchors to (N, 4, 2) for easier manipulation
+    pred_angles = pred_angles.reshape(N)
+    anc_xy = anchors.view(N, 4, 2)
 
-    if use_diag:
-        # Compute the diagonal of the anchor boxes
-        # Reshape anchors to (N, 4, 2) for easier manipulation
-        p0, p2 = anchors.view(-1, 4, 2)[:, 0], anchors.view(-1, 4, 2)[:, 2]
-        # Calculate the diagonal length for each anchor box
-        diag = ((p0[:, 0] - p2[:, 0]).square() + (p0[:, 1] - p2[:, 1]).square()).sqrt()
-        # Displace by deltas scaled by diag
-        verts = anchors + deltas * (diag.unsqueeze(1) * scale)
-    else:
-        # Direct displacement in pixel space
-        verts = anchors + deltas  # Displace only ±1 px per dimension
+    # Scale normalized offsets by anchor diagonal and scale factor
+    diag = (anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True) * scale
+    offs = deltas.view(N, 4, 2) * diag.unsqueeze(-1)
 
-    # Clamp decoded vertices to valid image bounds
-    verts[..., 0::2].clamp_(0, W)  # Clamp x-coordinates
-    verts[..., 1::2].clamp_(0, H)  # Clamp y-coordinates
+    # Rotate offsets by predicted angle for each box
+    cos, sin = pred_angles.cos().unsqueeze(1), pred_angles.sin().unsqueeze(1)
+    dx, dy = offs[..., 0], offs[..., 1]
+    # Apply rotation: (cos, -sin) and (sin, cos) for each box
+    rot_x = cos * dx - sin * dy
+    rot_y = sin * dx + cos * dy
+    offs_rot = torch.stack((rot_x, rot_y), dim=-1)
 
-    return verts
+    # Add rotated offsets to anchor vertices to get decoded vertices
+    verts = anc_xy + offs_rot  # (N, 4, 2)
+
+    # Clamp coordinates to image bounds
+    verts[..., 0].clamp_(0, W)
+    verts[..., 1].clamp_(0, H)
+    return verts.view(N, 8)
 
 
 def xywhr2xyxyxyxy(xywhr: torch.Tensor) -> np.ndarray:
@@ -390,28 +398,54 @@ def xywhr2xyxyxyxy(xywhr: torch.Tensor) -> np.ndarray:
 def encode_vertices(
     gt_boxes: torch.Tensor,  # (N, 8) absolute vertex coordinates of ground truth OBBs
     anchors: torch.Tensor,  # (N, 8) absolute vertex coordinates of anchor OBBs
+    gt_angles: torch.Tensor,  # (N,) rotation angles of ground truth OBBs in radians
+    scale: float = 0.5,  # Scale factor for normalization
 ) -> torch.Tensor:
     """
-    Encodes ground truth oriented bounding boxes as normalized deltas
-    relative to the anchor boxes.
+    Encodes ground truth oriented bounding boxes (OBBs) as normalized deltas
+    relative to anchor boxes, for use as regression targets.
 
-    The deltas are computed as:
-        Δx = (x_gt - x_anchor) / diag(anchor)
-        Δy = (y_gt - y_anchor) / diag(anchor)
-    where diag(anchor) is the Euclidean distance between the first and third
-    vertices of the anchor box (used for normalization).
+    For each OBB, computes the offset between each ground truth vertex and the
+    corresponding anchor vertex, rotates this offset by the inverse of the ground
+    truth angle (to align with the canonical anchor orientation), and normalizes
+    by the anchor's diagonal length (between vertex 0 and 2) times the scale factor.
 
-    This representation aligns with the regression space used by the OBB head.
+    The resulting deltas are clamped to [-1, 1] and can be used as regression targets
+    for OBB vertex prediction.
 
     Args:
         gt_boxes (torch.Tensor): Ground truth boxes in absolute vertex format (N, 8).
         anchors (torch.Tensor): Anchor boxes in absolute vertex format (N, 8).
+        gt_angles (torch.Tensor): Rotation angles of ground truth OBBs in radians (N,).
+        scale (float, optional): Scale factor for normalization. Default is 0.5.
 
     Returns:
-        torch.Tensor: Normalized deltas of shape (N, 8), where each value is in Δx/Δy space.
+        torch.Tensor: Normalized deltas of shape (N, 8), where each value is in Δx/Δy space,
+                      clamped to [-1, 1].
     """
-    pts = anchors.view(-1, 4, 2)  # Reshape anchors to (N, 4, 2)
-    p0, p2 = pts[:, 0], pts[:, 2]  # Get opposite corners (top-left and bottom-right)
-    diag = ((p0 - p2).pow(2).sum(dim=1).sqrt()).unsqueeze(1)  # Diagonal length (N, 1)
-    deltas = (gt_boxes - anchors) / diag  # Normalize vertex differences
-    return deltas  # (N, 8)
+    if gt_angles.dim() > 1:  # (N,1) -> (N,)
+        gt_angles = gt_angles.squeeze(-1)
+
+    N = anchors.size(0)
+    anc_xy = anchors.view(N, 4, 2)
+    gt_xy = gt_boxes.view(N, 4, 2)
+
+    # Compute offsets between ground truth and anchor vertices
+    dx = gt_xy[..., 0] - anc_xy[..., 0]
+    dy = gt_xy[..., 1] - anc_xy[..., 1]
+
+    # Compute inverse rotation matrices for each box (by -gt_angle)
+    cos_t = gt_angles.cos().unsqueeze(1)  # (N,1)
+    sin_t = gt_angles.sin().unsqueeze(1)  # (N,1)
+
+    # Apply inverse rotation (-θ) to offsets
+    rot_x = cos_t * dx + sin_t * dy  # (N,4)
+    rot_y = -sin_t * dx + cos_t * dy  # (N,4)
+
+    offs = torch.stack([rot_x, rot_y], dim=-1)  # (N,4,2)
+
+    # Normalize by the anchor diagonal length and scale factor
+    diag = (anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True)  # (N,1)
+    offs = offs / (diag.unsqueeze(-1) * scale)  # (N,4,2)
+
+    return offs.reshape(N, 8).clamp_(-1.0, 1.0)

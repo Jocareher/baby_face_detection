@@ -20,10 +20,11 @@ class BabyFacesDataset(Dataset):
 
     Each image may have one or more annotations stored in a corresponding .txt label file.
     Label format per line:
-        class_idx x1 y1 x2 y2 x3 y3 x4 y4 angle
+        class_idx child_prob x1 y1 x2 y2 x3 y3 x4 y4 angle
 
     - class_idx: integer from 0 to 4 indicating face orientation
         (0 = left profile, 1 = 3/4 leftside, 2 = frontal, 3 = 3/4 rightside, 4 = right profile)
+    - child_prob: integer (0 or 1) indicating if the face is a child
     - x1, y1, ..., x4, y4: normalized (0–1) coordinates of the OBB corners
     - angle: rotation angle in radians (clockwise), usually measured from the top-left corner
 
@@ -102,7 +103,7 @@ class BabyFacesDataset(Dataset):
         - Loads the image in RGB format.
         - Parses its label file (.txt) if it exists.
         - Denormalizes the polygon coordinates from [0,1] to absolute pixels.
-        - Constructs the target dictionary with 'boxes', 'angles', 'class_idx', and 'valid_mask'.
+        - Constructs the target dictionary with 'boxes', 'angles', 'class_idx', 'child_prob', and 'valid_mask'.
         - Applies optional transform.
 
         Args:
@@ -115,6 +116,7 @@ class BabyFacesDataset(Dataset):
                     - "boxes" (Tensor): (N, 8) absolute polygon vertex coordinates.
                     - "angles" (Tensor): (N,) rotation angles in radians.
                     - "class_idx" (Tensor): (N,) class indices (0 to 4).
+                    - "child_prob" (Tensor): (N,) child probabilities (0 or 1).
                     - "valid_mask" (Tensor): (N,) boolean mask indicating valid entries.
                     - "has_face": Tensor[1]   # optionally added below
         """
@@ -132,17 +134,21 @@ class BabyFacesDataset(Dataset):
         boxes: List[List[float]] = []
         angles: List[float] = []
         class_idxs: List[int] = []
+        child_probs: List[int] = []
 
         # 2) Parse label file (if it exists)
         if os.path.exists(lbl_path):
             with open(lbl_path, "r") as f:
                 for line in f:
                     parts = line.strip().split()
-                    if len(parts) != 10:
+                    if len(parts) != 11:
                         continue  # skip malformed lines
-                    cls = int(parts[0])
-                    coords = list(map(float, parts[1:9]))
-                    ang = float(parts[9])
+                    cls = int(parts[0])  # class index (0 to 4)
+                    child = int(parts[1])  # child probability (0 or 1)
+                    coords = list(
+                        map(float, parts[2:10])
+                    )  # x1, y1, x2, y2, x3, y3, x4, y4
+                    ang = float(parts[10])  # angle in radians
 
                     # Denormalize coordinates (x1, y1, ..., x4, y4) from [0,1] to absolute pixels
                     pts_px: List[float] = []
@@ -152,6 +158,7 @@ class BabyFacesDataset(Dataset):
                         pts_px.extend([x, y])
 
                     class_idxs.append(cls)
+                    child_probs.append(child)
                     boxes.append(pts_px)
                     angles.append(ang)
 
@@ -160,12 +167,14 @@ class BabyFacesDataset(Dataset):
             boxes_t = torch.tensor(boxes, dtype=torch.float32)  # (N,8)
             angles_t = torch.tensor(angles, dtype=torch.float32)  # (N,)
             cls_t = torch.tensor(class_idxs, dtype=torch.long)  # (N,)
+            child_t = torch.tensor(child_probs, dtype=torch.float32)
             valid_mask = torch.ones(len(boxes), dtype=torch.bool)  # (N,)
         else:
             # No ground truth available → treat as background
             boxes_t = torch.zeros((0, 8), dtype=torch.float32)
             angles_t = torch.zeros((0,), dtype=torch.float32)
             cls_t = torch.zeros((0,), dtype=torch.long)
+            child_t = torch.zeros((0,), dtype=torch.float32)
             valid_mask = torch.zeros((0,), dtype=torch.bool)
 
         # Normalize angles to [-pi, pi]
@@ -176,6 +185,7 @@ class BabyFacesDataset(Dataset):
             "boxes": boxes_t,
             "angles": angles_t,
             "class_idx": cls_t,
+            "child_prob": child_t,
             "valid_mask": valid_mask,
         }
 

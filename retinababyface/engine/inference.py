@@ -141,6 +141,9 @@ def run_inference(
             - all_gts: Ground truth labels for F1 vs. threshold.
             - all_preds: Predicted labels for F1 vs. threshold.
             - all_scores: Prediction scores for F1 vs. threshold.
+            - child_stats: TP, FP, FN counts for child face detection.
+            - child_gt: Ground truth labels for child face detection.
+            - child_pred: Predicted labels for child face detection.
             - samples: List of qualitative samples for visualization.
     """
     # Initialize data structures for metrics and qualitative results
@@ -150,12 +153,18 @@ def run_inference(
     y_true, y_pred = [], []
     iou_errs = {c: [] for c in labels_map}
     angle_errs = {c: [] for c in labels_map}
+    child_stats = {"tp": 0, "fp": 0, "fn": 0}
     samples = []
 
     # Additional lists for F1 vs. threshold computation
     all_gts = []  # Ground truth labels
     all_preds = []  # Predicted labels
     all_scores = []  # Prediction scores
+    child_gt, child_pred = [], []
+
+    def log_child(gt_is_baby: bool, pred_is_baby: bool):
+        child_gt.append(1 if gt_is_baby else 0)
+        child_pred.append(1 if pred_is_baby else 0)
 
     dataset = loader.dataset
     global_idx = 0
@@ -182,6 +191,7 @@ def run_inference(
             for b in range(batch_size):
                 fname = dataset.file_list[global_idx]
                 global_idx += 1
+                fp_img, fn_img = 0, 0
 
                 # --------------------- Ground Truth Processing -------------------
                 valid_mask = targets["valid_mask"][b]
@@ -190,6 +200,7 @@ def run_inference(
                     -1
                 )  # GT rotation angles
                 gt_labels = targets["class_idx"][b][valid_mask]  # GT class labels
+                gt_child = targets["child_prob"][b][valid_mask] > 0.5  # Child face mask
                 num_gt = gt_boxes.size(0)
 
                 # Convert GT boxes to xywhr format for rotated IoU computation
@@ -204,6 +215,10 @@ def run_inference(
                 )  # Predicted boxes (N_pred, 5)
                 pred_scores = outputs[b]["scores"].to(device)  # Confidence scores
                 pred_labels = outputs[b]["labels"].to(device)  # Predicted class labels
+                pred_child_s = outputs[b]["child_score"].to(
+                    device
+                )  # Adult/child scores
+                pred_is_child = outputs[b]["is_child"].to(device)
                 num_pred = pred_boxes.size(0)
 
                 # ----------------- Handle Images without GT (num_gt==0) ----------
@@ -221,8 +236,18 @@ def run_inference(
 
                         # Update stats and confusion matrix
                         stats[cls_det]["fp"] += 1  # Count as False Positive
+                        fp_img += 1
                         y_true.append(-1)  # Background row
                         y_pred.append(cls_det)  # Predicted class column
+
+                        pred_baby = bool(
+                            pred_is_child[det_idx].item()
+                        )  # Is it a child face?
+                        log_child(False, pred_baby)
+                        # Update child stats
+                        if bool(pred_is_child[det_idx].item()):
+                            # Child face detected
+                            child_stats["fp"] += 1
 
                     # Store qualitative sample
                     samples.append(
@@ -233,6 +258,8 @@ def run_inference(
                             gt_boxes.cpu(),
                             gt_angles.cpu(),
                             gt_labels.cpu(),
+                            fp_img,
+                            fn_img,
                         )
                     )
                     continue  # Next image
@@ -265,8 +292,18 @@ def run_inference(
 
                     if best_iou_val >= iou_thres:
                         true_cls = int(gt_labels[best_gt_idx])
+                        gt_baby = bool(gt_child[best_gt_idx].item())
+                        pred_baby = bool(pred_is_child[det_idx].item())
+                        log_child(gt_baby, pred_baby)
 
-                        if cls_det == true_cls:
+                        if pred_baby and gt_baby:
+                            child_stats["tp"] += 1
+                        elif pred_baby and not gt_baby:
+                            child_stats["fp"] += 1
+                        elif (not pred_baby) and gt_baby:
+                            child_stats["fn"] += 1
+
+                        if cls_det == true_cls and true_cls in stats:
                             # -------------------- TRUE POSITIVE --------------------
                             stats[true_cls]["tp"] += 1
                             gt_matched[best_gt_idx] = True
@@ -291,40 +328,60 @@ def run_inference(
                         else:
                             # -------------- CLASS CONFUSION ERROR -----------------
                             # Wrong class but good localization
-                            stats[cls_det]["fp"] += 1
-                            per_true[cls_det].append(0)
-                            per_score[cls_det].append(score_det)
+                            if cls_det in stats:
+                                stats[cls_det]["fp"] += 1
+                                fp_img += 1
+                                per_true[cls_det].append(0)
+                                per_score[cls_det].append(score_det)
 
-                            stats[true_cls]["fn"] += 1
-                            gt_matched[best_gt_idx] = True
+                            if true_cls in stats:
+                                stats[true_cls]["fn"] += 1
+                                fn_img += 1
+                                gt_matched[best_gt_idx] = True
 
-                            y_true.append(true_cls)  # GT class row
-                            y_pred.append(cls_det)  # Predicted class column
+                            if true_cls != -1:
+                                y_true.append(true_cls)  # GT class row
+                                y_pred.append(cls_det)  # Predicted class column
 
-                            all_gts.append(true_cls)
-                            all_preds.append(cls_det)
-                            all_scores.append(score_det)
+                                all_gts.append(true_cls)
+                                all_preds.append(cls_det)
+                                all_scores.append(score_det)
                     else:
                         # ---------------- BACKGROUND FALSE POSITIVE --------------
                         # No matching GT with sufficient IoU
-                        stats[cls_det]["fp"] += 1
-                        per_true[cls_det].append(0)
-                        per_score[cls_det].append(score_det)
+                        if cls_det in stats:
+                            stats[cls_det]["fp"] += 1
+                            fp_img += 1
+                            per_true[cls_det].append(0)
+                            per_score[cls_det].append(score_det)
+                            pred_baby = bool(pred_is_child[det_idx].item())
+                            log_child(False, pred_baby)
+
+                        if bool(pred_is_child[det_idx]):
+                            child_stats["fp"] += 1
 
                         y_true.append(-1)  # Background row
                         y_pred.append(cls_det)  # Predicted class column
 
                         all_gts.append(-1)
-                        all_preds.append(true_cls)
+                        all_preds.append(cls_det)
                         all_scores.append(score_det)
 
                 # ---- Process unmatched GT boxes as False Negatives -------------
                 for i in range(num_gt):
                     if not gt_matched[i]:
                         cls_gt = int(gt_labels[i])
-                        stats[cls_gt]["fn"] += 1
-                        y_true.append(cls_gt)  # GT class row
-                        y_pred.append(-1)  # Background column
+                        if cls_gt in stats:
+                            stats[cls_gt]["fn"] += 1
+                            fn_img += 1
+                        if cls_gt != -1:
+                            y_true.append(cls_gt)  # GT class row
+                            y_pred.append(-1)  # Background column
+                            gt_baby = bool(gt_child[i].item())
+                            log_child(gt_baby, False)
+
+                        if bool(gt_child[i].item()):
+                            child_stats["fn"] += 1
 
                 # ---- Store qualitative sample ----------------------------------
                 samples.append(
@@ -335,6 +392,8 @@ def run_inference(
                         gt_boxes.cpu(),
                         gt_angles.cpu(),
                         gt_labels.cpu(),
+                        fp_img,
+                        fn_img,
                     )
                 )
 
@@ -354,6 +413,9 @@ def run_inference(
         "all_gts": all_gts,
         "all_preds": all_preds,
         "all_scores": all_scores,
+        "child_stats": child_stats,
+        "child_gt": child_gt,
+        "child_pred": child_pred,
         "samples": samples,
     }
 
@@ -542,6 +604,104 @@ def plot_confusion_matrix(
     fig_norm.tight_layout()
 
     print("[INFO] Confusion matrices plotted (raw and normalized).")
+    return {"raw": fig_raw, "normalized": fig_norm}
+
+
+from typing import List, Tuple, Dict
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
+
+def plot_child_confusion_matrix(
+    y_true: List[int],
+    y_pred: List[int],
+    figsize: Tuple[int, int] = (4, 4),
+) -> Dict[str, plt.Figure]:
+    """
+    Plot the Adult (0) / Child (1) binary confusion matrix, returning both
+    the raw counts and the row‑normalized version.
+
+    Args:
+        y_true (List[int]): Ground‑truth labels (0 = adult, 1 = child).
+        y_pred (List[int]): Predicted labels  (0 = adult, 1 = child).
+        figsize (Tuple[int, int]): Size of the output figures.
+
+    Returns:
+        Dict[str, plt.Figure]: A dict with keys **"raw"** and **"normalized"**
+        mapping to the corresponding matplotlib figures.
+    """
+    # ------------------------------------------------------------------ #
+    # 1) Compute raw and normalized matrices
+    # ------------------------------------------------------------------ #
+    cm_raw = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    cm_norm = cm_raw.astype(float)
+    row_sums = cm_norm.sum(axis=1, keepdims=True)
+    cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
+
+    classes = ["Adult", "Child"]
+
+    # ------------------------------------------------------------------ #
+    # 2) Plot raw confusion matrix
+    # ------------------------------------------------------------------ #
+    fig_raw, ax_raw = plt.subplots(figsize=figsize)
+    im_raw = ax_raw.imshow(cm_raw, cmap="Blues")
+
+    for i in range(2):
+        for j in range(2):
+            val = cm_raw[i, j]
+            if val == 0:
+                continue
+            ax_raw.text(
+                j,
+                i,
+                int(val),
+                ha="center",
+                va="center",
+                color="white" if val > cm_raw.max() / 2 else "black",
+            )
+
+    ax_raw.set_xticks([0, 1])
+    ax_raw.set_yticks([0, 1])
+    ax_raw.set_xticklabels(classes)
+    ax_raw.set_yticklabels(classes)
+    ax_raw.set_xlabel("Predicted", fontsize=11)
+    ax_raw.set_ylabel("True", fontsize=11)
+    ax_raw.set_title("Adult / Child Confusion Matrix (Raw)", fontsize=13)
+    plt.colorbar(im_raw, ax=ax_raw, fraction=0.046, pad=0.04)
+    fig_raw.tight_layout()
+
+    # ------------------------------------------------------------------ #
+    # 3) Plot normalized confusion matrix
+    # ------------------------------------------------------------------ #
+    fig_norm, ax_norm = plt.subplots(figsize=figsize)
+    im_norm = ax_norm.imshow(cm_norm, cmap="Blues", vmin=0.0, vmax=1.0)
+
+    for i in range(2):
+        for j in range(2):
+            val = cm_norm[i, j]
+            if val == 0:
+                continue
+            ax_norm.text(
+                j,
+                i,
+                f"{val:.2f}",
+                ha="center",
+                va="center",
+                color="white" if val > 0.5 else "black",
+            )
+
+    ax_norm.set_xticks([0, 1])
+    ax_norm.set_yticks([0, 1])
+    ax_norm.set_xticklabels(classes)
+    ax_norm.set_yticklabels(classes)
+    ax_norm.set_xlabel("Predicted", fontsize=11)
+    ax_norm.set_ylabel("True", fontsize=11)
+    ax_norm.set_title("Adult / Child Confusion Matrix (Normalized)", fontsize=13)
+    plt.colorbar(im_norm, ax=ax_norm, fraction=0.046, pad=0.04)
+    fig_norm.tight_layout()
+
+    print("[INFO] Adult/Child confusion matrices plotted.")
     return {"raw": fig_raw, "normalized": fig_norm}
 
 
@@ -775,10 +935,12 @@ def plot_qualitative_grid(
     )
     axes = axes.flatten()
 
-    for ax, (img_t, out, fname, gt_b, gt_a, gt_l) in zip(axes, samples[: rows * cols]):
+    for ax, (img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img) in zip(
+        axes, samples[: rows * cols]
+    ):
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
-        ax.set_title(Path(fname).name, fontsize=8)
+        ax.set_title(f"{Path(fname).name}\nFP:{fp_img}  FN:{fn_img}", fontsize=7)
         ax.set_aspect("equal")
 
         # Ground Truth OBBs
@@ -799,7 +961,7 @@ def plot_qualitative_grid(
             ax.text(
                 br_x,
                 br_y,
-                f"{labels_map[int(cls)]}: {math.degrees(float(angle)):.1f}°",
+                f"{labels_map.get(int(cls), 'unknown')}: {math.degrees(float(angle)):.1f}°",
                 color="white",
                 fontsize=6,
                 fontweight="bold",
@@ -830,7 +992,7 @@ def plot_qualitative_grid(
             ax.text(
                 tl_x,
                 tl_y,
-                f"{labels_map[int(lbl)]}: {ang:.1f}° / {score:.2f}",
+                f"{labels_map.get(int(lbl), 'unknown')}: {ang:.1f}° / {score:.2f}",
                 color="white",
                 fontsize=6,
                 ha="left",
@@ -850,53 +1012,88 @@ def plot_qualitative_grid(
 def save_individual_predictions(
     samples: List[
         Tuple[
-            Any, Dict[str, torch.Tensor], str, torch.Tensor, torch.Tensor, torch.Tensor
+            Any,
+            Dict[str, torch.Tensor],
+            str,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            int,
+            int,
         ]
     ],
     labels_map: Dict[int, str],
     output_dir: str,
     mean: Tuple[float, float, float],
     std: Tuple[float, float, float],
+    split_by_error: bool = True,
 ) -> None:
     """
-    Saves individual visualizations of predictions with GT and predicted OBBs.
+    Saves individual visualizations of predictions with ground truth (GT) and predicted oriented bounding boxes (OBBs).
+
+    This function generates and saves images showing both GT and predicted OBBs for qualitative analysis.
+    The images can be optionally split into subdirectories based on error types (e.g., false positives, false negatives).
 
     Args:
-        samples (List): Sample tuples with image tensor, predictions, file name, GT data.
-        labels_map (Dict[int, str]): Mapping from class index to readable label.
-        output_dir (str): Output directory for saving images.
-        mean (Tuple): Mean for denormalization.
-        std (Tuple): Std for denormalization.
+        samples (List): List of tuples containing:
+            - Image tensor (torch.Tensor)
+            - Prediction dictionary (Dict[str, torch.Tensor])
+            - File name (str)
+            - Ground truth boxes (torch.Tensor)
+            - Ground truth angles (torch.Tensor)
+            - Ground truth labels (torch.Tensor)
+            - False positive count (int)
+            - False negative count (int)
+        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
+        output_dir (str): Directory where the visualizations will be saved.
+        mean (Tuple[float, float, float]): Mean values for image normalization (used for denormalization).
+        std (Tuple[float, float, float]): Standard deviation values for image normalization (used for denormalization).
+        split_by_error (bool): Whether to split saved images into subdirectories based on error types.
+
+    Returns:
+        None: Saves visualizations to the specified output directory.
     """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Convert output directory to Path object
+    base_dir = Path(output_dir)
 
-    for img_t, out, fname, gt_b, gt_a, gt_l in samples:
+    # Create subdirectories for different error types if splitting is enabled
+    if split_by_error:
+        for sub in ("tp_only", "fp", "fn", "fp_fn"):
+            (base_dir / sub).mkdir(parents=True, exist_ok=True)
+    else:
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+    # Iterate over each sample in the dataset
+    for img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img in samples:
+        # Create a new figure for visualization
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
-        ax.axis("off")
-        ax.set_aspect("equal")
 
-        # GT OBBs
+        # Denormalize and display the image
+        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
+        ax.axis("off")  # Remove axis for cleaner visualization
+        ax.set_aspect("equal")  # Maintain aspect ratio
+
+        # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
-            coords = pts.view(4, 2).numpy()
+            coords = pts.view(4, 2).numpy()  # Convert tensor to numpy array
             ax.add_patch(
                 patches.Polygon(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="#008000",  # Dark green
+                    edgecolor="#008000",  # Dark green for GT
                     linewidth=2,
                     linestyle="--",
                 )
             )
             ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=2)
 
-            # Bottom-right corner for GT text
+            # Add label and angle text at the bottom-right corner of the OBB
             br_x, br_y = coords[:, 0].max(), coords[:, 1].max()
             ax.text(
                 br_x,
                 br_y,
-                f"{labels_map[int(lbl)]}: {math.degrees(float(ang)):.1f}°",
+                f"{labels_map.get(int(lbl), 'unknown')}: {math.degrees(float(ang)):.1f}°",
                 color="white",
                 fontsize=6,
                 fontweight="bold",
@@ -905,17 +1102,17 @@ def save_individual_predictions(
                 bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
             )
 
-        # Predicted OBBs
+        # Draw predicted OBBs
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
-            coords = pts.cpu().view(4, 2).numpy()
+            coords = pts.cpu().view(4, 2).numpy()  # Convert tensor to numpy array
             ax.add_patch(
                 patches.Polygon(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="#004080",  # Dark blue
+                    edgecolor="#004080",  # Dark blue for predictions
                     linewidth=1.5,
                 )
             )
@@ -923,13 +1120,13 @@ def save_individual_predictions(
                 coords[[0, 1], 0], coords[[0, 1], 1], color="#800000", linewidth=1.5
             )
 
-            # Top-left corner for prediction text
+            # Add label, angle, and confidence score text at the top-left corner of the OBB
             tl_x, tl_y = coords[:, 0].min(), coords[:, 1].min()
             ang_pred = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
                 tl_x,
                 tl_y,
-                f"{labels_map[int(lbl)]}: {ang_pred:.1f}° / {score:.2f}",
+                f"{labels_map.get(int(lbl), 'unknown')}: {ang_pred:.1f}° / {score:.2f}",
                 color="white",
                 fontsize=6,
                 ha="left",
@@ -937,9 +1134,25 @@ def save_individual_predictions(
                 bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
 
-        save_path = os.path.join(output_dir, os.path.basename(fname))
-        fig.savefig(save_path, dpi=100, bbox_inches="tight", pad_inches=0.1)
-        plt.close(fig)
+        # Determine the subdirectory based on error type if splitting is enabled
+        if not split_by_error:
+            save_dir = base_dir
+        else:
+            if fp_img and not fn_img:
+                subdir = "fp"  # False positives only
+            elif fn_img and not fp_img:
+                subdir = "fn"  # False negatives only
+            elif fp_img and fn_img:
+                subdir = "fp_fn"  # Both false positives and false negatives
+            else:
+                subdir = "tp_only"  # True positives only
+
+            save_dir = base_dir / subdir
+            save_dir.mkdir(exist_ok=True, parents=True)
+
+        # Save the visualization to the appropriate directory
+        fig.savefig(save_dir / Path(fname).name, dpi=100, bbox_inches="tight")
+        plt.close(fig)  # Close the figure to free memory
 
     print(f"[INFO] Saved individual predictions to {output_dir}")
 
@@ -964,41 +1177,58 @@ def inference(
     grid_shape: Tuple[int, int] = (3, 3),
     mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
     std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
+    save_figs: bool = True,
+    close_figs: bool = True,
 ) -> Dict[str, Any]:
     """
-    Complete inference pipeline:
-    1. Prepares anchors
-    2. Runs inference and collects predictions
-    3. Computes evaluation metrics
-    4. Plots visualizations (PR, F1, confusion matrix, boxplots)
-    5. Generates qualitative grids and saves per-image results
+    Complete inference and reporting pipeline for object detection evaluation.
+
+    This function performs the following steps:
+      1. Anchor preparation for inference.
+      2. Runs inference on the test set and collects predictions and ground truths.
+      3. Computes evaluation metrics (mAP, AP per class, confusion matrix, etc.).
+      4. Generates and saves visualizations: PR curves, F1 vs threshold, confusion matrices, boxplots.
+      5. Creates a qualitative grid of predictions and saves individual prediction images.
+      6. Exports metrics and confusion matrices to CSV.
 
     Args:
-        model (torch.nn.Module): Initialized model architecture.
-        test_loader (DataLoader): Dataloader for test set.
-        output_dir (str): Directory to store output visualizations.
-        device (torch.device): Computation device.
+        model (torch.nn.Module): The initialized model architecture.
+        test_loader (DataLoader): DataLoader for the test set.
+        output_dir (Union[str, Path]): Directory to store output visualizations and results.
+        device (torch.device): Computation device (e.g., 'cuda' or 'cpu').
         labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
-        scale_factors (List[float]): Anchor scale factors.
-        ratio_factors (List[float]): Anchor ratio factors.
-        obb_stats_by_size (Dict): Precomputed OBB stats per resize size.
-        conf_thres (float): Confidence threshold for filtering predictions.
-        iou_thres (float): IoU threshold to match GT with predictions.
+        scale_factors (List[float]): Anchor scale factors for anchor generation.
+        ratio_factors (List[float]): Anchor aspect ratio factors for anchor generation.
+        face_thres (float): Confidence threshold for face detection.
+        iou_thres (float): IoU threshold for matching predictions to ground truths.
         class_thres (float): Class score threshold for filtering predictions.
-        alpha_score (float): Weight for combining face detection and OBB scores.
-        grid_shape (Tuple[int, int]): Rows x Columns in qualitative grid.
-        mean (Tuple): Image normalization mean.
-        std (Tuple): Image normalization std.
+        alpha_score (float): Weight for combining face and orientation confidence scores.
+        grid_shape (Tuple[int, int]): (Rows, Columns) for the qualitative grid of predictions.
+        mean (Tuple[float, float, float]): Mean for image normalization (for visualization).
+        std (Tuple[float, float, float]): Std for image normalization (for visualization).
+        save_figs (bool): Whether to save generated figures to disk.
+        close_figs (bool): Whether to close figures after saving (to free memory).
 
     Returns:
-        Dict[str, Any]: Dictionary of figures and computed metrics:
-            - mAP
-            - PR/F1/Confusion plots
-            - IoU and angle boxplots
-            - Qualitative grid
+        Dict[str, Any]: Dictionary containing:
+            - "mAP": Mean Average Precision (float)
+            - "APs": Per-class Average Precision (dict)
     """
 
-    output_dir.mkdir(exist_ok=True)
+    def save_figure(fig: plt.Figure, fname: str):
+        """Helper to save a matplotlib figure if enabled."""
+        if save_figs:
+            fig.savefig(figures_dir / fname, dpi=150, bbox_inches="tight")
+            if close_figs:
+                plt.close(fig)
+
+    output_dir = Path(output_dir)
+    figures_dir = output_dir / "figures"
+    predictions_dir = output_dir / "predictions"
+
+    # Create output directories if they do not exist
+    for d in (figures_dir, predictions_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
     print("[STEP 1] Preparing anchors...")
     resize_size, anchors_xy, _ = prepare_anchors(
@@ -1026,75 +1256,90 @@ def inference(
     print("[STEP 3] Computing metrics and plots...")
     mAP, APs = compute_map_and_pr(results["per_true"], results["per_score"])
 
-    fig_pr = plot_precision_recall(
-        per_true=results["per_true"],
-        per_score=results["per_score"],
-        labels_map=labels_map,
-        mAP=mAP,
+    # Precision-Recall curve
+    save_figure(
+        plot_precision_recall(
+            results["per_true"], results["per_score"], labels_map, mAP
+        ),
+        "precision_recall.png",
     )
 
+    # Confusion matrices (raw and normalized)
+    cm_figs = plot_child_confusion_matrix(
+        y_true=results["child_gt"],
+        y_pred=results["child_pred"],
+    )
+    save_figure(cm_figs["raw"], "child_cm_raw.png")
+    save_figure(cm_figs["normalized"], "child_cm_normalized.png")
+
+    # Confusion matrices (raw and normalized)
     cm_figs = plot_confusion_matrix(
         y_true=results["y_true"], y_pred=results["y_pred"], labels_map=labels_map
     )
+    save_figure(cm_figs["raw"], "class_cm_raw.png")
+    save_figure(cm_figs["normalized"], "class_cm_normalized.png")
 
+    # IoU boxplots per class
     iou_data = [
         {"class": labels_map[c], "iou": v}
         for c, vals in results["iou_errs"].items()
         for v in vals
     ]
-    fig_iou = plot_boxplots(
-        data=iou_data,
-        x_field="class",
-        y_field="iou",
-        title="IoU Distribution per Class",
-        labels_map=labels_map,
-        y_lim=(0, 1),
+    save_figure(
+        plot_boxplots(
+            iou_data,
+            "class",
+            "iou",
+            "IoU Distribution per Class",
+            labels_map,
+            y_lim=(0, 1),
+        ),
+        "iou_boxplot.png",
     )
 
-    angle_data = [
+    # Angle error boxplots per class
+    ang_data = [
         {"class": labels_map[c], "error°": v}
         for c, vals in results["angle_errs"].items()
         for v in vals
     ]
-    fig_ang = plot_boxplots(
-        data=angle_data,
-        x_field="class",
-        y_field="error°",
-        title="Angle-Error Distribution per Class",
-        labels_map=labels_map,
-        y_lim=(0, 180),
+    save_figure(
+        plot_boxplots(
+            ang_data,
+            "class",
+            "error°",
+            "Angle-Error Distribution per Class",
+            labels_map,
+            y_lim=(0, 180),
+        ),
+        "angle_boxplot.png",
     )
 
-    fig_f1 = plot_f1_vs_threshold(
-        all_gts=results["all_gts"],
-        all_scores=results["all_scores"],
-        all_preds=results["all_preds"],
-        labels_map=labels_map,
-        default_th=0.5,
+    # F1 score vs. confidence threshold
+    save_figure(
+        plot_f1_vs_threshold(
+            results["all_gts"], results["all_scores"], results["all_preds"], labels_map
+        ),
+        "f1_threshold.png",
     )
 
-    fig_grid = plot_qualitative_grid(
-        samples=results["samples"],
-        labels_map=labels_map,
-        grid_shape=grid_shape,
-        mean=mean,
-        std=std,
+    # Qualitative grid of predictions
+    save_figure(
+        plot_qualitative_grid(results["samples"], labels_map, grid_shape, mean, std),
+        "grid_examples.png",
     )
 
-    print("[STEP 4] Saving individual prediction images...")
-    save_individual_predictions(results["samples"], labels_map, output_dir, mean, std)
+    print("[STEP 4] Exporting metrics and confusion matrix CSV...")
+    metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
+
+    print("[STEP 5] Saving individual prediction images...")
+    save_individual_predictions(
+        results["samples"], labels_map, predictions_dir, mean, std
+    )
 
     print("[DONE] Inference and reporting completed.")
-    return {
-        "mAP": mAP,
-        "pr_figure": fig_pr,
-        "confusion_figure_raw": cm_figs["raw"],
-        "confusion_figure_normalized": cm_figs["normalized"],
-        "iou_boxplot_figure": fig_iou,
-        "angle_boxplot_figure": fig_ang,
-        "f1_threshold_figure": fig_f1,
-        "grid_figure": fig_grid,
-    }
+
+    return {"mAP": mAP, "APs": APs}
 
 
 def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
@@ -1210,6 +1455,13 @@ def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
         "regularization_curves",
     )
     make_plot(
+        "train_child_loss",
+        "test_child_loss",
+        "Child Loss Over Training",
+        "Loss",
+        "child_curves",
+    )
+    make_plot(
         "train_total_loss",
         "test_total_loss",
         "Total Combined Loss Over Training",
@@ -1242,3 +1494,117 @@ def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
     plt.close()
 
     print(f"[INFO] Training curves saved to: {curves_path}")
+
+
+def export_metrics_and_confusion_csv(
+    results: dict, labels_map: dict[int, str], out_dir: Path, fname: str = "metrics.csv"
+) -> Path:
+    """
+    Exports evaluation results to a single CSV file containing:
+      - Per-class metrics table (TP, FP, FN, Precision, Recall, F1, AP, IoU, Angle error)
+      - Raw confusion matrix
+      - Normalized confusion matrix
+
+    Each section is separated by a comment line starting with '# --- SECTION ---'.
+    This allows pandas.read_csv(..., comment='#') to read each table independently.
+
+    Args:
+        results (dict): Output dictionary from the inference pipeline containing metrics and predictions.
+        labels_map (dict[int, str]): Mapping from class indices to human-readable class names.
+        out_dir (Path): Directory where the CSV will be saved.
+        fname (str): Name of the CSV file (default: "metrics.csv").
+
+    Returns:
+        Path: Path to the saved CSV file.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / fname
+
+    classes = list(labels_map.keys())
+    class_names = [labels_map[c] for c in classes]
+    bg_label, bg_name = -1, "BG"
+
+    # ---------- Per-class metrics table ----------------------------------------
+    rows = []
+    for c, name in zip(classes, class_names):
+        tp = results["stats"][c]["tp"]
+        fp = results["stats"][c]["fp"]
+        fn = results["stats"][c]["fn"]
+
+        prec = tp / (tp + fp) if tp + fp else 0.0
+        rec = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
+        ap = (
+            average_precision_score(results["per_true"][c], results["per_score"][c])
+            if tp
+            else 0.0
+        )
+
+        iou_vals = results["iou_errs"][c]
+        angle_vals = results["angle_errs"][c]
+
+        rows.append(
+            dict(
+                Class=name,
+                TP=tp,
+                FP=fp,
+                FN=fn,
+                Precision=prec,
+                Recall=rec,
+                F1=f1,
+                AP_PR=ap,
+                IoU_mean=np.mean(iou_vals) if iou_vals else 0.0,
+                IoU_std=np.std(iou_vals) if iou_vals else 0.0,
+                Angle_mean_deg=np.mean(angle_vals) if angle_vals else 0.0,
+                Angle_std_deg=np.std(angle_vals) if angle_vals else 0.0,
+            )
+        )
+
+    # Add background row: counts FPs where prediction was made but no GT exists
+    bg_fp = int((np.array(results["y_true"]) == bg_label).sum())
+    rows.append(
+        dict(
+            Class=bg_name,
+            TP=0,
+            FP=bg_fp,
+            FN=0,
+            Precision=0.0,
+            Recall=0.0,
+            F1=0.0,
+            AP_PR=0.0,
+            IoU_mean=0.0,
+            IoU_std=0.0,
+            Angle_mean_deg=0.0,
+            Angle_std_deg=0.0,
+        )
+    )
+
+    df_metrics = pd.DataFrame(rows).set_index("Class")
+
+    # ---------- Confusion matrices (raw and normalized) ------------------------
+    mat_labels = classes + [bg_label]
+    mat_names = class_names + [bg_name]
+
+    cm_raw = confusion_matrix(results["y_true"], results["y_pred"], labels=mat_labels)
+    cm_norm = np.nan_to_num(cm_raw.astype(float) / cm_raw.sum(axis=1, keepdims=True))
+
+    df_cm_raw = pd.DataFrame(cm_raw, index=mat_names, columns=mat_names)
+    df_cm_norm = pd.DataFrame(cm_norm, index=mat_names, columns=mat_names)
+
+    # ---------- Write all tables to a single CSV file --------------------------
+    with open(csv_path, "w", newline="") as f:
+        f.write(
+            "# --- METRICS PER CLASS -------------------------------------------------\n"
+        )
+        df_metrics.to_csv(f, float_format="%.4f")
+        f.write(
+            "\n# --- CONFUSION MATRIX RAW ----------------------------------------------\n"
+        )
+        df_cm_raw.to_csv(f)
+        f.write(
+            "\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------\n"
+        )
+        df_cm_norm.to_csv(f, float_format="%.4f")
+
+    print(f"[INFO] Metrics and confusion matrices saved to {csv_path}")
+    return csv_path

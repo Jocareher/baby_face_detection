@@ -144,67 +144,145 @@ class EarlyStopping:
 
 
 def nms_rotated(
-    boxes: torch.Tensor,  # (N, 5) - (cx, cy, w, h, θ)
-    scores: torch.Tensor,  # (N,)   - confidence scores
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
     threshold: float = 0.45,
-    min_area_ratio: float = 0.3,
+    min_area_ratio: float = 0.5,
+    method: str = "ultralytics",  # "custom" or "ultralytics"
+    use_triu: bool = True,
 ) -> torch.Tensor:
     """
-    Performs rotated Non-Maximum Suppression (NMS) using probabilistic IoU (pIoU) and additional containment/area filtering.
-
-    This function removes redundant rotated bounding boxes based on two criteria:
-      1. Suppresses boxes that have high overlap (pIoU ≥ threshold) with a higher-scoring box.
-      2. Suppresses boxes that are much smaller (area ratio < min_area_ratio) and are fully contained within a larger box,
-         provided their centers are close (distance < 0.2 * sqrt(area_larger)).
+    Performs Non-Maximum Suppression (NMS) for rotated bounding boxes, with support for two methods:
+    "ultralytics" (fast NMS) and "custom" (heuristic NMS). Optionally suppresses small redundant predictions.
 
     Args:
-        boxes (torch.Tensor): Rotated bounding boxes in (cx, cy, w, h, θ) format, shape (N, 5).
-        scores (torch.Tensor): Confidence scores for each box, shape (N,).
-        threshold (float): IoU threshold for suppression (default: 0.45).
-        min_area_ratio (float): Minimum area ratio to consider a box as "small" for containment suppression (default: 0.3).
+        boxes (torch.Tensor): Tensor of rotated bounding boxes in (cx, cy, w, h, θ) format, shape (N, 5).
+        scores (torch.Tensor): Tensor of confidence scores for each box, shape (N,).
+        threshold (float): IoU threshold for suppressing overlapping boxes (default: 0.45).
+        min_area_ratio (float): Minimum area ratio for suppressing small redundant boxes (default: 0.5).
+        method (str): NMS method to use, either "ultralytics" (default) or "custom".
+        use_triu (bool): Whether to use the upper triangular mask for faster suppression (default: True).
 
     Returns:
-        torch.Tensor: Indices of boxes to keep after NMS, as a 1D tensor of type long.
+        torch.Tensor: Indices of the selected boxes after NMS, shape (M,).
+
+    Raises:
+        ValueError: If an invalid method is provided.
+
+    Notes:
+        - "ultralytics" method uses a fast pIoU-based approach with optional upper triangular masking.
+        - "custom" method applies heuristic suppression based on IoU, area ratios, and center distances.
     """
-    order = scores.argsort(descending=True)
-    keep = []
+    if boxes.numel() == 0:
+        return torch.empty(0, dtype=torch.long, device=scores.device)
 
-    # While there are boxes to process
-    while order.numel() > 0:
-        # Select the box with the highest score
-        i = order[0].item()
-        keep.append(i)
+    # Ensure boxes and scores are on the appropriate device
+    device = (
+        boxes.device
+        if boxes.is_cuda
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    boxes = boxes.to(device)
+    scores = scores.to(device)
 
-        # If only one box remains, we can stop
-        if order.numel() == 1:
-            break
+    if method == "ultralytics":
+        # Ultralytics-style fast NMS (pIoU-based)
+        sorted_idx = torch.argsort(
+            scores, descending=True
+        )  # Sort boxes by descending scores
+        boxes_sorted = boxes[sorted_idx]  # Reorder boxes based on sorted indices
+        ious = batch_probiou(boxes_sorted, boxes_sorted)  # Compute pairwise IoU matrix
 
-        rest = order[1:]
-        # Compute pIoU between the current box and the rest
-        ious = batch_probiou(boxes[i : i + 1], boxes[rest]).squeeze(0)
-        suppress_mask = ious >= threshold
+        if use_triu:
+            # Use upper triangular mask to avoid redundant comparisons
+            ious = ious.triu(diagonal=1)
+            keep_mask = (ious >= threshold).sum(
+                0
+            ) <= 0  # Suppress boxes with high overlap
+            pick = torch.nonzero(keep_mask).squeeze(-1)  # Indices of boxes to keep
+        else:
+            # Alternative suppression without upper triangular mask
+            n = boxes_sorted.shape[0]
+            upper_mask = torch.triu(
+                torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1
+            )
+            ious = ious * upper_mask
+            suppress = (ious >= threshold).sum(0) > 0
+            scores_filtered = scores[sorted_idx].clone()
+            scores_filtered[suppress] = 0  # Suppress scores of overlapping boxes
+            pick = torch.topk(scores_filtered, scores.shape[0]).indices
 
-        box_i = boxes[i].unsqueeze(0)  # (1, 5)
-        for idx, j in enumerate(rest):
-            # Get the box to compare against
-            box_j = boxes[j].unsqueeze(0)  # (1, 5)
+        selected = sorted_idx[pick]  # Map selected indices back to original order
 
-            # Compute area ratio between boxes
-            area_i = box_i[0, 2] * box_i[0, 3]
-            area_j = box_j[0, 2] * box_j[0, 3]
-            area_ratio = area_j / (area_i + 1e-6)
+        # === Post-process to remove small redundant boxes ===
+        boxes_sel = boxes[selected]
+        areas = boxes_sel[:, 2] * boxes_sel[:, 3]  # Compute areas of selected boxes
+        centers = boxes_sel[:, :2]  # Extract centers of selected boxes
 
-            # Compute center distance between boxes
-            center_dist = torch.norm(box_j[0, :2] - box_i[0, :2])
+        keep = []
+        remaining = torch.arange(len(selected), device=device)
 
-            # Suppress if box_j is much smaller and close to box_i (likely contained)
-            if area_ratio < min_area_ratio and center_dist < 0.2 * torch.sqrt(area_i):
-                suppress_mask[idx] = True
+        while remaining.numel() > 0:
+            i = remaining[0]  # Select the first box in the remaining list
+            keep.append(selected[i].item())  # Add it to the keep list
 
-        # Keep only boxes not suppressed
-        order = rest[~suppress_mask]
+            if remaining.numel() == 1:
+                break
 
-    return torch.tensor(keep, device=boxes.device, dtype=torch.long)
+            rest = remaining[1:]  # Remaining boxes after the first
+            area_i = areas[i]  # Area of the current box
+            dists = torch.norm(
+                centers[rest] - centers[i], dim=1
+            )  # Compute distances to other centers
+            area_ratios = areas[rest] / (area_i + 1e-6)  # Compute area ratios
+            suppress_mask = (area_ratios < min_area_ratio) & (
+                dists < 0.2 * area_i.sqrt()
+            )
+            remaining = rest[
+                ~suppress_mask
+            ]  # Remove suppressed boxes from the remaining list
+
+        return torch.tensor(keep, dtype=torch.long, device=device)
+
+    elif method == "custom":
+        # Custom heuristic NMS with vectorized pIoU + area filtering
+        order = scores.argsort(descending=True)  # Sort boxes by descending scores
+        boxes = boxes[order]  # Reorder boxes based on sorted indices
+        iou_matrix = batch_probiou(boxes, boxes)  # Compute pairwise IoU matrix
+        areas = boxes[:, 2] * boxes[:, 3]  # Compute areas of boxes
+        centers = boxes[:, :2]  # Extract centers of boxes
+
+        keep = []
+        idxs = torch.arange(boxes.size(0), device=device)
+
+        while idxs.numel() > 0:
+            i = idxs[0]  # Select the first box in the remaining list
+            keep.append(order[i].item())  # Add it to the keep list
+
+            if idxs.numel() == 1:
+                break
+
+            rest = idxs[1:]  # Remaining boxes after the first
+            ious = iou_matrix[
+                i, rest
+            ]  # IoU values between the current box and the rest
+            area_ratios = areas[rest] / (areas[i] + 1e-6)  # Compute area ratios
+            dists = torch.norm(
+                centers[rest] - centers[i], dim=1
+            )  # Compute distances to other centers
+            suppress_mask = (ious >= threshold) | (
+                (area_ratios < min_area_ratio) & (dists < 0.2 * areas[i].sqrt())
+            )
+            idxs = rest[
+                ~suppress_mask
+            ]  # Remove suppressed boxes from the remaining list
+
+        return torch.tensor(keep, dtype=torch.long, device=device)
+
+    else:
+        raise ValueError(
+            f"Invalid method '{method}'. Choose 'custom' or 'ultralytics'."
+        )
 
 
 def infer_with_rotated_nms(
@@ -216,96 +294,92 @@ def infer_with_rotated_nms(
     iou_thres: float = 0.45,
     class_thres: float = 0.15,
     alpha_score: float = 0.6,
-    pre_nms_topk: int = 1000,
+    pre_nms_topk: int = 500,
     max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference with a RetinaBabyFace-like model that includes an additional face/no-face head,
-    applying rotated Non-Maximum Suppression (NMS) to filter predictions.
+    Performs inference with rotated NMS, filtering by child probability and ranking by orientation confidence.
 
     Args:
-        model_or_preds (Union[nn.Module, Tuple]): Either a model that outputs predictions or a tuple of precomputed outputs.
-        images (Tensor): Batch of input images, shape (B, 3, H, W).
-        anchors_xy (Tensor): Anchor polygons in (N, 8) format (4 corners per anchor).
-        image_size (Tuple[int, int]): Size of input images as (W, H).
-        face_thres (float): Minimum face probability to consider a detection.
-        iou_thres (float): IoU threshold for rotated NMS.
-        class_thres (float): Minimum orientation confidence to consider a detection.
-        alpha_score (float): Weighting factor for combining face and orientation confidence.
-        pre_nms_topk (int): Maximum number of top-scoring predictions to keep before NMS.
-        max_det (int): Maximum number of final predictions per image after NMS.
+        model_or_preds: Model or precomputed outputs (orient_logits, _, deltas, pred_angles, child_logits)
+        images: Input batch (B, 3, H, W)
+        anchors_xy: (N, 8) anchor polygons
+        image_size: (W, H)
+        face_thres: Threshold for child face detection (probability)
+        iou_thres: IoU threshold for rotated NMS
+        class_thres: Minimum orientation confidence
+        pre_nms_topk: Top-k scores to keep before NMS
+        max_det: Maximum detections per image
 
     Returns:
-        List[Dict[str, Tensor]]: List of length B, each dict contains:
-            - 'boxes':    (M, 5) boxes in (cx, cy, w, h, θ) format
-            - 'scores':   (M,)   combined face/orientation scores
-            - 'labels':   (M,)   orientation labels (0–4)
-            - 'polygons': (M, 8) 4-corner polygons for visualization
+        List[Dict[str, Tensor]]: Per-image dictionaries with final predictions
     """
-    # If model_or_preds is a model, run inference to get outputs
     if isinstance(model_or_preds, nn.Module):
-        orient_logits, face_logits, deltas, pred_angles = model_or_preds(images)
-    # If model_or_preds is already a tuple of outputs, unpack them
+        orient_logits, _, deltas, pred_angles, child_logits = model_or_preds(images)
     else:
-        orient_logits, face_logits, deltas, pred_angles = model_or_preds
-        # chequeo rápido de forma
-        assert orient_logits.shape[0] == images.size(
-            0
-        ), "Batch size mismatch between model outputs and input images"
+        orient_logits, _, deltas, pred_angles, child_logits = model_or_preds
+        assert orient_logits.shape[0] == images.size(0), "Batch size mismatch"
 
     B = images.size(0)
-
-    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # (B, N, 1) → (B, N)
+    device = images.device
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
     orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
+
     outputs = []
 
     for b in range(B):
-        # Get the most probable orientation label and its confidence for each anchor
-        orient_conf, orient_labels = orientation_probs[b].max(-1)
+        orient_conf, orient_labels = orientation_probs[b].max(-1)  # (N,)
+        score = (
+            orient_conf  # 💡 Usamos solo confianza de orientación como score principal
+        )
 
-        # Compute a combined score using face probability and orientation confidence
-        score = (face_prob[b] ** alpha_score) * (orient_conf ** (1 - alpha_score))
-
-        # Filter anchors based on face probability and orientation confidence thresholds
-        keep = (face_prob[b] >= face_thres) & (orient_conf >= class_thres)
+        # ✅ Filtramos solo si es una cara de bebé con suficiente confianza y orientación confiable
+        keep = (child_prob[b] >= face_thres) & (orient_conf >= class_thres)
         if not keep.any():
             outputs.append(
                 dict(
-                    boxes=torch.empty(0, 5, device=images.device),
-                    scores=torch.empty(0, device=images.device),
-                    labels=torch.empty(0, device=images.device),
-                    polygons=torch.empty(0, 8, device=images.device),
+                    boxes=torch.empty(0, 5, device=device),
+                    scores=torch.empty(0, device=device),
+                    labels=torch.empty(0, device=device),
+                    polygons=torch.empty(0, 8, device=device),
+                    child_score=torch.empty(0, device=device),
+                    is_child=torch.empty(0, device=device, dtype=torch.bool),
                 )
             )
             continue
 
-        # Get indices of anchors that passed the filtering
         idx = keep.nonzero(as_tuple=False).squeeze(1)
-        # Select top-K anchors by combined score before NMS
         K = min(pre_nms_topk, idx.numel())
         topk = score[idx].topk(K, sorted=True).indices
         sel = idx[topk]  # (K,)
 
-        # Decode predicted polygons for selected anchors
         verts = decode_vertices(
-            deltas[b][sel], anchors_xy[sel], image_size, use_diag=True
+            deltas[b][sel],
+            anchors_xy[sel].to(device),
+            pred_angles[b][sel].squeeze(-1),
+            image_size,
         )  # (K, 8)
-        # Convert polygons to (cx, cy, w, h, θ) format
+
         xywhr = xyxyxyxy2xywhr(
             verts, pred_angles[b][sel].squeeze(-1), image_size
         )  # (K, 5)
 
-        # Apply rotated NMS to filter overlapping predictions
-        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
+        # 📌 NMS con orientación
+        keep_nms = nms_rotated(xywhr.to(device), score[sel].to(device), iou_thres)[
+            :max_det
+        ]
         sel_final = sel[keep_nms]
 
-        # Prepare output dictionary for this image
         outputs.append(
             {
-                "boxes": xywhr[keep_nms],  # (M, 5) in (cx, cy, w, h, θ)
-                "scores": score[sel][keep_nms],  # (M,)
-                "labels": orient_labels[sel_final].float(),  # (M,)
-                "polygons": verts[keep_nms],  # (M, 8) in (x1, y1, ..., x4, y4)
+                "boxes": xywhr[keep_nms],
+                "scores": score[sel][keep_nms],
+                "labels": orient_labels[sel_final].float(),
+                "polygons": verts[keep_nms],
+                "child_score": child_prob[b][sel][keep_nms],
+                "is_child": torch.ones_like(
+                    keep_nms, dtype=torch.bool
+                ),  # ya filtramos por bebés
             }
         )
 
@@ -768,6 +842,7 @@ def build_multitask_targets(
             - "boxes"      : (B, N, 8)  -> Oriented bounding boxes (vertices).
             - "angles"     : (B, N)     -> Rotation angles in radians.
             - "class_idx"  : (B, N)     -> Class labels per box.
+            - "child_prob"  : (B, N)    -> Child face probabilities.
             - "valid_mask" : (B, N)     -> Mask indicating valid boxes.
         device (torch.device): Device to move all tensors to (e.g., CUDA or CPU).
 
@@ -776,12 +851,14 @@ def build_multitask_targets(
             - "class_idx"  : (B, N)
             - "boxes"      : (B, N, 8)
             - "angle"      : (B, N, 1)
+            - "child_prob" : (B, N, 1)
             - "valid_mask" : (B, N)
     """
     return {
         "class_idx": batch_targets["class_idx"].to(device),  # (B, N)
         "boxes": batch_targets["boxes"].to(device),  # (B, N, 8)
         "angle": batch_targets["angles"].unsqueeze(-1).to(device),  # (B, N, 1)
+        "child_prob": batch_targets["child_prob"].unsqueeze(-1).to(device),
         "valid_mask": batch_targets["valid_mask"].to(device),  # (B, N)
     }
 
@@ -826,6 +903,7 @@ def train_step(
     class_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
+    child_loss_sum = 0.0
     rect_loss_sum = 0.0
     total_batches = 0
 
@@ -869,9 +947,15 @@ def train_step(
 
         with autocast_context:  # Enable mixed precision if AMP is used
             pred = model(images)  # Forward pass
-            loss, loss_class, loss_face, loss_obb, loss_angle, loss_rect = loss_fn(
-                pred, targets, batch_anchors, anchors_xywhr, image_sizes
-            )
+            (
+                loss,
+                loss_class,
+                loss_face,
+                loss_obb,
+                loss_angle,
+                loss_rect,
+                loss_child,
+            ) = loss_fn(pred, targets, batch_anchors, anchors_xywhr, image_sizes)
 
         if use_amp:
             scaler.scale(loss).backward()  # Backward pass with gradient scaling
@@ -911,6 +995,7 @@ def train_step(
         face_loss_sum += loss_face
         obb_loss_sum += loss_obb
         angular_loss_sum += loss_angle
+        child_loss_sum += loss_child
         rect_loss_sum += loss_rect
         total_batches += 1
 
@@ -923,6 +1008,7 @@ def train_step(
     avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_angular_loss = angular_loss_sum / total_batches
+    avg_child_loss = child_loss_sum / total_batches
     avg_rect_loss = rect_loss_sum / total_batches
 
     return (
@@ -932,6 +1018,7 @@ def train_step(
         avg_obb_loss,
         avg_angular_loss,
         avg_rect_loss,
+        avg_child_loss,
         current_lr,
     )
 
@@ -980,6 +1067,7 @@ def val_step(
     face_loss_sum = 0.0
     obb_loss_sum = 0.0
     angular_loss_sum = 0.0
+    child_loss_sum = 0.0
     rect_loss_sum = 0.0
     total_batches = 0
 
@@ -1000,11 +1088,11 @@ def val_step(
             anchors_xy, anchors_xywhr = anchors
             batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
-            pred = model(images)
+            preds = model(images)
 
             # Perform inference and apply rotated NMS
             outputs = infer_with_rotated_nms(
-                pred,
+                preds,
                 images,
                 anchors_xy,
                 image_size=(images.shape[3], images.shape[2]),
@@ -1022,7 +1110,10 @@ def val_step(
                 all_pred_labels.append(out["labels"].cpu().detach().long())
 
                 # Ground truth: filter by valid_mask and convert to (cx, cy, w, h, θ)
-                keep = targets["valid_mask"][b]
+                keep = (
+                    targets["valid_mask"][b]
+                    & targets["child_prob"][b].squeeze(-1).bool()
+                )
                 if keep.any():
                     gt_polygons = targets["boxes"][b][keep]  # (M_gt, 8)
                     gt_angles = targets["angle"][b][keep].squeeze(-1)  # (M_gt,)
@@ -1042,14 +1133,23 @@ def val_step(
 
             # Compute loss for the batch
             image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
-            loss, loss_class, loss_face, loss_obb, loss_angle, loss_rect = loss_fn(
-                pred, targets, batch_anchors, anchors_xywhr, image_sizes
-            )
+
+            (
+                loss,
+                loss_class,
+                loss_face,
+                loss_obb,
+                loss_angle,
+                loss_rect,
+                loss_child,
+            ) = loss_fn(preds, targets, batch_anchors, anchors_xywhr, image_sizes)
+
             total_loss += loss.item()
             class_loss_sum += loss_class
             face_loss_sum += loss_face
             obb_loss_sum += loss_obb
             angular_loss_sum += loss_angle
+            child_loss_sum += loss_child
             rect_loss_sum += loss_rect
             total_batches += 1
 
@@ -1061,6 +1161,7 @@ def val_step(
     avg_face_loss = face_loss_sum / total_batches
     avg_obb_loss = obb_loss_sum / total_batches
     avg_ang_loss = angular_loss_sum / total_batches
+    avg_child_loss = child_loss_sum / total_batches
     avg_rect_loss = rect_loss_sum / total_batches
 
     # Compute rotated mAP using accumulated predictions and ground truths
@@ -1081,6 +1182,7 @@ def val_step(
         avg_obb_loss,
         avg_ang_loss,
         avg_rect_loss,
+        avg_child_loss,
         mAP,
     )
 
@@ -1161,6 +1263,7 @@ def train(
         "epoch",
         "train_total_loss",
         "train_class_loss",
+        "train_child_loss",
         "train_face_loss",
         "train_obb_loss",
         "train_angular_loss",
@@ -1168,6 +1271,7 @@ def train(
         "test_total_loss",
         "test_class_loss",
         "test_face_loss",
+        "test_child_loss",
         "test_obb_loss",
         "test_angular_loss",
         "test_rect_loss",
@@ -1184,12 +1288,14 @@ def train(
         "train_total_loss": [],
         "train_class_loss": [],
         "train_face_loss": [],
+        "train_child_loss": [],
         "train_obb_loss": [],
         "train_angular_loss": [],
         "train_rect_loss": [],
         "test_total_loss": [],
         "test_class_loss": [],
         "test_face_loss": [],
+        "test_child_loss": [],
         "test_obb_loss": [],
         "test_angular_loss": [],
         "test_rect_loss": [],
@@ -1249,6 +1355,7 @@ def train(
                 train_obb_loss,
                 train_angular_loss,
                 train_rect_loss,
+                train_child_loss,
                 current_lr,
             ) = train_step(
                 model=model,
@@ -1270,6 +1377,7 @@ def train(
                 test_obb_loss,
                 test_angular_loss,
                 test_rect_loss,
+                test_child_loss,
                 test_mAP,
             ) = val_step(
                 model=model,
@@ -1293,13 +1401,23 @@ def train(
 
             epoch_time = time.time() - epoch_start
             print(
-                f"\nEpoch {epoch+1} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s"
-            )
-            print(
-                f"Train metrics | Train Loss: {train_total_loss:.4f} | Class Loss: {train_class_loss:.4f} | Face Loss: {train_face_loss:.4f} | OBB Loss: {train_obb_loss:.4f} | Angle Loss: {train_angular_loss:.4f} | Rect Loss: {train_rect_loss:.4f}"
-            )
-            print(
-                f"Test metrics | Test Loss: {test_total_loss:.4f} | Class Loss: {test_class_loss:.4f} | Face Loss: {test_face_loss:.4f} | OBB Loss: {test_obb_loss:.4f} | Angle Loss: {test_angular_loss:.4f} | Rect Loss: {test_rect_loss:.4f} | mAP: {test_mAP:.4f}"
+                f"""
+📘 Epoch {epoch+1:02d} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s
+
+🔧 Metrics Overview:
+    ┌────────────────────┬────────────┬────────────┐
+    │ Metric             │   Train    │    Val     │
+    ├────────────────────┼────────────┼────────────┤
+    │ Total Loss         │ {train_total_loss:10.4f} │ {test_total_loss:10.4f} │
+    │ Face Loss          │ {train_face_loss:10.4f} │ {test_face_loss:10.4f} │
+    │ Child Loss         │ {train_child_loss:10.4f} │ {test_child_loss:10.4f} │
+    │ Class Loss         │ {train_class_loss:10.4f} │ {test_class_loss:10.4f} │
+    │ OBB Loss           │ {train_obb_loss:10.4f} │ {test_obb_loss:10.4f} │
+    │ Angle Loss         │ {train_angular_loss:10.4f} │ {test_angular_loss:10.4f} │
+    │ Rect Loss          │ {train_rect_loss:10.4f} │ {test_rect_loss:10.4f} │
+    │ mAP (Val only)     │      ---   │ {test_mAP:10.4f} │
+    └────────────────────┴────────────┴────────────┘
+"""
             )
 
             if record_metrics:
@@ -1308,6 +1426,7 @@ def train(
                         "epoch": epoch + 1,
                         "train_total_loss": train_total_loss,
                         "train_class_loss": train_class_loss,
+                        "train_child_loss": train_child_loss,
                         "train_face_loss": train_face_loss,
                         "train_obb_loss": train_obb_loss,
                         "train_angular_loss": train_angular_loss,
@@ -1318,6 +1437,7 @@ def train(
                         "test_obb_loss": test_obb_loss,
                         "test_angular_loss": test_angular_loss,
                         "test_rect_loss": test_rect_loss,
+                        "test_child_loss": test_child_loss,
                         "test_mAP": test_mAP,
                         "learning_rate": current_lr,
                         "epoch_time": epoch_time,
@@ -1328,12 +1448,14 @@ def train(
             results["train_total_loss"].append(train_total_loss)
             results["train_class_loss"].append(train_class_loss)
             results["train_face_loss"].append(train_face_loss)
+            results["train_child_loss"].append(train_child_loss)
             results["train_obb_loss"].append(train_obb_loss)
             results["train_angular_loss"].append(train_angular_loss)
             results["train_rect_loss"].append(train_rect_loss)
             results["test_total_loss"].append(test_total_loss)
             results["test_class_loss"].append(test_class_loss)
             results["test_face_loss"].append(test_face_loss)
+            results["test_child_loss"].append(test_child_loss)
             results["test_obb_loss"].append(test_obb_loss)
             results["test_angular_loss"].append(test_angular_loss)
             results["test_rect_loss"].append(test_rect_loss)
@@ -1348,12 +1470,14 @@ def train(
                         f"{train_total_loss:.4f}",
                         f"{train_class_loss:.4f}",
                         f"{train_face_loss:.4f}",
+                        f"{train_child_loss:.4f}",
                         f"{train_obb_loss:.4f}",
                         f"{train_angular_loss:.4f}",
                         f"{train_rect_loss:.4f}",
                         f"{test_total_loss:.4f}",
                         f"{test_class_loss:.4f}",
                         f"{test_face_loss:.4f}",
+                        f"{test_child_loss:.4f}",
                         f"{test_obb_loss:.4f}",
                         f"{test_angular_loss:.4f}",
                         f"{test_rect_loss:.4f}",

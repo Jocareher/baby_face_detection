@@ -27,7 +27,8 @@ from utils.helpers import set_seed, get_default_device
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference, plot_training_curves_from_csv
 from loss.losses import MultiTaskLoss
-from utils.visualize import visualize_and_save_dataset_in_script, create_training_gif
+from utils.visualize import visualize_and_save_dataset_in_script
+from utils.repro import save_reproducibility_metadata
 import config
 
 
@@ -218,6 +219,12 @@ def parse_args():
         help="Weight for the rectangle loss (default: 0.1).",
     )
     parser.add_argument(
+        "--lambda_child",
+        type=float,
+        default=config.LAMBDA_CHILD,
+        help="Weight for the child face classification loss (default: 1).",
+    )
+    parser.add_argument(
         "--face_pos_weight",
         type=float,
         default=config.FACE_POS_WEIGHT,
@@ -362,20 +369,21 @@ def main():
     # ------------------------------------------------------------------------
     output_dir = Path("runs") / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Output directory created at: {output_dir}")
 
+    # Save run metadata for reproducibility
+    save_reproducibility_metadata(output_dir, vars(args))
+
+    # Create subdirectories for checkpoints, CSV logs, config, figures, grids, and predictions
     ckpt_path = output_dir / "checkpoint.pt"
     csv_path = output_dir / f"{args.run_name}.csv"
     config_path = output_dir / f"{args.run_name}.yaml"
-    figures_dir = output_dir / "figures"
     grids_dir = output_dir / "dataset_grids"
-    predictions_dir = output_dir / "predictions"
     anchor_preview_path = output_dir / "anchors_preview.jpg"
     inference_preview = output_dir / "training_grids"
 
     inference_preview.mkdir(exist_ok=True)
-    figures_dir.mkdir(exist_ok=True)
     grids_dir.mkdir(exist_ok=True)
-    predictions_dir.mkdir(exist_ok=True)
 
     # Save full config to YAML
     with open(config_path, "w") as f:
@@ -525,6 +533,7 @@ def main():
         args.lambda_rot,
         args.lambda_face,
         args.lambda_rect,
+        args.lambda_child,
         args.pos_iou_thr_1,
         args.neg_iou_thr_1,
         args.pos_iou_thr_2,
@@ -641,7 +650,7 @@ def main():
     figures = inference(
         trained_model,
         test_loader=test_loader,
-        output_dir=predictions_dir,
+        output_dir=output_dir,
         device=device,
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,
@@ -655,25 +664,9 @@ def main():
         std=norm_std,
     )
 
-    # Save all figures generated during inference
-    figures["pr_figure"].savefig(figures_dir / "precision_recall.png", dpi=150)
-    figures["confusion_figure_raw"].savefig(
-        figures_dir / "confusion_matrix_raw.png", dpi=150
-    )
-    figures["confusion_figure_normalized"].savefig(
-        figures_dir / "confusion_matrix_normalized.png", dpi=150
-    )
-    figures["grid_figure"].savefig(figures_dir / "grid_examples.png", dpi=150)
-    figures["iou_boxplot_figure"].savefig(figures_dir / "iou_boxplot.png", dpi=150)
-    figures["angle_boxplot_figure"].savefig(figures_dir / "angle_boxplot.png", dpi=150)
-    figures["f1_threshold_figure"].savefig(figures_dir / "f1_threshold.png", dpi=150)
-
     # Plot training curves from the CSV file
     print(f"[INFO] Plotting training curves from {csv_path}")
     plot_training_curves_from_csv(csv_path, output_dir)
-
-    print(f"[INFO] All figures saved to {figures_dir}")
-    print(f"[INFO] All predictions saved to {predictions_dir}")
     print(f"[INFO] All done! Check {output_dir} for results.")
 
     # # Create a GIF of the training process

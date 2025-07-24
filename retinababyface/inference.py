@@ -120,12 +120,6 @@ def main():
     output_dir = Path("runs") / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    figures_dir = output_dir / "figures"
-    predictions_dir = output_dir / "predictions"
-
-    figures_dir.mkdir(exist_ok=True)
-    predictions_dir.mkdir(exist_ok=True)
-
     # 1. Load test dataset and dataloader
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
     val_transform = config.get_val_transform(img_size=resize_size)
@@ -193,7 +187,7 @@ def main():
     figures = inference(
         model=model,
         test_loader=test_loader,
-        output_dir=predictions_dir,
+        output_dir=output_dir,
         device=device,
         labels_map=labels_map,
         scale_factors=config.SCALE_FACTORS,
@@ -207,22 +201,8 @@ def main():
         std=norm_std,
     )
 
-    # 5. Save output figures
-    # Save all figures
-    figures["pr_figure"].savefig(figures_dir / "precision_recall.png", dpi=150)
-    figures["confusion_figure_raw"].savefig(
-        figures_dir / "confusion_matrix_raw.png", dpi=150
-    )
-    figures["confusion_figure_normalized"].savefig(
-        figures_dir / "confusion_matrix_normalized.png", dpi=150
-    )
-    figures["grid_figure"].savefig(figures_dir / "grid_examples.png", dpi=150)
-    figures["iou_boxplot_figure"].savefig(figures_dir / "iou_boxplot.png", dpi=150)
-    figures["angle_boxplot_figure"].savefig(figures_dir / "angle_boxplot.png", dpi=150)
-    figures["f1_threshold_figure"].savefig(figures_dir / "f1_threshold.png", dpi=150)
-
-    print(f"[INFO] All figures saved to {figures_dir}")
-    print(f"[INFO] All predictions saved to {predictions_dir}")
+    # 5. Save inference results
+    print(f"[INFO] All results saved to {output_dir}")
 
 
 if __name__ == "__main__":

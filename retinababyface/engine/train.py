@@ -291,16 +291,45 @@ def nms_rotated(
 
 def infer_with_rotated_nms(
     model_or_preds,
-    images,
-    anchors_xy,
-    image_size,
-    face_thres=0.5,  # probabilidad de CARA
-    baby_thres=0.5,  # probabilidad de BEBÉ
-    iou_thres=0.45,
-    class_thres=0.60,
-    pre_nms_topk=500,
-    max_det=300,
-):
+    images: torch.Tensor,
+    anchors_xy: torch.Tensor,
+    image_size: Tuple[int, int],
+    face_thres: float = 0.5,  # Face detection confidence threshold
+    baby_thres: float = 0.5,  # Baby detection confidence threshold
+    iou_thres: float = 0.45,  # IoU threshold for NMS
+    class_thres: float = 0.60,  # Orientation class confidence threshold
+    pre_nms_topk: int = 500,  # Number of top predictions to keep before NMS
+    max_det: int = 300,  # Maximum detections after NMS
+) -> List[Dict[str, torch.Tensor]]:
+    """
+    Performs inference on images and applies rotated NMS to filter predictions.
+
+    This function handles both model forward pass and direct prediction inputs.
+    It filters predictions based on face, baby and orientation confidence thresholds,
+    then applies rotated NMS to remove redundant detections.
+
+    Args:
+        model_or_preds: Either a model to run inference, or tuple of predictions
+        images: Input images tensor of shape (B, C, H, W)
+        anchors_xy: Anchor boxes in vertex format (N, 8)
+        image_size: Target image size as (width, height)
+        face_thres: Minimum confidence for face detection (default: 0.5)
+        baby_thres: Minimum confidence for baby detection (default: 0.5)
+        iou_thres: IoU threshold for NMS (default: 0.45)
+        class_thres: Minimum confidence for orientation class (default: 0.60)
+        pre_nms_topk: Maximum predictions to consider before NMS (default: 500)
+        max_det: Maximum detections to return after NMS (default: 300)
+
+    Returns:
+        List of dictionaries containing filtered predictions for each image:
+            - boxes: Rotated boxes in (cx, cy, w, h, angle) format
+            - scores: Confidence scores
+            - labels: Orientation class labels
+            - polygons: Box vertices in (x1,y1,x2,y2,x3,y3,x4,y4) format
+            - child_score: Baby detection confidence
+            - is_child: Boolean mask indicating baby detections
+    """
+    # Run model if needed, otherwise use provided predictions
     if isinstance(model_or_preds, nn.Module):
         orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds(
             images
@@ -308,21 +337,27 @@ def infer_with_rotated_nms(
     else:
         orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds
 
-    B = images.size(0)
-    face_prob = torch.sigmoid(face_logits.squeeze(-1))
-    child_prob = torch.sigmoid(child_logits.squeeze(-1))
-    orientation_probs = F.softmax(orient_logits, dim=-1)
+    B = images.size(0)  # Batch size
+    # Convert logits to probabilities
+    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # Face detection probabilities
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # Baby detection probabilities
+    orientation_probs = F.softmax(
+        orient_logits, dim=-1
+    )  # Orientation class probabilities
 
     outputs = []
     for b in range(B):
+        # Get most likely orientation class and confidence
         orient_conf, orient_labels = orientation_probs[b].max(-1)
 
-        # Filtrado: cara y bebé y orientación confiable
+        # Filter predictions based on confidence thresholds
         keep = (
             (face_prob[b] >= face_thres)
             & (child_prob[b] >= baby_thres)
             & (orient_conf >= class_thres)
         )
+
+        # Handle case with no valid detections
         if not keep.any():
             outputs.append(
                 dict(
@@ -336,23 +371,28 @@ def infer_with_rotated_nms(
             )
             continue
 
+        # Get indices of kept predictions and apply top-k filtering
         idx = keep.nonzero().squeeze(1)
         K = min(pre_nms_topk, idx.numel())
-        # Ranking (puedes combinar si quieres): aquí solo confianza de orientación
-        score = orient_conf
+        score = orient_conf  # Using orientation confidence as final score
         topk = score[idx].topk(K).indices
         sel = idx[topk]
 
+        # Decode prediction boxes from deltas
         verts = decode_vertices(
             deltas[b][sel],
             anchors_xy[sel].to(images.device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
         )
+        # Convert vertices to (cx,cy,w,h,angle) format for NMS
         xywhr = xyxyxyxy2xywhr(verts, pred_angles[b][sel].squeeze(-1), image_size)
+
+        # Apply rotated NMS and limit detections
         keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
         sel_final = sel[keep_nms]
 
+        # Store filtered predictions
         outputs.append(
             dict(
                 boxes=xywhr[keep_nms],
@@ -872,17 +912,17 @@ def train_step(
     Performs a single training step for the model.
 
     Args:
-        model (nn.Module): The model to train.
-        train_dataloader (DataLoader): DataLoader for the training dataset.
-        loss_fn (nn.Module): Loss function for the model.
-        optimizer (Optimizer): Optimizer for the model.
-        clip_value (float): Value for gradient clipping.
-        grad_clip_mode (str): Mode for gradient clipping ("Norm" or "Value").
-        scheduler (lr_scheduler._LRScheduler): Learning rate scheduler.
-        device (torch.device): Device to use for training.
-        anchors (torch.Tensor): Anchor boxes tensor.
-        scaler (Optional[torch.cuda.amp.GradScaler]): Scaler for mixed precision training.
-        autocast_context (Optional[torch.cuda.amp.autocast]): Context manager for mixed precision.
+        - model (nn.Module): The model to train.
+        - train_dataloader (DataLoader): DataLoader for the training dataset.
+        - loss_fn (nn.Module): Loss function for the model.
+        - optimizer (Optimizer): Optimizer for the model.
+        - clip_value (float): Value for gradient clipping.
+        - grad_clip_mode (str): Mode for gradient clipping ("Norm" or "Value").
+        - scheduler (lr_scheduler._LRScheduler): Learning rate scheduler.
+        - device (torch.device): Device to use for training.
+        - anchors (torch.Tensor): Anchor boxes tensor.
+        - scaler (Optional[torch.cuda.amp.GradScaler]): Scaler for mixed precision training.
+        - autocast_context (Optional[torch.cuda.amp.autocast]): Context manager for mixed precision.
 
     Returns:
         Tuple[float, float, float, float, float, float]:
@@ -891,6 +931,8 @@ def train_step(
         - Average face loss
         - Average OBB loss
         - Average angular loss
+        - Average child loss
+        - Average rectification loss
         - And current learning rate.
     """
     model.train()  # Set the model to training mode.
@@ -1017,17 +1059,17 @@ def val_step(
     Runs one full evaluation loop on the validation dataset, computing predictions, losses, and rotated mAP.
 
     Args:
-        model (nn.Module): The trained model to evaluate.
-        val_dataloader (DataLoader): DataLoader that provides batches of validation data.
-        loss_fn (nn.Module): Multi-task loss function that returns total and sub-losses.
-        device (torch.device): The device (CPU/GPU) on which computation will be performed.
-        anchors (Tuple[Tensor, Tensor]): A tuple containing:
+        - model (nn.Module): The trained model to evaluate.
+        - val_dataloader (DataLoader): DataLoader that provides batches of validation data.
+        - loss_fn (nn.Module): Multi-task loss function that returns total and sub-losses.
+        - device (torch.device): The device (CPU/GPU) on which computation will be performed.
+        - anchors (Tuple[Tensor, Tensor]): A tuple containing:
             - anchors_xy (Tensor): Tensor of base anchor vertices (N, 8).
             - anchors_xywhr (Tensor): Tensor of anchors in (cx, cy, w, h, θ) format (N, 5).
-        face_thres (float): Confidence threshold for face detection.
-        iou_thres (float): IoU threshold for rotated NMS.
-        class_thres (float): Confidence threshold for class predictions
-        alpha_score (float): Weighting factor for combining face and class scores.
+        - face_thres (float): Confidence threshold for face detection.
+        - iou_thres (float): IoU threshold for rotated NMS.
+        - class_thres (float): Confidence threshold for class predictions
+        - baby_thres (float): Confidence threshold for baby face detection.
 
     Returns:
         Tuple[float, float, float, float, float, float]: A tuple containing:
@@ -1036,6 +1078,8 @@ def val_step(
             - avg_face_loss (float): Average face loss.
             - avg_obb_loss (float): Average oriented bounding box (OBB) loss.
             - avg_angular_loss (float): Average angular prediction loss.
+            - avg_child_loss (float): Average child face probability loss.
+            - avg_rect_loss (float): Average rectangular bounding box loss.
             - mAP (float): Mean Average Precision (mAP) for rotated bounding boxes.
     """
     model.eval()  # Switch model to evaluation mode (no dropout, batchnorm is fixed).
@@ -1205,34 +1249,34 @@ def train(
     training. Optionally, it integrates with Weights & Biases for tracking metrics and visualizations.
 
     Args:
-        model (nn.Module): The model to train.
-        train_dataloader (DataLoader): DataLoader for the training dataset.
-        val_dataloader (DataLoader): DataLoader for the validation dataset.
-        loss_fn (nn.Module): Loss function for the model.
-        which_optimizer (str): Optimizer to use ('ADAM' or 'SGD').
-        weight_decay (float): Weight decay for the optimizer.
-        learning_rate (float): Learning rate for the optimizer.
-        epochs (int): Number of training epochs.
-        device (torch.device): Device to use for training.
-        early_stopping: Early stopping object (optional).
-        which_scheduler (str, optional): Learning rate scheduler to use ('ReduceLR', 'OneCycle', 'Cosine', or None).
-        clip_value (float, optional): Value for gradient clipping.
-        grad_clip_mode (str, optional): Mode for gradient clipping ('Norm' or 'Value').
-        record_metrics (bool, optional): Whether to record metrics using Weights & Biases.
-        project (str, optional): Weights & Biases project name.
-        run_name (str, optional): Weights & Biases run name.
-        scale_factors (List[float], optional): Scale factors for anchor generation.
-        ratio_factors (List[float], optional): Ratio factors for anchor generation.
-        face_thres (float, optional): Face detection confidence threshold for filtering predictions.
-        iou_thres (float, optional): IoU threshold for rotated NMS.
-        class_thres (float, optional): Class confidence threshold for filtering predictions.
-        grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
-        csv_path (Union[str, Path], optional): Path to save training metrics CSV.
-        alpha_score (float): Weighting factor for combining face and orientation confidence.
-        anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
-        anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors for reuse.
-        inference_preview (Union[str, Path], optional): Path to save inference preview image.
-        show_every_epoch (int, optional): Frequency of showing inference previews during training.
+        - model (nn.Module): The model to train.
+        - train_dataloader (DataLoader): DataLoader for the training dataset.
+        - val_dataloader (DataLoader): DataLoader for the validation dataset.
+        - loss_fn (nn.Module): Loss function for the model.
+        - which_optimizer (str): Optimizer to use ('ADAM' or 'SGD').
+        - weight_decay (float): Weight decay for the optimizer.
+        - learning_rate (float): Learning rate for the optimizer.
+        - epochs (int): Number of training epochs.
+        - device (torch.device): Device to use for training.
+        - early_stopping: Early stopping object (optional).
+        - which_scheduler (str, optional): Learning rate scheduler to use ('ReduceLR', 'OneCycle', 'Cosine', or None).
+        - clip_value (float, optional): Value for gradient clipping.
+        - grad_clip_mode (str, optional): Mode for gradient clipping ('Norm' or 'Value').
+        - record_metrics (bool, optional): Whether to record metrics using Weights & Biases.
+        - project (str, optional): Weights & Biases project name.
+        - run_name (str, optional): Weights & Biases run name.
+        - scale_factors (List[float], optional): Scale factors for anchor generation.
+        - ratio_factors (List[float], optional): Ratio factors for anchor generation.
+        - face_thres (float, optional): Face detection confidence threshold for filtering predictions.
+        - baby_thres (float, optional): Baby face detection confidence threshold for filtering predictions.
+        - iou_thres (float, optional): IoU threshold for rotated NMS.
+        - class_thres (float, optional): Class confidence threshold for filtering predictions.
+        - grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
+        - csv_path (Union[str, Path], optional): Path to save training metrics CSV.
+        - anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
+        - anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors for reuse.
+        - inference_preview (Union[str, Path], optional): Path to save inference preview image.
+        - show_every_epoch (int, optional): Frequency of showing inference previews during training.
 
     Returns:
         Dict[str, List[float]]: Dictionary containing lists of training and validation metrics.

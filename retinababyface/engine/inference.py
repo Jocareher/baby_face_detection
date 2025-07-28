@@ -121,33 +121,34 @@ def run_inference(
     Runs inference on a dataset and collects predictions, ground truths, and metrics.
 
     Args:
-        model (torch.nn.Module): The trained model to use for inference.
-        loader (DataLoader): DataLoader providing the test dataset.
-        anchors_xy (torch.Tensor): Precomputed anchors in (x, y) format.
-        resize_size (Tuple[int, int]): Target size used to resize images.
-        conf_thres (float): Confidence threshold for filtering predictions.
-        iou_thres (float): IoU threshold for matching predictions to ground truths.
-        class_thres (float): Class score threshold for filtering predictions.
-        baby_thres (float): Baby face confidence threshold for filtering predictions.
-        device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
-        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
+        - model (torch.nn.Module): The trained model to use for inference.
+        - loader (DataLoader): DataLoader providing the test dataset.
+        - anchors_xy (torch.Tensor): Precomputed anchors in (x, y) format.
+        - resize_size (Tuple[int, int]): Target size used to resize images.
+        - face_thres (float): Confidence threshold for face detection.
+        - iou_thres (float): IoU threshold for matching predictions to ground truths.
+        - class_thres (float): Class score threshold for filtering predictions.
+        - baby_thres (float): Baby face confidence threshold for filtering predictions.
+        - device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
+        - labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
 
     Returns:
         Dict[str, Any]: A dictionary containing:
-            - per_true: Binary ground truth (1 for TP, 0 for FP) per class.
-            - per_score: Confidence scores of predictions per class.
-            - iou_errs: IoU errors per class.
-            - angle_errs: Angle errors per class.
-            - stats: TP, FP, FN counts per class.
-            - y_true: Ground truth labels for confusion matrix.
-            - y_pred: Predicted labels for confusion matrix.
-            - all_gts: Ground truth labels for F1 vs. threshold.
-            - all_preds: Predicted labels for F1 vs. threshold.
-            - all_scores: Prediction scores for F1 vs. threshold.
-            - child_stats: TP, FP, FN counts for child face detection.
-            - child_gt: Ground truth labels for child face detection.
-            - child_pred: Predicted labels for child face detection.
-            - samples: List of qualitative samples for visualization.
+            - per_true (Dict[int, List[int]]): Binary ground truth (1 for TP, 0 for FP) per class.
+            - per_score (Dict[int, List[float]]): Confidence scores of predictions per class.
+            - iou_errs (Dict[int, List[float]]): IoU errors per class.
+            - angle_errs (Dict[int, List[float]]): Angle errors per class.
+            - stats (Dict[int, Dict[str, int]]): TP, FP, FN counts per class.
+            - y_true (List[int]): Ground truth labels for confusion matrix.
+            - y_pred (List[int]): Predicted labels for confusion matrix.
+            - all_gts (List[int]): Ground truth labels for F1 vs. threshold computation.
+            - all_preds (List[int]): Predicted labels for F1 vs. threshold computation.
+            - all_scores (List[float]): Prediction scores for F1 vs. threshold computation.
+            - child_stats (Dict[str, int]): TP, FP, FN counts for child face detection.
+            - child_gt (List[int]): Ground truth labels for child face detection (0 = adult, 1 = child).
+            - child_pred (List[int]): Predicted labels for child face detection (0 = adult, 1 = child).
+            - samples (List[Tuple[Any, Dict[str, torch.Tensor], str, torch.Tensor, torch.Tensor, torch.Tensor, int, int]]):
+              List of qualitative samples for visualization, including images, predictions, ground truths, and error counts.
     """
     # Initialize data structures for metrics and qualitative results
     per_true = {c: [] for c in labels_map}
@@ -1185,39 +1186,51 @@ def inference(
     anchors_cache_path: Union[str, Path] = None,
 ) -> Dict[str, Any]:
     """
-    Complete inference and reporting pipeline for object detection evaluation.
+        This function processes a test dataset through a trained model and generates comprehensive
+    evaluation metrics and visualizations.
 
-    This function performs the following steps:
-      1. Anchor preparation for inference.
-      2. Runs inference on the test set and collects predictions and ground truths.
-      3. Computes evaluation metrics (mAP, AP per class, confusion matrix, etc.).
-      4. Generates and saves visualizations: PR curves, F1 vs threshold, confusion matrices, boxplots.
-      5. Creates a qualitative grid of predictions and saves individual prediction images.
-      6. Exports metrics and confusion matrices to CSV.
+    Steps:
+        1. Anchor preparation for inference
+        2. Model inference on test set
+        3. Metrics computation and visualization generation
+        4. CSV export of metrics and confusion matrices
+        5. Saving of prediction visualizations
 
-    Args:
-        model (torch.nn.Module): The initialized model architecture.
-        test_loader (DataLoader): DataLoader for the test set.
-        output_dir (Union[str, Path]): Directory to store output visualizations and results.
-        device (torch.device): Computation device (e.g., 'cuda' or 'cpu').
-        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
-        scale_factors (List[float]): Anchor scale factors for anchor generation.
-        ratio_factors (List[float]): Anchor aspect ratio factors for anchor generation.
-        face_thres (float): Confidence threshold for face detection.
-        iou_thres (float): IoU threshold for matching predictions to ground truths.
-        class_thres (float): Class score threshold for filtering predictions.
-        alpha_score (float): Weight for combining face and orientation confidence scores.
-        grid_shape (Tuple[int, int]): (Rows, Columns) for the qualitative grid of predictions.
-        mean (Tuple[float, float, float]): Mean for image normalization (for visualization).
-        std (Tuple[float, float, float]): Std for image normalization (for visualization).
-        save_figs (bool): Whether to save generated figures to disk.
-        close_figs (bool): Whether to close figures after saving (to free memory).
-        anchors_cache_path (Union[str, Path], optional): Path to cache anchors for reuse.
+        - model (torch.nn.Module): Trained model for inference.
+        - test_loader (DataLoader): DataLoader containing test dataset.
+        - output_dir (Union[str, Path]): Directory path to save results and visualizations.
+        - device (torch.device): Computing device ('cuda' or 'cpu').
+        - labels_map (Dict[int, str]): Mapping of class indices to label names.
+        - scale_factors (List[float]): Scale factors for anchor box generation.
+        - ratio_factors (List[float]): Aspect ratio factors for anchor box generation.
+        - face_thres (float, optional): Confidence threshold for face detection. Defaults to 0.25.
+        - baby_thres (float, optional): Confidence threshold for baby classification. Defaults to 0.25.
+        - iou_thres (float, optional): IoU threshold for prediction matching. Defaults to 0.5.
+        - class_thres (float, optional): Confidence threshold for class predictions. Defaults to 0.5.
+        - grid_shape (Tuple[int, int], optional): Shape of prediction visualization grid (rows, cols).
+            Defaults to (3, 3).
+        - mean (Tuple[float, float, float], optional): Mean values for image normalization.
+            Defaults to (0.485, 0.456, 0.406).
+        - std (Tuple[float, float, float], optional): Standard deviation values for image normalization.
+            Defaults to (0.229, 0.224, 0.225).
+        - save_figs (bool, optional): Whether to save generated figures. Defaults to True.
+        - close_figs (bool, optional): Whether to close figures after saving. Defaults to True.
+        - anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors.
+            Defaults to None.
 
-    Returns:
-        Dict[str, Any]: Dictionary containing:
-            - "mAP": Mean Average Precision (float)
-            - "APs": Per-class Average Precision (dict)
+            - "mAP": Mean Average Precision across all classes
+            - "APs": Dictionary of per-class Average Precision scores
+
+    Generated Outputs:
+        - Precision-Recall curves
+        - Confusion matrices (raw and normalized) for class predictions
+        - Confusion matrices (raw and normalized) for child/adult classification
+        - IoU distribution boxplots per class
+        - Angle error distribution boxplots per class
+        - F1 score vs confidence threshold plots
+        - Grid of qualitative prediction examples
+        - Individual prediction visualizations
+        - CSV files with metrics and confusion matrices
     """
 
     def save_figure(fig: plt.Figure, fname: str):

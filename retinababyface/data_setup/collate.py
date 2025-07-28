@@ -56,7 +56,7 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         )  # Pad the bounding boxes tensor.
         padded_angles.append(F.pad(angles, (0, pad_size)))  # Pad the angles tensor.
         padded_classes.append(
-            F.pad(classes, (0, pad_size), value=-100)
+            F.pad(classes, (0, pad_size), value=-1)
         )  # Pad the class indices tensor.
         padded_child_probs.append(  # Pad the child probabilities tensor.
             F.pad(child_p, (0, pad_size), value=-1.0)

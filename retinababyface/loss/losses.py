@@ -34,7 +34,7 @@ class FocalLoss(nn.Module):
         self,
         alpha: Union[float, List[float]] = 1.0,
         gamma: float = 2.0,
-        ignore_index: int = -100,
+        ignore_index: int = -1,
         reduction: str = "mean",
     ):
         super().__init__()
@@ -124,7 +124,7 @@ class L2Loss(nn.Module):
         self,
         alpha: Union[float, List[float]] = 1.0,
         sigma: Optional[float] = None,
-        ignore_index: int = -100,
+        ignore_index: int = -1,
         reduction: str = "mean",
     ):
         super().__init__()

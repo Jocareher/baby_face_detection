@@ -2,7 +2,8 @@ import math
 import random
 import re
 import os
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Optional, Tuple, Dict
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -45,144 +46,139 @@ def draw_obb(
     box,
     angle: Optional[float] = None,
     class_idx: Optional[int] = None,
-    top_color: str = "red",
-    other_color: str = "blue",
+    labels_map: Optional[Dict[int, str]] = None,
+    edge_color: str = "#008000",  # green
+    top_edge: str = "orange",
     linewidth: int = 2,
 ):
     """
-    Draws an oriented bounding box (OBB) and annotates it with class index and angle.
+    Draws an Oriented Bounding Box (OBB) with custom styling.
 
     Args:
-        ax: Matplotlib axis.
-        box: List or array of 8 values [x1, y1, ..., x4, y4].
-        angle: Rotation angle in radians (optional).
-        class_idx: Integer class index (optional).
-        top_color: Color of the top edge of the OBB.
-        other_color: Color of the other edges of the OBB.
-        linewidth: Line width for the OBB.
+        ax: Matplotlib axis to draw on
+        box: Array-like of 8 coordinates representing 4 corner points (x,y)
+        angle: Optional rotation angle in radians
+        class_idx: Optional class index for labeling
+        labels_map: Optional dict mapping class indices to readable names
+        edge_color: Color for the OBB outline
+        top_edge: Color for the diagonal line
+        linewidth: Width of drawn lines
+
+    The OBB is drawn with:
+    - Dashed green outline
+    - Orange diagonal from first to second point
+    - Text label showing class name and angle (if provided)
     """
-    pts = np.array(box).reshape(4, 2)  # Reshape the box coordinates to (4, 2).
-    pts_closed = np.vstack(
-        [pts, pts[0]]
-    )  # Close the polygon by adding the first point again.
-    ax.plot(
-        pts_closed[:, 0], pts_closed[:, 1], color=other_color, linewidth=linewidth
-    )  # Plot the OBB edges.
-    ax.plot(
-        [pts[0, 0], pts[1, 0]],
-        [pts[0, 1], pts[1, 1]],
-        color=top_color,
-        linewidth=linewidth + 1,
-    )  # Highlight the top edge.
+    pts = np.asarray(box, dtype=float).reshape(4, 2)
 
-    # Class label near (x1, y1)
-    if class_idx is not None:
-        ax.text(
-            pts[0, 0],
-            pts[0, 1] - 5,
-            f"cls: {class_idx}",
-            color="green",
-            fontsize=10,
-            weight="bold",
-        )  # Add class label.
+    # Draw OBB outline
+    ax.add_patch(
+        Polygon(
+            pts,
+            closed=True,
+            fill=False,
+            edgecolor=edge_color,
+            linestyle="--",
+            linewidth=linewidth,
+        )
+    )
+    # Draw diagonal between first two points
+    ax.plot(pts[[0, 1], 0], pts[[0, 1], 1], color=top_edge, linewidth=linewidth)
 
-    # Angle annotation at center of the box
-    if angle is not None:
-        center = pts.mean(axis=0)  # Calculate the center of the OBB.
-        angle_deg = np.degrees(angle)  # Convert angle to degrees.
-        ax.text(
-            center[0],
-            center[1],
-            f"{angle_deg:.1f}°",
-            color="orange",
-            fontsize=9,
-            ha="center",
-            va="center",
-        )  # Add angle annotation.
+    # Add class:angle text label
+    br_x, br_y = pts[:, 0].max(), pts[:, 1].max()
+    cls_txt = (
+        labels_map.get(int(class_idx), str(class_idx))
+        if (labels_map and class_idx is not None)
+        else str(class_idx)
+        if class_idx is not None
+        else "?"
+    )
+    ang_txt = f"{math.degrees(float(angle)):.1f}°" if angle is not None else ""
+    ax.text(
+        br_x,
+        br_y,
+        f"{cls_txt}: {ang_txt}".strip(": "),
+        color="white",
+        fontsize=6,
+        fontweight="bold",
+        ha="right",
+        va="bottom",
+        bbox=dict(facecolor=edge_color, alpha=0.8, edgecolor="none", pad=2.5),
+    )
 
 
-def visualize_dataset(dataset, num_images: int = 9, show: bool = False):
+def visualize_dataset(
+    dataset,
+    num_images: int = 9,
+    labels_map: Optional[Dict[int, str]] = None,
+    show: bool = False,
+):
     """
-    Displays 'num_images' samples from the dataset in a grid.
-    Shows OBBs with segment highlighting, class_idx, angle, and image filename.
+    Creates a grid visualization of dataset samples with ground truth annotations.
+
     Args:
-        dataset (Dataset): PyTorch dataset with 'image' and 'target' keys.
-        num_images (int): Number of images to display.
-        show (bool): Whether to display the plot or not.
+        dataset: PyTorch dataset containing image and target samples
+        num_images: Number of random samples to display (default: 9)
+        labels_map: Optional mapping from class indices to readable names
+        show: Whether to display the plot immediately
+
     Returns:
-        fig (Figure): Matplotlib figure object.
+        matplotlib.figure.Figure: The generated figure, or None if dataset is empty
+
+    Each grid cell shows:
+    - The original image
+    - Ground truth OBB annotations with class labels and angles
+    - Filename as title (if dataset.file_list exists)
     """
-    total = len(dataset)  # Get the total number of samples in the dataset.
-    if total == 0:  # Check if the dataset is empty.
-        print("Dataset is empty.")
+    if len(dataset) == 0:
+        print("[visualize_dataset] Dataset is empty")
         return
 
-    indices = random.sample(
-        range(total), min(num_images, total)
-    )  # Select random indices.
-    cols = int(
-        math.ceil(math.sqrt(len(indices)))
-    )  # Calculate the number of columns for the grid.
-    rows = int(
-        math.ceil(len(indices) / cols)
-    )  # Calculate the number of rows for the grid.
+    # Setup grid layout
+    idxs = random.sample(range(len(dataset)), min(num_images, len(dataset)))
+    cols = math.ceil(math.sqrt(len(idxs)))
+    rows = math.ceil(len(idxs) / cols)
 
-    fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 5, rows * 5)
-    )  # Create the figure and axes.
-    axes = np.array(axes).reshape(-1)  # Reshape the axes array to a 1D array.
-
-    for ax in axes[len(indices) :]:  # Turn off axes for empty subplots.
+    # Create figure and hide unused subplots
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+    axes = np.asarray(axes).reshape(-1)
+    for ax in axes[len(idxs) :]:
         ax.axis("off")
 
-    for i, idx in enumerate(indices):  # Iterate through the selected indices.
-        sample = dataset[idx]  # Get the sample.
-        image = sample["image"]  # Get the image.
-        if torch.is_tensor(image):  # Check if the image is a tensor.
-            image_np = denormalize_image(image)  # Denormalize the image.
-        else:
-            image_np = image.copy()  # Create a copy of the image.
+    # Plot each sample
+    for ax, idx in zip(axes, idxs):
+        sample = dataset[idx]
+        img_t = sample["image"]
+        img_disp = denormalize_image(img_t) if torch.is_tensor(img_t) else img_t
+        ax.imshow(img_disp)
+        ax.axis("off")
+        ax.set_aspect("equal")
 
-        ax = axes[i]  # Get the current axis.
-        ax.imshow(image_np)  # Display the image.
-        ax.axis("off")  # Turn off the axis.
+        # Draw ground truth boxes
+        boxes = sample["target"]["boxes"].cpu().numpy()
+        angles = sample["target"]["angles"].cpu().numpy()
+        cls_ids = sample["target"]["class_idx"].cpu().numpy()
 
-        boxes = sample["target"]["boxes"]  # Get the bounding boxes.
-        angles = sample["target"]["angles"]  # Get the angles.
-        class_idxs = sample["target"]["class_idx"]  # Get the class indices.
+        for box, ang, cls in zip(boxes, angles, cls_ids):
+            draw_obb(ax, box, ang, cls, labels_map)
 
-        if torch.is_tensor(boxes):  # Check if the boxes are tensors.
-            boxes = boxes.cpu().numpy()  # Convert the boxes to NumPy arrays.
-        if torch.is_tensor(angles):  # Check if the angles are tensors.
-            angles = angles.cpu().numpy()  # Convert the angles to NumPy arrays.
-        if torch.is_tensor(class_idxs):  # Check if the class indices are tensors.
-            class_idxs = (
-                class_idxs.cpu().numpy()
-            )  # Convert the class indices to NumPy arrays.
+        # Add filename as title if available
+        fname = getattr(dataset, "file_list", [f"img_{idx}"])[idx]
+        ax.set_title(Path(fname).name, fontsize=11, color="black")
 
-        for j in range(len(boxes)):  # Iterate through the bounding boxes.
-            draw_obb(
-                ax,
-                box=boxes[j],
-                angle=angles[j] if j < len(angles) else None,
-                class_idx=class_idxs[j] if j < len(class_idxs) else None,
-                top_color="red",
-                other_color="blue",
-                linewidth=2,
-            )  # Draw the OBB.
-
-        # Add filename title
-        base_name = dataset.file_list[idx]  # Get the filename.
-        ax.set_title(f"{base_name}.jpg", fontsize=11, color="black")  # Set the title.
-
-    plt.tight_layout()  # Adjust the subplot parameters to give specified padding.
+    plt.tight_layout()
     if show:
         plt.show()
     return fig
 
 
 def visualize_and_save_dataset_in_script(
-    dataset, split_name: str, save_dir: str, num_images: int = 9
+    dataset,
+    split_name: str,
+    save_dir: str,
+    num_images: int = 9,
+    labels_map: Optional[Dict[int, str]] = None,
 ):
     """
     Visualizes a sample of the dataset and saves the result as a grid image.
@@ -192,8 +188,11 @@ def visualize_and_save_dataset_in_script(
         split_name (str): Name of the dataset split (e.g., 'train', 'val', 'test').
         save_dir (str): Path to directory where image will be saved.
         num_images (int): Number of images to display.
+        labels_map (Optional[Dict[int, str]]): Mapping from class indices to human-readable labels.
+    Returns:
+        None: Saves the visualization grid to the specified directory.
     """
-    fig = visualize_dataset(dataset, num_images=num_images)
+    fig = visualize_dataset(dataset, num_images=num_images, labels_map=labels_map)
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{split_name}_grid.png")
     if fig:

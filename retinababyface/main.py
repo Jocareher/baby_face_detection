@@ -429,11 +429,22 @@ def main():
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
 
+    # Define label mapping for inference
+    labels_map = {
+        0: "Leftside",
+        1: "3/4 Leftside",
+        2: "Frontal",
+        3: "3/4 Rightside",
+        4: "Rightside",
+    }
+
     # Optional: visualize datasets and save sample grids
     visualize_and_save_dataset_in_script(
-        train_dataset, "train", grids_dir, num_images=9
+        train_dataset, "train", grids_dir, num_images=9, labels_map=labels_map
     )
-    visualize_and_save_dataset_in_script(val_dataset, "val", grids_dir, num_images=9)
+    visualize_and_save_dataset_in_script(
+        val_dataset, "val", grids_dir, num_images=9, labels_map=labels_map
+    )
 
     if args.balanced_sampler:
         sampler = make_balanced_sampler(train_dataset)
@@ -608,16 +619,9 @@ def main():
     )
 
     # Visualize and save test dataset samples
-    visualize_and_save_dataset_in_script(test_dataset, "test", grids_dir, num_images=9)
-
-    # Define label mapping for inference
-    labels_map = {
-        0: "Leftside",
-        1: "3/4 Leftside",
-        2: "Frontal",
-        3: "3/4 Rightside",
-        4: "Rightside",
-    }
+    visualize_and_save_dataset_in_script(
+        test_dataset, "test", grids_dir, num_images=9, labels_map=labels_map
+    )
 
     # Reload model for inference
     trained_model = RetinaBabyFace(

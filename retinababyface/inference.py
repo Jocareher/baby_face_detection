@@ -85,10 +85,10 @@ def parse_args():
         help="Class confidence threshold for matching (default: 0.6).",
     )
     parser.add_argument(
-        "--alpha_score",
+        "--baby_thres",
         type=float,
-        default=config.ALPHA_SCORE,
-        help=f"Weighting factor for combining face and orientation confidence scores (default: {config.ALPHA_SCORE}).",
+        default=config.BABY_THRESH,
+        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
     )
     parser.add_argument(
         "--grid_rows",
@@ -182,8 +182,8 @@ def main():
         3: "3/4 Rightside",
         4: "Rightside",
     }
-    anchor_cache_path = config.ANCHORS_CACHE_PATH
-    print(f"[INFO] Using anchors cache path: {anchor_cache_path}")
+    anchors_cache_path = config.ANCHORS_CACHE_PATH
+    print(f"[INFO] Using anchors cache path: {anchors_cache_path}")
 
     # 4. Run inference
     print("[INFO] Running inference...")
@@ -198,7 +198,7 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
-        alpha_score=args.alpha_score,
+        baby_thres=args.baby_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,

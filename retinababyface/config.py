@@ -134,9 +134,7 @@ SIGMA_L2_CLS = None  # For L2Loss, if used
 FACE_THRESH = 0.5
 IOU_THRESH = 0.3
 CLASS_THRESH = 0.6
-ALPHA_SCORE = (
-    0.6  # Weighting factor for combining face and orientation confidence scores
-)
+BABY_THRESH = 0.5
 
 # =======================
 # WandB Configuration

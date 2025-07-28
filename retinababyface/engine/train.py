@@ -290,103 +290,79 @@ def nms_rotated(
 
 
 def infer_with_rotated_nms(
-    model_or_preds: Union[nn.Module, Tuple],
-    images: torch.Tensor,  # (B, 3, H, W)
-    anchors_xy: torch.Tensor,  # (N, 8) anchor corners in xyxyxyxy
-    image_size: Tuple[int, int],  # (W, H)
-    face_thres: float = 0.20,
-    iou_thres: float = 0.45,
-    class_thres: float = 0.15,
-    alpha_score: float = 0.6,
-    pre_nms_topk: int = 500,
-    max_det: int = 300,
-) -> List[Dict[str, torch.Tensor]]:
-    """
-    Performs inference with rotated NMS, filtering by child probability and ranking by orientation confidence.
-
-    Args:
-        model_or_preds: Model or precomputed outputs (orient_logits, _, deltas, pred_angles, child_logits)
-        images: Input batch (B, 3, H, W)
-        anchors_xy: (N, 8) anchor polygons
-        image_size: (W, H)
-        face_thres: Threshold for child face detection (probability)
-        iou_thres: IoU threshold for rotated NMS
-        class_thres: Minimum orientation confidence
-        pre_nms_topk: Top-k scores to keep before NMS
-        max_det: Maximum detections per image
-
-    Returns:
-        List[Dict[str, Tensor]]: Per-image dictionaries with final predictions
-    """
+    model_or_preds,
+    images,
+    anchors_xy,
+    image_size,
+    face_thres=0.5,  # probabilidad de CARA
+    baby_thres=0.5,  # probabilidad de BEBÉ
+    iou_thres=0.45,
+    class_thres=0.60,
+    pre_nms_topk=500,
+    max_det=300,
+):
     if isinstance(model_or_preds, nn.Module):
-        orient_logits, _, deltas, pred_angles, child_logits = model_or_preds(images)
+        orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds(
+            images
+        )
     else:
-        orient_logits, _, deltas, pred_angles, child_logits = model_or_preds
-        assert orient_logits.shape[0] == images.size(0), "Batch size mismatch"
+        orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds
 
     B = images.size(0)
-    device = images.device
-    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
-    orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
+    face_prob = torch.sigmoid(face_logits.squeeze(-1))
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))
+    orientation_probs = F.softmax(orient_logits, dim=-1)
 
     outputs = []
-
     for b in range(B):
-        orient_conf, orient_labels = orientation_probs[b].max(-1)  # (N,)
-        score = (
-            orient_conf  # 💡 Usamos solo confianza de orientación como score principal
-        )
+        orient_conf, orient_labels = orientation_probs[b].max(-1)
 
-        # ✅ Filtramos solo si es una cara de bebé con suficiente confianza y orientación confiable
-        keep = (child_prob[b] >= face_thres) & (orient_conf >= class_thres)
+        # Filtrado: cara y bebé y orientación confiable
+        keep = (
+            (face_prob[b] >= face_thres)
+            & (child_prob[b] >= baby_thres)
+            & (orient_conf >= class_thres)
+        )
         if not keep.any():
             outputs.append(
                 dict(
-                    boxes=torch.empty(0, 5, device=device),
-                    scores=torch.empty(0, device=device),
-                    labels=torch.empty(0, device=device),
-                    polygons=torch.empty(0, 8, device=device),
-                    child_score=torch.empty(0, device=device),
-                    is_child=torch.empty(0, device=device, dtype=torch.bool),
+                    boxes=torch.empty(0, 5, device=images.device),
+                    scores=torch.empty(0, device=images.device),
+                    labels=torch.empty(0, device=images.device),
+                    polygons=torch.empty(0, 8, device=images.device),
+                    child_score=torch.empty(0, device=images.device),
+                    is_child=torch.empty(0, dtype=torch.bool, device=images.device),
                 )
             )
             continue
 
-        idx = keep.nonzero(as_tuple=False).squeeze(1)
+        idx = keep.nonzero().squeeze(1)
         K = min(pre_nms_topk, idx.numel())
-        topk = score[idx].topk(K, sorted=True).indices
-        sel = idx[topk]  # (K,)
+        # Ranking (puedes combinar si quieres): aquí solo confianza de orientación
+        score = orient_conf
+        topk = score[idx].topk(K).indices
+        sel = idx[topk]
 
         verts = decode_vertices(
             deltas[b][sel],
-            anchors_xy[sel].to(device),
+            anchors_xy[sel].to(images.device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
-        )  # (K, 8)
-
-        xywhr = xyxyxyxy2xywhr(
-            verts, pred_angles[b][sel].squeeze(-1), image_size
-        )  # (K, 5)
-
-        # 📌 NMS con orientación
-        keep_nms = nms_rotated(xywhr.to(device), score[sel].to(device), iou_thres)[
-            :max_det
-        ]
+        )
+        xywhr = xyxyxyxy2xywhr(verts, pred_angles[b][sel].squeeze(-1), image_size)
+        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
         sel_final = sel[keep_nms]
 
         outputs.append(
-            {
-                "boxes": xywhr[keep_nms],
-                "scores": score[sel][keep_nms],
-                "labels": orient_labels[sel_final].float(),
-                "polygons": verts[keep_nms],
-                "child_score": child_prob[b][sel][keep_nms],
-                "is_child": torch.ones_like(
-                    keep_nms, dtype=torch.bool
-                ),  # ya filtramos por bebés
-            }
+            dict(
+                boxes=xywhr[keep_nms],
+                scores=score[sel][keep_nms],
+                labels=orient_labels[sel_final].float(),
+                polygons=verts[keep_nms],
+                child_score=child_prob[b][sel][keep_nms],
+                is_child=torch.ones_like(keep_nms, dtype=torch.bool),
+            )
         )
-
     return outputs
 
 
@@ -1033,9 +1009,9 @@ def val_step(
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
     face_thres: float = 0.25,
+    baby_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
-    alpha_score: float = 0.7,
 ) -> Tuple[float, float, float, float, float, float]:
     """
     Runs one full evaluation loop on the validation dataset, computing predictions, losses, and rotated mAP.
@@ -1100,9 +1076,9 @@ def val_step(
                 anchors_xy,
                 image_size=(images.shape[3], images.shape[2]),
                 face_thres=face_thres,
+                baby_thres=baby_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
-                alpha_score=alpha_score,
             )
 
             # Accumulate predictions and ground truths for each image in the batch
@@ -1210,9 +1186,9 @@ def train(
     scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
     face_thres: float = 0.25,
+    baby_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
-    alpha_score: float = 0.7,
     grid_shape: Tuple[int, int] = (3, 3),
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
@@ -1413,7 +1389,7 @@ def train(
                 face_thres=face_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
-                alpha_score=alpha_score,
+                baby_thres=baby_thres,
             )
 
             # Update scheduler if applicable

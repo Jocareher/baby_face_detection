@@ -339,10 +339,10 @@ def parse_args():
         help=f"Orientation confidence threshold for inference (default: {config.CLASS_THRESH}).",
     )
     parser.add_argument(
-        "--alpha_score",
+        "--baby_thres",
         type=float,
-        default=config.ALPHA_SCORE,
-        help=f"Weighting factor for combining face and orientation confidence scores (default: {config.ALPHA_SCORE}).",
+        default=config.BABY_THRESH,
+        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
     )
     parser.add_argument(
         "--grid_rows",
@@ -579,7 +579,7 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
-        alpha_score=args.alpha_score,
+        baby_thres=args.baby_thres,
         csv_path=csv_path,
         anchor_preview_path=anchor_preview_path,
         anchors_cache_path=anchor_cache_path,
@@ -661,7 +661,7 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
-        alpha_score=args.alpha_score,
+        baby_thres=args.baby_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,

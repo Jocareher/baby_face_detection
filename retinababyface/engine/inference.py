@@ -113,7 +113,7 @@ def run_inference(
     face_thres: float,
     iou_thres: float,
     class_thres: float,
-    alpha_score: float,
+    baby_thres: float,
     device: torch.device,
     labels_map: Dict[int, str],
 ) -> Dict[str, Any]:
@@ -128,7 +128,7 @@ def run_inference(
         conf_thres (float): Confidence threshold for filtering predictions.
         iou_thres (float): IoU threshold for matching predictions to ground truths.
         class_thres (float): Class score threshold for filtering predictions.
-        alpha_score (float): Weighting factor for combining face and orientation confidence scores.
+        baby_thres (float): Baby face confidence threshold for filtering predictions.
         device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
         labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
 
@@ -185,9 +185,9 @@ def run_inference(
                 anchors_xy,
                 resize_size,
                 face_thres,
+                baby_thres,
                 iou_thres,
                 class_thres,
-                alpha_score,
             )
 
             batch_size = imgs.size(0)
@@ -1174,9 +1174,9 @@ def inference(
     scale_factors: List[float],
     ratio_factors: List[float],
     face_thres: float = 0.25,
+    baby_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.5,
-    alpha_score: float = 0.6,
     grid_shape: Tuple[int, int] = (3, 3),
     mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
     std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
@@ -1254,7 +1254,7 @@ def inference(
         face_thres=face_thres,
         iou_thres=iou_thres,
         class_thres=class_thres,
-        alpha_score=alpha_score,
+        baby_thres=baby_thres,
         device=device,
         labels_map=labels_map,
     )

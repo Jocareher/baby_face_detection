@@ -374,10 +374,22 @@ def run_inference(
                 # ---- Process unmatched GT boxes as False Negatives -------------
                 for i in range(num_gt):
                     if not gt_matched[i]:
+                        # GT box not matched to any detection
                         cls_gt = int(gt_labels[i])
+
+                        # Update PR/F1 metrics
+                        per_true[cls_gt].append(1)  # True for GT
+                        per_score[cls_gt].append(0.0)  # Score is 0 for unmatched GT
+                        all_gts.append(cls_gt)  # GT class
+                        all_preds.append(-1)  # Background class
+                        all_scores.append(0.0)  # Score is 0 for unmatched GT
+
+                        # Update stats and confusion matrix
                         if cls_gt in stats:
+                            # Count as False Negative
                             stats[cls_gt]["fn"] += 1
                             fn_img += 1
+                        # Update child stats
                         if cls_gt != -1:
                             y_true.append(cls_gt)  # GT class row
                             y_pred.append(-1)  # Background column
@@ -404,6 +416,15 @@ def run_inference(
             # Clean up to free memory
             del imgs, outputs, targets
             torch.cuda.empty_cache()
+
+    # Finalize metrics for each class
+    for cls in labels_map:
+        # Ensure every class has at least one entry in per_true/per_score
+        if not per_true[cls]:
+            # If no predictions for this class, set to empty lists
+            per_true[cls].append(0)
+            # If no predictions for this class, set score to 0.0
+            per_score[cls].append(0.0)
 
     print(f"[INFO] Inference completed on {global_idx} samples.")
     return {

@@ -17,7 +17,7 @@ from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 import tqdm.auto as tqdm_auto
 from torch.nn import functional as F
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.patches import Polygon
 
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
@@ -721,9 +721,7 @@ def generate_anchors_for_training(
         for j, i in enumerate(idxs):
             pts = all_anc[i].reshape(4, 2)
             color = cmap(j)
-            poly = MplPolygon(
-                pts, closed=True, fill=False, edgecolor=color, linewidth=0.8
-            )
+            poly = Polygon(pts, closed=True, fill=False, edgecolor=color, linewidth=0.8)
             ax.add_patch(poly)
 
         plt.tight_layout()
@@ -1578,7 +1576,7 @@ def in_training_inference(
     decodes and filters predictions, and overlays the predicted and ground-truth oriented bounding
     boxes on the images for visual inspection.
 
-    Ground-truth boxes are drawn in blue (with edge 0→1 in red), and predictions in green (with edge 0→1 in orange).
+    Ground-truth boxes are drawn in green (with edge 0→1 in orange), and predictions in blue (with edge 0→1 in red).
 
     Args:
         model (nn.Module): The model to evaluate.
@@ -1624,36 +1622,45 @@ def in_training_inference(
         ax.imshow(denormalize_image(img_t))  # Restore pixel values to [0,1] range
         ax.axis("off")
 
-        # Plot ground truth polygons in blue, with edge 0→1 in red
+        # Plot ground truth polygons in green, with edge 0→1 in orange
         for poly, lbl in zip(gt_poly, gt_lbl):
             pts = poly.view(4, 2).numpy()
             ax.add_patch(
-                MplPolygon(pts, closed=True, fill=False, edgecolor="blue", linewidth=2)
-            )
-            ax.plot(
-                [pts[0, 0], pts[1, 0]], [pts[0, 1], pts[1, 1]], color="red", linewidth=2
-            )
-
-        # Plot predicted polygons in green, with edge 0→1 in orange
-        p_polys = pred["polygons"].cpu()
-        p_scores = pred["scores"].cpu().numpy()
-        p_lbls = pred["labels"].cpu().numpy().astype(int)
-        for poly, lbl, sc in zip(p_polys, p_lbls, p_scores):
-            pts = poly.view(4, 2).numpy()
-            ax.add_patch(
-                MplPolygon(
+                Polygon(
                     pts,
                     closed=True,
                     fill=False,
                     edgecolor="green",
-                    linewidth=1.5,
-                    linestyle="--",
+                    linewidth=2,
+                    line_style="--",
                 )
             )
             ax.plot(
                 [pts[0, 0], pts[1, 0]],
                 [pts[0, 1], pts[1, 1]],
                 color="orange",
+                linewidth=2,
+            )
+
+        # Plot predicted polygons in blue, with edge 0→1 in red
+        p_polys = pred["polygons"].cpu()
+        p_scores = pred["scores"].cpu().numpy()
+        p_lbls = pred["labels"].cpu().numpy().astype(int)
+        for poly, lbl, sc in zip(p_polys, p_lbls, p_scores):
+            pts = poly.view(4, 2).numpy()
+            ax.add_patch(
+                Polygon(
+                    pts,
+                    closed=True,
+                    fill=False,
+                    edgecolor="blue",
+                    linewidth=2,
+                )
+            )
+            ax.plot(
+                [pts[0, 0], pts[1, 0]],
+                [pts[0, 1], pts[1, 1]],
+                color="red",
                 linewidth=2,
             )
 

@@ -339,10 +339,10 @@ def parse_args():
         help=f"Orientation confidence threshold for inference (default: {config.CLASS_THRESH}).",
     )
     parser.add_argument(
-        "--alpha_score",
+        "--baby_thres",
         type=float,
-        default=config.ALPHA_SCORE,
-        help=f"Weighting factor for combining face and orientation confidence scores (default: {config.ALPHA_SCORE}).",
+        default=config.BABY_THRESH,
+        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
     )
     parser.add_argument(
         "--grid_rows",
@@ -429,11 +429,22 @@ def main():
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
 
+    # Define label mapping for inference
+    labels_map = {
+        0: "Leftside",
+        1: "3/4 Leftside",
+        2: "Frontal",
+        3: "3/4 Rightside",
+        4: "Rightside",
+    }
+
     # Optional: visualize datasets and save sample grids
     visualize_and_save_dataset_in_script(
-        train_dataset, "train", grids_dir, num_images=9
+        train_dataset, "train", grids_dir, num_images=9, labels_map=labels_map
     )
-    visualize_and_save_dataset_in_script(val_dataset, "val", grids_dir, num_images=9)
+    visualize_and_save_dataset_in_script(
+        val_dataset, "val", grids_dir, num_images=9, labels_map=labels_map
+    )
 
     if args.balanced_sampler:
         sampler = make_balanced_sampler(train_dataset)
@@ -553,6 +564,8 @@ def main():
     # ------------------------------------------------------------------------
     # V. Training
     # ------------------------------------------------------------------------
+    anchor_cache_path = config.ANCHORS_CACHE_PATH
+    print(f"[INFO] Using anchors cache path: {anchor_cache_path}")
 
     print("[INFO] Starting training...")
     train(
@@ -577,9 +590,10 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
-        alpha_score=args.alpha_score,
+        baby_thres=args.baby_thres,
         csv_path=csv_path,
         anchor_preview_path=anchor_preview_path,
+        anchors_cache_path=anchor_cache_path,
         inference_preview=inference_preview,
     )
 
@@ -605,16 +619,9 @@ def main():
     )
 
     # Visualize and save test dataset samples
-    visualize_and_save_dataset_in_script(test_dataset, "test", grids_dir, num_images=9)
-
-    # Define label mapping for inference
-    labels_map = {
-        0: "Leftside",
-        1: "3/4 Leftside",
-        2: "Frontal",
-        3: "3/4 Rightside",
-        4: "Rightside",
-    }
+    visualize_and_save_dataset_in_script(
+        test_dataset, "test", grids_dir, num_images=9, labels_map=labels_map
+    )
 
     # Reload model for inference
     trained_model = RetinaBabyFace(
@@ -658,10 +665,11 @@ def main():
         face_thres=args.face_thres,
         iou_thres=args.iou_thres,
         class_thres=args.class_thres,
-        alpha_score=args.alpha_score,
+        baby_thres=args.baby_thres,
         grid_shape=(args.grid_rows, args.grid_cols),
         mean=norm_mean,
         std=norm_std,
+        anchors_cache_path=anchor_cache_path,
     )
 
     # Plot training curves from the CSV file

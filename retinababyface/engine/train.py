@@ -17,7 +17,7 @@ from torch.nn.utils import clip_grad_norm_, clip_grad_value_
 import tqdm.auto as tqdm_auto
 from torch.nn import functional as F
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.patches import Polygon
 
 tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter notebooks
 
@@ -218,6 +218,9 @@ def nms_rotated(
         boxes_sel = boxes[selected]
         areas = boxes_sel[:, 2] * boxes_sel[:, 3]  # Compute areas of selected boxes
         centers = boxes_sel[:, :2]  # Extract centers of selected boxes
+        w = boxes_sel[:, 2]
+        h = boxes_sel[:, 3]
+        diag = torch.sqrt(w * w + h * h)
 
         keep = []
         remaining = torch.arange(len(selected), device=device)
@@ -235,9 +238,10 @@ def nms_rotated(
                 centers[rest] - centers[i], dim=1
             )  # Compute distances to other centers
             area_ratios = areas[rest] / (area_i + 1e-6)  # Compute area ratios
-            suppress_mask = (area_ratios < min_area_ratio) & (
-                dists < 0.2 * area_i.sqrt()
-            )
+            # Suppress boxes based on area ratio and distance
+            radius_i = 0.2 * diag[i]
+            # Suppress boxes with high IoU or small area ratio
+            suppress_mask = (area_ratios < min_area_ratio) & (dists < radius_i)
             remaining = rest[
                 ~suppress_mask
             ]  # Remove suppressed boxes from the remaining list
@@ -286,103 +290,119 @@ def nms_rotated(
 
 
 def infer_with_rotated_nms(
-    model_or_preds: Union[nn.Module, Tuple],
-    images: torch.Tensor,  # (B, 3, H, W)
-    anchors_xy: torch.Tensor,  # (N, 8) anchor corners in xyxyxyxy
-    image_size: Tuple[int, int],  # (W, H)
-    face_thres: float = 0.20,
-    iou_thres: float = 0.45,
-    class_thres: float = 0.15,
-    alpha_score: float = 0.6,
-    pre_nms_topk: int = 500,
-    max_det: int = 300,
+    model_or_preds,
+    images: torch.Tensor,
+    anchors_xy: torch.Tensor,
+    image_size: Tuple[int, int],
+    face_thres: float = 0.5,  # Face detection confidence threshold
+    baby_thres: float = 0.5,  # Baby detection confidence threshold
+    iou_thres: float = 0.45,  # IoU threshold for NMS
+    class_thres: float = 0.60,  # Orientation class confidence threshold
+    pre_nms_topk: int = 500,  # Number of top predictions to keep before NMS
+    max_det: int = 300,  # Maximum detections after NMS
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference with rotated NMS, filtering by child probability and ranking by orientation confidence.
+    Performs inference on images and applies rotated NMS to filter predictions.
+
+    This function handles both model forward pass and direct prediction inputs.
+    It filters predictions based on face, baby and orientation confidence thresholds,
+    then applies rotated NMS to remove redundant detections.
 
     Args:
-        model_or_preds: Model or precomputed outputs (orient_logits, _, deltas, pred_angles, child_logits)
-        images: Input batch (B, 3, H, W)
-        anchors_xy: (N, 8) anchor polygons
-        image_size: (W, H)
-        face_thres: Threshold for child face detection (probability)
-        iou_thres: IoU threshold for rotated NMS
-        class_thres: Minimum orientation confidence
-        pre_nms_topk: Top-k scores to keep before NMS
-        max_det: Maximum detections per image
+        model_or_preds: Either a model to run inference, or tuple of predictions
+        images: Input images tensor of shape (B, C, H, W)
+        anchors_xy: Anchor boxes in vertex format (N, 8)
+        image_size: Target image size as (width, height)
+        face_thres: Minimum confidence for face detection (default: 0.5)
+        baby_thres: Minimum confidence for baby detection (default: 0.5)
+        iou_thres: IoU threshold for NMS (default: 0.45)
+        class_thres: Minimum confidence for orientation class (default: 0.60)
+        pre_nms_topk: Maximum predictions to consider before NMS (default: 500)
+        max_det: Maximum detections to return after NMS (default: 300)
 
     Returns:
-        List[Dict[str, Tensor]]: Per-image dictionaries with final predictions
+        List of dictionaries containing filtered predictions for each image:
+            - boxes: Rotated boxes in (cx, cy, w, h, angle) format
+            - scores: Confidence scores
+            - labels: Orientation class labels
+            - polygons: Box vertices in (x1,y1,x2,y2,x3,y3,x4,y4) format
+            - child_score: Baby detection confidence
+            - is_child: Boolean mask indicating baby detections
     """
+    # Run model if needed, otherwise use provided predictions
     if isinstance(model_or_preds, nn.Module):
-        orient_logits, _, deltas, pred_angles, child_logits = model_or_preds(images)
+        orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds(
+            images
+        )
     else:
-        orient_logits, _, deltas, pred_angles, child_logits = model_or_preds
-        assert orient_logits.shape[0] == images.size(0), "Batch size mismatch"
+        orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds
 
-    B = images.size(0)
-    device = images.device
-    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
-    orientation_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
+    B = images.size(0)  # Batch size
+    # Convert logits to probabilities
+    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # Face detection probabilities
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # Baby detection probabilities
+    orientation_probs = F.softmax(
+        orient_logits, dim=-1
+    )  # Orientation class probabilities
 
     outputs = []
-
     for b in range(B):
-        orient_conf, orient_labels = orientation_probs[b].max(-1)  # (N,)
-        score = (
-            orient_conf  # 💡 Usamos solo confianza de orientación como score principal
+        # Get most likely orientation class and confidence
+        orient_conf, orient_labels = orientation_probs[b].max(-1)
+
+        # Filter predictions based on confidence thresholds
+        keep = (
+            (face_prob[b] >= face_thres)
+            & (child_prob[b] >= baby_thres)
+            & (orient_conf >= class_thres)
         )
 
-        # ✅ Filtramos solo si es una cara de bebé con suficiente confianza y orientación confiable
-        keep = (child_prob[b] >= face_thres) & (orient_conf >= class_thres)
+        # Handle case with no valid detections
         if not keep.any():
             outputs.append(
                 dict(
-                    boxes=torch.empty(0, 5, device=device),
-                    scores=torch.empty(0, device=device),
-                    labels=torch.empty(0, device=device),
-                    polygons=torch.empty(0, 8, device=device),
-                    child_score=torch.empty(0, device=device),
-                    is_child=torch.empty(0, device=device, dtype=torch.bool),
+                    boxes=torch.empty(0, 5, device=images.device),
+                    scores=torch.empty(0, device=images.device),
+                    labels=torch.empty(0, device=images.device),
+                    polygons=torch.empty(0, 8, device=images.device),
+                    child_score=torch.empty(0, device=images.device),
+                    is_child=torch.empty(0, dtype=torch.bool, device=images.device),
                 )
             )
             continue
 
-        idx = keep.nonzero(as_tuple=False).squeeze(1)
+        # Get indices of kept predictions and apply top-k filtering
+        idx = keep.nonzero().squeeze(1)
         K = min(pre_nms_topk, idx.numel())
-        topk = score[idx].topk(K, sorted=True).indices
-        sel = idx[topk]  # (K,)
+        score = orient_conf  # Using orientation confidence as final score
+        topk = score[idx].topk(K).indices
+        sel = idx[topk]
 
+        # Decode prediction boxes from deltas
         verts = decode_vertices(
             deltas[b][sel],
-            anchors_xy[sel].to(device),
+            anchors_xy[sel].to(images.device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
-        )  # (K, 8)
+        )
+        # Convert vertices to (cx,cy,w,h,angle) format for NMS
+        xywhr = xyxyxyxy2xywhr(verts, pred_angles[b][sel].squeeze(-1), image_size)
 
-        xywhr = xyxyxyxy2xywhr(
-            verts, pred_angles[b][sel].squeeze(-1), image_size
-        )  # (K, 5)
-
-        # 📌 NMS con orientación
-        keep_nms = nms_rotated(xywhr.to(device), score[sel].to(device), iou_thres)[
-            :max_det
-        ]
+        # Apply rotated NMS and limit detections
+        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
         sel_final = sel[keep_nms]
 
+        # Store filtered predictions
         outputs.append(
-            {
-                "boxes": xywhr[keep_nms],
-                "scores": score[sel][keep_nms],
-                "labels": orient_labels[sel_final].float(),
-                "polygons": verts[keep_nms],
-                "child_score": child_prob[b][sel][keep_nms],
-                "is_child": torch.ones_like(
-                    keep_nms, dtype=torch.bool
-                ),  # ya filtramos por bebés
-            }
+            dict(
+                boxes=xywhr[keep_nms],
+                scores=score[sel][keep_nms],
+                labels=orient_labels[sel_final].float(),
+                polygons=verts[keep_nms],
+                child_score=child_prob[b][sel][keep_nms],
+                is_child=torch.ones_like(keep_nms, dtype=torch.bool),
+            )
         )
-
     return outputs
 
 
@@ -546,8 +566,8 @@ def get_resize_size(dataloader: DataLoader) -> Tuple[int, int]:
     Returns:
         Tuple[int, int]: The resize size (width, height).
     """
-    # Get the first batch from the dataloader
-    sample = next(iter(dataloader))
+    # Get the first sample from the dataloader
+    sample = dataloader.dataset[0]
     # Assuming the dataloader returns a dictionary with an "image" key
     # and the image is in the format (C, H, W)
     # Get the image shape
@@ -612,6 +632,7 @@ def generate_anchors_for_training(
     scale_factors: List[float],
     ratio_factors: List[float],
     anchor_preview_path: Optional[Union[str, Path]] = None,
+    anchors_cache_path: Optional[Union[str, Path]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Generates oriented anchor boxes (OBBs) for the training stage of the model, based on the
@@ -629,12 +650,17 @@ def generate_anchors_for_training(
         scale_factors (List[float]): List of scale multipliers to generate anchors of various sizes.
         ratio_factors (List[float]): List of aspect ratio multipliers to create anchors of different shapes.
         anchor_preview_path (Optional[Union[str, Path]]): Path to save a preview of the generated anchors.
+        anchors_cache_path (Optional[Union[str, Path]]): Path to cache the generated anchors for reuse.
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
             - anchors_xy (torch.Tensor): Anchor boxes in vertex format (N, 8).
             - anchors_xywhr (torch.Tensor): Anchor boxes in (cx, cy, w, h, angle) format (N, 5).
     """
+    if anchors_cache_path and os.path.exists(anchors_cache_path):
+        data = torch.load(anchors_cache_path, map_location=device)
+        return data["anchors_xy"].to(device), data["anchors_xywhr"].to(device)
+
     # Get the output feature map shapes for each FPN level from the model
     feature_shapes = get_feature_map_shapes(
         model, input_shape=(1, 3, resize_size[1], resize_size[0])
@@ -695,15 +721,19 @@ def generate_anchors_for_training(
         for j, i in enumerate(idxs):
             pts = all_anc[i].reshape(4, 2)
             color = cmap(j)
-            poly = MplPolygon(
-                pts, closed=True, fill=False, edgecolor=color, linewidth=0.8
-            )
+            poly = Polygon(pts, closed=True, fill=False, edgecolor=color, linewidth=0.8)
             ax.add_patch(poly)
 
         plt.tight_layout()
         plt.savefig(anchor_preview_path, dpi=150)
         plt.close(fig)
         print(f"[INFO] Anchor preview saved to {anchor_preview_path}")
+
+    if anchors_cache_path:
+        torch.save(
+            {"anchors_xy": anchors_xy.cpu(), "anchors_xywhr": anchors_xywhr.cpu()},
+            anchors_cache_path,
+        )
 
     return anchors_xy, anchors_xywhr
 
@@ -873,20 +903,24 @@ def train_step(
     scheduler: lr_scheduler._LRScheduler,
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    autocast_context: Optional[torch.cuda.amp.autocast] = None,
 ) -> Tuple[float, float, float, float, float]:
     """
     Performs a single training step for the model.
 
     Args:
-        model (nn.Module): The model to train.
-        train_dataloader (DataLoader): DataLoader for the training dataset.
-        loss_fn (nn.Module): Loss function for the model.
-        optimizer (Optimizer): Optimizer for the model.
-        clip_value (float): Value for gradient clipping.
-        grad_clip_mode (str): Mode for gradient clipping ("Norm" or "Value").
-        scheduler (lr_scheduler._LRScheduler): Learning rate scheduler.
-        device (torch.device): Device to use for training.
-        anchors (torch.Tensor): Anchor boxes tensor.
+        - model (nn.Module): The model to train.
+        - train_dataloader (DataLoader): DataLoader for the training dataset.
+        - loss_fn (nn.Module): Loss function for the model.
+        - optimizer (Optimizer): Optimizer for the model.
+        - clip_value (float): Value for gradient clipping.
+        - grad_clip_mode (str): Mode for gradient clipping ("Norm" or "Value").
+        - scheduler (lr_scheduler._LRScheduler): Learning rate scheduler.
+        - device (torch.device): Device to use for training.
+        - anchors (torch.Tensor): Anchor boxes tensor.
+        - scaler (Optional[torch.cuda.amp.GradScaler]): Scaler for mixed precision training.
+        - autocast_context (Optional[torch.cuda.amp.autocast]): Context manager for mixed precision.
 
     Returns:
         Tuple[float, float, float, float, float, float]:
@@ -895,6 +929,8 @@ def train_step(
         - Average face loss
         - Average OBB loss
         - Average angular loss
+        - Average child loss
+        - Average rectification loss
         - And current learning rate.
     """
     model.train()  # Set the model to training mode.
@@ -906,23 +942,6 @@ def train_step(
     child_loss_sum = 0.0
     rect_loss_sum = 0.0
     total_batches = 0
-
-    # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
-    use_amp = device.type == "cuda"
-
-    if use_amp:
-        try:
-            from torch.amp import GradScaler, autocast  # PyTorch >= 2.0
-        except ImportError:
-            from torch.cuda.amp import GradScaler, autocast  # PyTorch < 2.0 fallback
-        scaler = GradScaler()  # Scales gradients to prevent underflow in float16
-        autocast_context = autocast(
-            device_type="cuda", enabled=True
-        )  # Context manager for mixed precision
-        print("[INFO] Using Automatic Mixed Precision (AMP) for training.")
-    else:
-        scaler = None
-        autocast_context = nullcontext()  # No-op context for CPU or no AMP
 
     # Progress bar for training batches
     bar = tqdm(
@@ -957,7 +976,7 @@ def train_step(
                 loss_child,
             ) = loss_fn(pred, targets, batch_anchors, anchors_xywhr, image_sizes)
 
-        if use_amp:
+        if scaler is not None:
             scaler.scale(loss).backward()  # Backward pass with gradient scaling
 
             if clip_value is not None:
@@ -1030,25 +1049,25 @@ def val_step(
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
     face_thres: float = 0.25,
+    baby_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
-    alpha_score: float = 0.7,
 ) -> Tuple[float, float, float, float, float, float]:
     """
     Runs one full evaluation loop on the validation dataset, computing predictions, losses, and rotated mAP.
 
     Args:
-        model (nn.Module): The trained model to evaluate.
-        val_dataloader (DataLoader): DataLoader that provides batches of validation data.
-        loss_fn (nn.Module): Multi-task loss function that returns total and sub-losses.
-        device (torch.device): The device (CPU/GPU) on which computation will be performed.
-        anchors (Tuple[Tensor, Tensor]): A tuple containing:
+        - model (nn.Module): The trained model to evaluate.
+        - val_dataloader (DataLoader): DataLoader that provides batches of validation data.
+        - loss_fn (nn.Module): Multi-task loss function that returns total and sub-losses.
+        - device (torch.device): The device (CPU/GPU) on which computation will be performed.
+        - anchors (Tuple[Tensor, Tensor]): A tuple containing:
             - anchors_xy (Tensor): Tensor of base anchor vertices (N, 8).
             - anchors_xywhr (Tensor): Tensor of anchors in (cx, cy, w, h, θ) format (N, 5).
-        face_thres (float): Confidence threshold for face detection.
-        iou_thres (float): IoU threshold for rotated NMS.
-        class_thres (float): Confidence threshold for class predictions
-        alpha_score (float): Weighting factor for combining face and class scores.
+        - face_thres (float): Confidence threshold for face detection.
+        - iou_thres (float): IoU threshold for rotated NMS.
+        - class_thres (float): Confidence threshold for class predictions
+        - baby_thres (float): Confidence threshold for baby face detection.
 
     Returns:
         Tuple[float, float, float, float, float, float]: A tuple containing:
@@ -1057,6 +1076,8 @@ def val_step(
             - avg_face_loss (float): Average face loss.
             - avg_obb_loss (float): Average oriented bounding box (OBB) loss.
             - avg_angular_loss (float): Average angular prediction loss.
+            - avg_child_loss (float): Average child face probability loss.
+            - avg_rect_loss (float): Average rectangular bounding box loss.
             - mAP (float): Mean Average Precision (mAP) for rotated bounding boxes.
     """
     model.eval()  # Switch model to evaluation mode (no dropout, batchnorm is fixed).
@@ -1097,9 +1118,9 @@ def val_step(
                 anchors_xy,
                 image_size=(images.shape[3], images.shape[2]),
                 face_thres=face_thres,
+                baby_thres=baby_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
-                alpha_score=alpha_score,
             )
 
             # Accumulate predictions and ground truths for each image in the batch
@@ -1207,12 +1228,13 @@ def train(
     scale_factors: List[float] = [0.5, 0.75, 1.0, 1.5],
     ratio_factors: List[float] = [0.85, 1.0, 1.15],
     face_thres: float = 0.25,
+    baby_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
-    alpha_score: float = 0.7,
     grid_shape: Tuple[int, int] = (3, 3),
     csv_path: Union[str, Path] = "training_metrics.csv",
     anchor_preview_path: Optional[Union[str, Path]] = None,
+    anchors_cache_path: Optional[Union[str, Path]] = None,
     inference_preview: Optional[Union[str, Path]] = None,
     show_every_epoch: int = 5,
 ) -> Dict[str, List[float]]:
@@ -1225,33 +1247,34 @@ def train(
     training. Optionally, it integrates with Weights & Biases for tracking metrics and visualizations.
 
     Args:
-        model (nn.Module): The model to train.
-        train_dataloader (DataLoader): DataLoader for the training dataset.
-        val_dataloader (DataLoader): DataLoader for the validation dataset.
-        loss_fn (nn.Module): Loss function for the model.
-        which_optimizer (str): Optimizer to use ('ADAM' or 'SGD').
-        weight_decay (float): Weight decay for the optimizer.
-        learning_rate (float): Learning rate for the optimizer.
-        epochs (int): Number of training epochs.
-        device (torch.device): Device to use for training.
-        early_stopping: Early stopping object (optional).
-        which_scheduler (str, optional): Learning rate scheduler to use ('ReduceLR', 'OneCycle', 'Cosine', or None).
-        clip_value (float, optional): Value for gradient clipping.
-        grad_clip_mode (str, optional): Mode for gradient clipping ('Norm' or 'Value').
-        record_metrics (bool, optional): Whether to record metrics using Weights & Biases.
-        project (str, optional): Weights & Biases project name.
-        run_name (str, optional): Weights & Biases run name.
-        scale_factors (List[float], optional): Scale factors for anchor generation.
-        ratio_factors (List[float], optional): Ratio factors for anchor generation.
-        face_thres (float, optional): Face detection confidence threshold for filtering predictions.
-        iou_thres (float, optional): IoU threshold for rotated NMS.
-        class_thres (float, optional): Class confidence threshold for filtering predictions.
-        grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
-        csv_path (Union[str, Path], optional): Path to save training metrics CSV.
-        alpha_score (float): Weighting factor for combining face and orientation confidence.
-        anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
-        inference_preview (Union[str, Path], optional): Path to save inference preview image.
-        show_every_epoch (int, optional): Frequency of showing inference previews during training.
+        - model (nn.Module): The model to train.
+        - train_dataloader (DataLoader): DataLoader for the training dataset.
+        - val_dataloader (DataLoader): DataLoader for the validation dataset.
+        - loss_fn (nn.Module): Loss function for the model.
+        - which_optimizer (str): Optimizer to use ('ADAM' or 'SGD').
+        - weight_decay (float): Weight decay for the optimizer.
+        - learning_rate (float): Learning rate for the optimizer.
+        - epochs (int): Number of training epochs.
+        - device (torch.device): Device to use for training.
+        - early_stopping: Early stopping object (optional).
+        - which_scheduler (str, optional): Learning rate scheduler to use ('ReduceLR', 'OneCycle', 'Cosine', or None).
+        - clip_value (float, optional): Value for gradient clipping.
+        - grad_clip_mode (str, optional): Mode for gradient clipping ('Norm' or 'Value').
+        - record_metrics (bool, optional): Whether to record metrics using Weights & Biases.
+        - project (str, optional): Weights & Biases project name.
+        - run_name (str, optional): Weights & Biases run name.
+        - scale_factors (List[float], optional): Scale factors for anchor generation.
+        - ratio_factors (List[float], optional): Ratio factors for anchor generation.
+        - face_thres (float, optional): Face detection confidence threshold for filtering predictions.
+        - baby_thres (float, optional): Baby face detection confidence threshold for filtering predictions.
+        - iou_thres (float, optional): IoU threshold for rotated NMS.
+        - class_thres (float, optional): Class confidence threshold for filtering predictions.
+        - grid_shape (Tuple[int, int], optional): Grid shape for inference visualization (rows, cols).
+        - csv_path (Union[str, Path], optional): Path to save training metrics CSV.
+        - anchor_preview_path (Union[str, Path], optional): Path to save anchor preview image.
+        - anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors for reuse.
+        - inference_preview (Union[str, Path], optional): Path to save inference preview image.
+        - show_every_epoch (int, optional): Frequency of showing inference previews during training.
 
     Returns:
         Dict[str, List[float]]: Dictionary containing lists of training and validation metrics.
@@ -1335,8 +1358,26 @@ def train(
         scale_factors=scale_factors,
         ratio_factors=ratio_factors,
         anchor_preview_path=anchor_preview_path,
+        anchors_cache_path=anchors_cache_path,
     )
     anchors_tuple = (anchors_xy, anchors_xywhr)
+
+    # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
+    use_amp = device.type == "cuda"
+
+    if use_amp:
+        try:
+            from torch.amp import GradScaler, autocast  # PyTorch >= 2.0
+        except ImportError:
+            from torch.cuda.amp import GradScaler, autocast  # PyTorch < 2.0 fallback
+        scaler = GradScaler()  # Scales gradients to prevent underflow in float16
+        autocast_context = autocast(
+            device_type="cuda", enabled=True
+        )  # Context manager for mixed precision
+        print("[INFO] Using Automatic Mixed Precision (AMP) for training.")
+    else:
+        scaler = None
+        autocast_context = nullcontext()  # No-op context for CPU or no AMP
 
     start_time = time.time()
     if record_metrics:
@@ -1367,6 +1408,8 @@ def train(
                 scheduler=scheduler,
                 device=device,
                 anchors=anchors_tuple,
+                scaler=scaler,
+                autocast_context=autocast_context,
             )
 
             # Perform a validation step
@@ -1388,7 +1431,7 @@ def train(
                 face_thres=face_thres,
                 iou_thres=iou_thres,
                 class_thres=class_thres,
-                alpha_score=alpha_score,
+                baby_thres=baby_thres,
             )
 
             # Update scheduler if applicable
@@ -1533,7 +1576,7 @@ def in_training_inference(
     decodes and filters predictions, and overlays the predicted and ground-truth oriented bounding
     boxes on the images for visual inspection.
 
-    Ground-truth boxes are drawn in blue (with edge 0→1 in red), and predictions in green (with edge 0→1 in orange).
+    Ground-truth boxes are drawn in green (with edge 0→1 in orange), and predictions in blue (with edge 0→1 in red).
 
     Args:
         model (nn.Module): The model to evaluate.
@@ -1579,36 +1622,45 @@ def in_training_inference(
         ax.imshow(denormalize_image(img_t))  # Restore pixel values to [0,1] range
         ax.axis("off")
 
-        # Plot ground truth polygons in blue, with edge 0→1 in red
+        # Plot ground truth polygons in green, with edge 0→1 in orange
         for poly, lbl in zip(gt_poly, gt_lbl):
             pts = poly.view(4, 2).numpy()
             ax.add_patch(
-                MplPolygon(pts, closed=True, fill=False, edgecolor="blue", linewidth=2)
-            )
-            ax.plot(
-                [pts[0, 0], pts[1, 0]], [pts[0, 1], pts[1, 1]], color="red", linewidth=2
-            )
-
-        # Plot predicted polygons in green, with edge 0→1 in orange
-        p_polys = pred["polygons"].cpu()
-        p_scores = pred["scores"].cpu().numpy()
-        p_lbls = pred["labels"].cpu().numpy().astype(int)
-        for poly, lbl, sc in zip(p_polys, p_lbls, p_scores):
-            pts = poly.view(4, 2).numpy()
-            ax.add_patch(
-                MplPolygon(
+                Polygon(
                     pts,
                     closed=True,
                     fill=False,
                     edgecolor="green",
-                    linewidth=1.5,
-                    linestyle="--",
+                    linewidth=2,
+                    line_style="--",
                 )
             )
             ax.plot(
                 [pts[0, 0], pts[1, 0]],
                 [pts[0, 1], pts[1, 1]],
                 color="orange",
+                linewidth=2,
+            )
+
+        # Plot predicted polygons in blue, with edge 0→1 in red
+        p_polys = pred["polygons"].cpu()
+        p_scores = pred["scores"].cpu().numpy()
+        p_lbls = pred["labels"].cpu().numpy().astype(int)
+        for poly, lbl, sc in zip(p_polys, p_lbls, p_scores):
+            pts = poly.view(4, 2).numpy()
+            ax.add_patch(
+                Polygon(
+                    pts,
+                    closed=True,
+                    fill=False,
+                    edgecolor="blue",
+                    linewidth=2,
+                )
+            )
+            ax.plot(
+                [pts[0, 0], pts[1, 0]],
+                [pts[0, 1], pts[1, 1]],
+                color="red",
                 linewidth=2,
             )
 

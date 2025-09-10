@@ -49,3 +49,16 @@ def get_default_device() -> torch.device:
     #     return torch.device("mps")  # Use MPS if available.
     else:
         return torch.device("cpu")  # Use CPU if no GPU is available.
+
+
+def seed_worker(worker_id: int) -> None:
+    """
+    Seed function for DataLoader workers to ensure reproducibility.
+    Args:
+        worker_id (int): The worker ID provided by DataLoader.
+    Returns:
+        None
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)

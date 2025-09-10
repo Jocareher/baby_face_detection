@@ -23,7 +23,7 @@ from torchinfo import summary
 from data_setup.dataset import BabyFacesDataset, make_balanced_sampler
 from data_setup.collate import custom_collate
 from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
-from utils.helpers import set_seed, get_default_device
+from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference, plot_training_curves_from_csv
 from loss.losses import MultiTaskLoss
@@ -365,6 +365,12 @@ def main():
     print("[INFO] Starting training and inference with args:", vars(args))
 
     # ------------------------------------------------------------------------
+    # 0. Reproducibility
+    # ------------------------------------------------------------------------
+    # Set random seed for reproducibility
+    set_seed(42)
+
+    # ------------------------------------------------------------------------
     # I. Output directory structure
     # ------------------------------------------------------------------------
     output_dir = Path("runs") / args.run_name
@@ -393,9 +399,6 @@ def main():
     # ------------------------------------------------------------------------
     # II. Setup
     # ------------------------------------------------------------------------
-    # Set random seed for reproducibility
-    set_seed(42)
-
     # Get the default device (CPU or GPU)
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
@@ -456,6 +459,7 @@ def main():
             collate_fn=custom_collate,
             num_workers=4,
             pin_memory=True,
+            worker_init_fn=seed_worker,
         )
         print(
             f"[INFO] Using balanced sampler for training dataset with {len(sampler)} samples."
@@ -470,6 +474,7 @@ def main():
             collate_fn=custom_collate,
             num_workers=4,
             pin_memory=True,
+            worker_init_fn=seed_worker,
         )
 
     val_loader = DataLoader(
@@ -479,6 +484,7 @@ def main():
         collate_fn=custom_collate,
         num_workers=4,
         pin_memory=True,
+        worker_init_fn=seed_worker,
     )
 
     # ------------------------------------------------------------------------
@@ -616,6 +622,7 @@ def main():
         collate_fn=custom_collate,
         num_workers=4,
         pin_memory=True,
+        worker_init_fn=seed_worker,
     )
 
     # Visualize and save test dataset samples

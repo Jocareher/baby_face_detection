@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-import os
 import argparse
 from pathlib import Path
 
 import torch
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
-from models.retinababyface import RetinaBabyFace, reset_heads
-from utils.helpers import get_default_device
+from models.retinababyface import RetinaBabyFace
+from utils.helpers import get_default_device, seed_worker, set_seed
 import config
 from engine.inference import inference
 
@@ -114,6 +112,17 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Set random seed for reproducibility
+    set_seed(42)
+
+    # Print the starting message with arguments
+    print("[INFO] Starting training and inference with args:", vars(args))
+
+    # Set random seed for reproducibility
+    set_seed(42)
+
+    # Get the default device (CPU or GPU)
     device = get_default_device()
     print(f"[INFO] Using device: {device}")
 
@@ -140,6 +149,7 @@ def main():
         collate_fn=custom_collate,
         num_workers=4,
         pin_memory=True,
+        worker_init_fn=seed_worker,
     )
 
     print(f"[INFO] Loaded {len(test_dataset)} samples from '{args.split}' split.")

@@ -1630,7 +1630,7 @@ def in_training_inference(
                     fill=False,
                     edgecolor="green",
                     linewidth=2,
-                    line_style="--",
+                    linestyle="--",
                 )
             )
             ax.plot(

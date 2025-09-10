@@ -32,10 +32,6 @@ from utils.repro import save_reproducibility_metadata
 import config
 
 
-import argparse
-import config
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Train and evaluate RetinaBabyFace model"
@@ -142,8 +138,8 @@ def parse_args():
     parser.add_argument(
         "--scheduler",
         type=str,
-        default=config.DEFAULT_SCHEDULER,
-        choices=["ReduceLR", "OneCycle", "Cosine"],
+        default=(config.DEFAULT_SCHEDULER or None),
+        choices=["None", "ReduceLR", "OneCycle", "Cosine"],
         help="Learning rate scheduler: None, ReduceLR, OneCycle, or Cosine.",
     )
     parser.add_argument(
@@ -566,11 +562,16 @@ def main():
     earlystopping = EarlyStopping(
         args.patience, verbose=True, delta=0.001, path=ckpt_path
     )
+    
+    # Handle case where scheduler is "None"
+    if args.scheduler is None or args.scheduler == "None":
+        args.scheduler = None
 
     # ------------------------------------------------------------------------
     # V. Training
     # ------------------------------------------------------------------------
     anchor_cache_path = config.ANCHORS_CACHE_PATH
+    os.makedirs(os.path.dirname(anchor_cache_path), exist_ok=True)
     print(f"[INFO] Using anchors cache path: {anchor_cache_path}")
 
     print("[INFO] Starting training...")

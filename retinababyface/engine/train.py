@@ -351,11 +351,7 @@ def infer_with_rotated_nms(
         orient_conf, orient_labels = orientation_probs[b].max(-1)
 
         # Filter predictions based on confidence thresholds
-        keep = (
-            (face_prob[b] >= face_thres)
-            & (child_prob[b] >= baby_thres)
-            & (orient_conf >= class_thres)
-        )
+        keep = (face_prob[b] >= face_thres) & (orient_conf >= class_thres)
 
         # Handle case with no valid detections
         if not keep.any():
@@ -391,6 +387,8 @@ def infer_with_rotated_nms(
         # Apply rotated NMS and limit detections
         keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
         sel_final = sel[keep_nms]
+        child_scores = child_prob[b][sel][keep_nms]
+        is_child = child_scores >= baby_thres
 
         # Store filtered predictions
         outputs.append(
@@ -399,8 +397,8 @@ def infer_with_rotated_nms(
                 scores=score[sel][keep_nms],
                 labels=orient_labels[sel_final].float(),
                 polygons=verts[keep_nms],
-                child_score=child_prob[b][sel][keep_nms],
-                is_child=torch.ones_like(keep_nms, dtype=torch.bool),
+                child_score=child_scores,
+                is_child=is_child,
             )
         )
     return outputs

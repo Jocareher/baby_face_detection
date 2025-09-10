@@ -480,7 +480,12 @@ def make_balanced_sampler(dataset):
     )  # Assign weights based on inverse frequency.
 
     # 4) Create the WeightedRandomSampler
-    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    return WeightedRandomSampler(
+        weights,
+        num_samples=len(weights),
+        replacement=True,
+        generator=torch.Generator().manual_seed(42),
+    )
 
 
 def remap_labels_in_dataset(root_dir: str) -> None:

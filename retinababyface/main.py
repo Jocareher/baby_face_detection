@@ -562,7 +562,7 @@ def main():
     earlystopping = EarlyStopping(
         args.patience, verbose=True, delta=0.001, path=ckpt_path
     )
-    
+
     # Handle case where scheduler is "None"
     if args.scheduler is None or args.scheduler == "None":
         args.scheduler = None

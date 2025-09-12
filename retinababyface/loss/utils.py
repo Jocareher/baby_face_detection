@@ -449,3 +449,35 @@ def encode_vertices(
     offs = offs / (diag.unsqueeze(-1) * scale)  # (N,4,2)
 
     return offs.reshape(N, 8).clamp_(-1.0, 1.0)
+
+
+def verts_to_xywhr_with_theta(
+    verts: torch.Tensor,  # (N, 8) o (N, 4, 2)
+    theta: torch.Tensor,  # (N,) en radianes (tu θ_pred)
+) -> torch.Tensor:
+    """
+    Proyecta los vértices al marco rotado por -theta y toma los 'soft-extents'
+    para (w,h). Devuelve (cx, cy, w, h, theta). Independiente del orden de vértices.
+    """
+    if verts.ndim == 2:
+        verts = verts.view(-1, 4, 2)
+    N = verts.size(0)
+    theta = theta.view(N)
+
+    # Centro geométrico
+    c = verts.mean(dim=1, keepdim=True)  # (N,1,2)
+    rel = verts - c  # (N,4,2)
+
+    # Ejes unitarios del marco de theta
+    u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)  # (N,1,2)
+    v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(1)  # (N,1,2)
+
+    # Proyecciones en u (x') y v (y')
+    x = (rel * u).sum(dim=-1)  # (N,4)
+    y = (rel * v).sum(dim=-1)  # (N,4)
+
+    w = x.max(dim=1).values - x.min(dim=1).values  # (N,)
+    h = y.max(dim=1).values - y.min(dim=1).values  # (N,)
+
+    cx, cy = c[..., 0].squeeze(1), c[..., 1].squeeze(1)
+    return torch.stack([cx, cy, w, h, theta], dim=1)  # (N,5)

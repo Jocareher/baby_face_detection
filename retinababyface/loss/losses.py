@@ -10,6 +10,7 @@ from .utils import (
     xyxyxyxy2xywhr,
     decode_vertices,
     encode_vertices,
+    verts_to_xywhr_with_theta,
 )
 from data_setup.augmentations import wrap_to_pi
 import config
@@ -439,69 +440,70 @@ class OBBRegressionLoss(nn.Module):
 
 
 def orthogonality_loss(
-    verts: torch.Tensor,
+    verts: torch.Tensor,  # (N,4,2) vértices decodificados EN PIXELES
+    theta: torch.Tensor,  # (N,) ángulo predicho en radianes
     w_angle: float = 1.0,
     w_side: float = 0.5,
+    w_convex: float = 0.2,
     eps: float = 1e-6,
 ) -> torch.Tensor:
     """
-    Computes a regularization loss to encourage quadrilaterals to be rectangles.
-
-    Args:
-        verts (torch.Tensor): Tensor of shape (N, 4, 2) containing N quadrilaterals,
-            each defined by 4 vertices in cyclic order (clockwise or counter-clockwise).
-        w_angle (float): Weight for the orthogonality (right angle) term.
-        w_side (float): Weight for the opposite side length equality term.
-        eps (float): Small value to avoid division by zero.
-
-    Returns:
-        torch.Tensor: Scalar tensor representing the mean orthogonality loss over the batch.
-
-    Loss terms:
-        - Orthogonality: Penalizes deviation from right angles between consecutive edges.
-            L_angle = w_angle * sum_i |cos(theta_i)|^2, where theta_i is the angle between consecutive edges.
-        - Side equality: Penalizes difference in length between opposite sides.
-            L_side = w_side * sum_i ((||edge_i|| / ||edge_opposite_i|| - 1)^2)
-
-        Total loss: L = L_angle + L_side
+    Regulariza a rectángulo usando el marco rotado por -theta.
+    - 'Ortogonalidad': cos^2 entre aristas adyacentes en el marco alineado.
+    - 'Lados opuestos iguales': (|e0|-|e2|, |e1|-|e3|).
+    - 'Convexidad' (anti bow-tie): coherencia de la orientación de cruces entre aristas.
     """
-    # Unpack vertices for each quadrilateral: (N, 2)
-    p0, p1, p2, p3 = verts.unbind(dim=1)
+    if verts.ndim == 2:
+        verts = verts.view(-1, 4, 2)
+    N = verts.size(0)
+    theta = theta.view(N)
 
-    # Compute consecutive edge vectors: (N, 2)
-    edge01 = p1 - p0
-    edge12 = p2 - p1
-    edge23 = p3 - p2
-    edge30 = p0 - p3
+    # Centro + marco rotado
+    c = verts.mean(dim=1, keepdim=True)
+    rel = verts - c
 
-    # Orthogonality between consecutive edges (should be 90 degrees)
-    def cos2_between(e, f):
-        # Returns squared cosine of the angle between e and f, scale-invariant
+    u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)  # (N,1,2)
+    v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(1)  # (N,1,2)
+
+    # Proyección al marco alineado con theta (x', y')
+    x = (rel * u).sum(dim=-1).unsqueeze(-1)  # (N,4,1)
+    y = (rel * v).sum(dim=-1).unsqueeze(-1)  # (N,4,1)
+    p = torch.cat([x, y], dim=-1)  # (N,4,2) coordenadas en marco θ
+
+    # Aristas en ese marco (orden cíclico)
+    p0, p1, p2, p3 = p.unbind(dim=1)
+    e01, e12, e23, e30 = p1 - p0, p2 - p1, p3 - p2, p0 - p3
+
+    def cos2(e, f):
         dot = (e * f).sum(dim=-1)
-        norm = (e.norm(dim=-1) * f.norm(dim=-1)).clamp_min(eps)
-        return (dot / norm).pow(2)
+        nrm = (e.norm(dim=-1) * f.norm(dim=-1)).clamp_min(eps)
+        return (dot / nrm).pow(2)
 
-    # Only two unique angles needed for a rectangle (adjacent edges)
-    ortho_term = cos2_between(edge01, edge12) + cos2_between(edge12, edge23)
-    # Clamp to avoid excessive values
-    ortho_term = ortho_term.clamp(max=1.0)
-
-    # Opposite side length equality
-    len01, len12 = edge01.norm(dim=-1).clamp_min(eps), edge12.norm(dim=-1).clamp_min(
-        eps
-    )  # Clamp to avoid division by zero
-    len23, len30 = edge23.norm(dim=-1).clamp_min(eps), edge30.norm(dim=-1).clamp_min(
-        eps
+    # Ortogonalidad (dos únicas esquinas independientes)
+    ortho = cos2(e01, e12) + cos2(e12, e23)  # (N,)
+    # Lados opuestos (igualdad de longitudes)
+    l01, l12, l23, l30 = (
+        e01.norm(dim=-1).clamp_min(eps),
+        e12.norm(dim=-1).clamp_min(eps),
+        e23.norm(dim=-1).clamp_min(eps),
+        e30.norm(dim=-1).clamp_min(eps),
     )
+    sides = (l01 / l23 - 1).pow(2) + (l12 / l30 - 1).pow(2)  # (N,)
 
-    # Side length equality term
-    side_term = (len01 / len23 - 1).pow(2) + (len12 / len30 - 1).pow(2)
-    # Clamp to avoid excessive values
-    side_term = side_term.clamp(max=4.0)
+    # Convexidad/anti bow-tie: coherencia del signo de los cruces
+    def zcross(a, b):  # componente z de a x b en 2D
+        return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
 
-    # Combine the two terms with their respective weights
-    loss = w_angle * ortho_term + w_side * side_term
-    return loss.mean()  # Return the mean loss over the batch
+    z1 = zcross(e01, e12)
+    z2 = zcross(e12, e23)
+    z3 = zcross(e23, e30)
+    z4 = zcross(e30, e01)
+    # Suavizamos con tanh y pedimos que todos tengan el mismo signo
+    s = torch.tanh(torch.stack([z1, z2, z3, z4], dim=1))
+    convex = 1.0 - s.mean(dim=1).abs()  # 0 si todos coinciden
+
+    loss = w_angle * ortho + w_side * sides + w_convex * convex
+    return loss.mean()
 
 
 class MultiTaskLoss(nn.Module):
@@ -754,7 +756,7 @@ class MultiTaskLoss(nn.Module):
                 verts_1 = decode_vertices(
                     pred_deltas_1, anc_xy_1, ang_1, image_sizes[b]
                 )
-                anc_xywhr_1 = xyxyxyxy2xywhr(verts_1, ang_1, image_sizes[b])
+                anc_xywhr_1 = verts_to_xywhr_with_theta(verts_1, ang_1)
 
             # ---------- Stage 2: Matching provisional OBBs ----------
             pos_mask_2, _, best_gt_2 = match_anchors_to_targets(
@@ -780,7 +782,7 @@ class MultiTaskLoss(nn.Module):
             anc_xy_2 = anchors_xy[b][abs_pos_idx_2]
             ga_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
 
-            obb_loss += self.obb_loss(
+            obb_canonical_loss = self.obb_loss(
                 pred_deltas_2.unsqueeze(0),
                 ga_2.unsqueeze(0).unsqueeze(-1),
                 gt_boxes_2.unsqueeze(0),
@@ -795,7 +797,16 @@ class MultiTaskLoss(nn.Module):
             verts_pred = decode_vertices(
                 pred_deltas_2, anc_xy_2, pa_2, image_sizes[b]
             ).view(-1, 4, 2)
-            rect_loss += orthogonality_loss(verts_pred)
+            rect_loss += orthogonality_loss(verts_pred, pa_2)
+
+            # --- reconstrucción de vértices en píxeles (acopla deltas con θ_pred) ---
+            recon_loss = F.smooth_l1_loss(
+                verts_pred.view(-1, 8),  # (N,8)
+                gt_boxes_2.view(-1, 8),  # (N,8)
+                reduction="mean",
+            )
+
+            obb_loss += 0.5 * obb_canonical_loss + 0.5 * recon_loss
 
             stage2_batches += 1  # Valid positives in stage 2 for this image
 

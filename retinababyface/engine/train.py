@@ -24,7 +24,12 @@ tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter not
 from models.anchors import AnchorGeneratorOBB, get_feature_map_shapes
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
 from data_setup.augmentations import Resize
-from loss.utils import xyxyxyxy2xywhr, decode_vertices, batch_probiou
+from loss.utils import (
+    xyxyxyxy2xywhr,
+    decode_vertices,
+    batch_probiou,
+    verts_to_xywhr_with_theta,
+)
 from utils.visualize import denormalize_image
 import config
 
@@ -382,7 +387,7 @@ def infer_with_rotated_nms(
             image_size,
         )
         # Convert vertices to (cx,cy,w,h,angle) format for NMS
-        xywhr = xyxyxyxy2xywhr(verts, pred_angles[b][sel].squeeze(-1), image_size)
+        xywhr = verts_to_xywhr_with_theta(verts, pred_angles[b][sel].squeeze(-1))
 
         # Apply rotated NMS and limit detections
         keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]

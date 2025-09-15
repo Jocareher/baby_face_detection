@@ -375,7 +375,7 @@ def infer_with_rotated_nms(
         # Get indices of kept predictions and apply top-k filtering
         idx = keep.nonzero().squeeze(1)
         K = min(pre_nms_topk, idx.numel())
-        score = orient_conf  # Using orientation confidence as final score
+        score = face_prob[b] * child_prob[b] * orient_conf # Combined score
         topk = score[idx].topk(K).indices
         sel = idx[topk]
 

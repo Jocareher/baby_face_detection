@@ -1,7 +1,5 @@
 from typing import Optional, Dict, Tuple
-import math
 import os
-
 import torch
 import torch.nn as nn
 from torchvision.models import (
@@ -15,6 +13,7 @@ from torchvision.models import (
     ViT_B_16_Weights,
 )
 from torchvision.models.feature_extraction import create_feature_extractor
+import torch.nn.functional as F
 
 from .context_modules import FPN, SSH, MobileNetV1
 from .vggface_backbone import vggface2_resnet50
@@ -76,33 +75,37 @@ class OBBHead(nn.Module):
 
 class AngleHead(nn.Module):
     """
-    Head module for predicting the rotation angle of the OBB.
-    The output is constrained to the range [0, 2π] using a sigmoid activation,
-    so that the angle remains within a reasonable distance from the anchor.
+    Head module for predicting the rotation angle of the oriented bounding box (OBB)
+    as a continuous value in radians within the range [-π, π].
+    The angle is predicted as a 2D unit vector (cosine, sine) and then converted to
+    an angle in radians using the arctangent function (atan2).
     Output shape:
         - Input: (B, C, H, W)
         - Output: (B, N, 1) where N = H × W × num_anchors
-    The angle is represented in radians.
-    The output is then wrapped to the range [-π, π] using wrap_to_pi function.
-    The output is reshaped to (B, N, 1) where N = H × W × num_anchors
-    The 1 value corresponds to the rotation angle of the OBB.
-
+    Args:
+        inchannels (int): Number of input channels from the feature map.
+    Output:
+        torch.Tensor: Predicted angles in radians, shape (B, N, 1).
+    Note:
+        The output angles are wrapped to the range [-π, π] using the atan2 function.
     """
 
     def __init__(self, inchannels: int = 64):
         super().__init__()
-        self.conv = nn.Conv2d(inchannels, config.NUM_ANCHORS, kernel_size=1)
+        self.conv = nn.Conv2d(inchannels, 2 * config.NUM_ANCHORS, kernel_size=1)
 
     def forward(self, x):
-        # Apply 1x1 convolution, reshape and apply sigmoid to constrain output to [0, 2π]
-        # The output shape is (B, num_anchors * H * W, 1)
-        # The 1 value corresponds to the rotation angle of the OBB.
-        # The output is reshaped to (B, N, 1) where N = H × W × num_anchors
-        # The angle is represented in radians.
-        # The output is then wrapped to the range [-π, π] using wrap_to_pi function.
-        # The output is reshaped to (B, N, 1) where N = H × W × num_anchors
-        raw = torch.sigmoid(self.conv(x).permute(0, 2, 3, 1).contiguous()) * 2 * math.pi
-        return wrap_to_pi(raw).view(x.size(0), -1, 1)
+        # Predict angle as a 2D unit vector (cosine, sine) and convert to angle in radians
+        B, C, H, W = x.shape
+        # Output shape: (B, H * W * num_anchors, 2)
+        v = self.conv(x).permute(0, 2, 3, 1).contiguous()
+        # Reshape to (B, H * W * num_anchors, 2)
+        v = v.view(B, H * W * config.NUM_ANCHORS, 2)
+        # Normalize to unit vector to get (cos(theta), sin(theta))
+        v = F.normalize(v, dim=-1, eps=1e-6)
+        # Compute angle in radians using atan2
+        angle = torch.atan2(v[..., 0], v[..., 1]).unsqueeze(-1)
+        return angle
 
 
 class ClassHead(nn.Module):

@@ -343,13 +343,13 @@ def run_inference(
                                 fn_img += 1
                                 gt_matched[best_gt_idx] = True
 
-                            if true_cls != -1:
-                                y_true.append(true_cls)  # GT class row
-                                y_pred.append(cls_det)  # Predicted class column
+                            # CM and global curves can include classes not in labels_map
+                            y_true.append(true_cls)  # GT class row
+                            y_pred.append(cls_det)  # Predicted class column
+                            all_gts.append(true_cls)
+                            all_preds.append(cls_det)
+                            all_scores.append(score_det)
 
-                                all_gts.append(true_cls)
-                                all_preds.append(cls_det)
-                                all_scores.append(score_det)
                     else:
                         # ---------------- BACKGROUND FALSE POSITIVE --------------
                         # No matching GT with sufficient IoU
@@ -378,25 +378,28 @@ def run_inference(
                         cls_gt = int(gt_labels[i])
 
                         # Update PR/F1 metrics
-                        per_true[cls_gt].append(1)  # True for GT
-                        per_score[cls_gt].append(0.0)  # Score is 0 for unmatched GT
+                        if cls_gt in labels_map:
+                            per_true[cls_gt].append(1)  # True for GT
+                            per_score[cls_gt].append(0.0)  # Score is 0 for unmatched GT
+                            if cls_gt in stats:
+                                stats[cls_gt]["fn"] += 1  # Count as False Negative
+                                fn_img += 1
+                            y_true.append(cls_gt)  # GT class row
+                            y_pred.append(-1)  # Background column
+                        else:
+                            # GT with no original class (should not happen)
+                            y_true.append(-1)
+                            y_pred.append(-1)
+
+                        # This three can include classes not in labels_map
                         all_gts.append(cls_gt)  # GT class
                         all_preds.append(-1)  # Background class
                         all_scores.append(0.0)  # Score is 0 for unmatched GT
 
-                        # Update stats and confusion matrix
-                        if cls_gt in stats:
-                            # Count as False Negative
-                            stats[cls_gt]["fn"] += 1
-                            fn_img += 1
-                        # Update child stats
-                        if cls_gt != -1:
-                            y_true.append(cls_gt)  # GT class row
-                            y_pred.append(-1)  # Background column
-                            gt_baby = bool(gt_child[i].item())
-                            log_child(gt_baby, False)
-
-                        if bool(gt_child[i].item()):
+                        # Update child/adult if needed
+                        gt_baby = bool(gt_child[i].item())
+                        log_child(gt_baby, False)
+                        if gt_baby:
                             child_stats["fn"] += 1
 
                 # ---- Store qualitative sample ----------------------------------
@@ -630,12 +633,6 @@ def plot_confusion_matrix(
 
     print("[INFO] Confusion matrices plotted (raw and normalized).")
     return {"raw": fig_raw, "normalized": fig_norm}
-
-
-from typing import List, Tuple, Dict
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
 
 
 def plot_child_confusion_matrix(

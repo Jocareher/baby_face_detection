@@ -356,7 +356,7 @@ def infer_with_rotated_nms(
         orient_conf, orient_labels = orientation_probs[b].max(-1)
 
         # Filter predictions based on confidence thresholds
-        keep = (face_prob[b] >= face_thres) & (orient_conf >= class_thres)
+        keep = (face_prob[b] >= face_thres) & (child_prob[b] >= baby_thres) & (orient_conf >= class_thres)
 
         # Handle case with no valid detections
         if not keep.any():

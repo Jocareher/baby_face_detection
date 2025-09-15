@@ -4,60 +4,37 @@ import torch
 import numpy as np
 import math
 
+from data_setup.augmentations import wrap_to_pi
+
 
 def xyxyxyxy2xywhr(
     obb: torch.Tensor, angle: torch.Tensor, image_size: Tuple[int, int]
 ) -> torch.Tensor:
     """
-    Converts an oriented bounding box (OBB) from 8-point corner format (xyxyxyxy) and a given rotation angle
-    to the (x_center, y_center, width, height, rotation) format (xywhr) in **absolute pixel coordinates**.
-
-    This function supports both normalized and unnormalized input coordinates. If the coordinates appear
-    to be normalized (i.e., values in [0, 1]), they are automatically scaled using the provided image size.
-
-    Args:
-        obb (torch.Tensor): Tensor of shape (N, 8) or (8,) containing 4 corner points of the OBB in the format:
-                            [x1, y1, x2, y2, x3, y3, x4, y4].
-        angle (torch.Tensor): Tensor of shape (N,) or scalar with angles in radians, one per OBB.
-        image_size (Tuple[int, int]): Size of the image as (width, height).
-
-    Returns:
-        torch.Tensor: Tensor of shape (N, 5) in the format (x_center, y_center, width, height, angle),
-                      all in pixel units.
+    Igual que antes, pero robusto: escala si está normalizado, reshape a (N,4,2)
+    y delega en 'verts_to_xywhr_with_theta' para obtener (cx,cy,w,h,θ) **canónico**.
     """
-    # Check if obb is empty
     if obb.numel() == 0:
         return obb.new_empty((0, 5))
 
-    # Ensure obb is a 2D tensor
     if obb.ndim == 1:
         obb = obb.unsqueeze(0)
     N = obb.shape[0]
     device = obb.device
     W, H = image_size
 
-    # Automatically scale if coordinates are normalized
+    # Escalado si entra normalizado
     if obb.max() <= 1.0:
-        # Scale the coordinates to pixel space
-        # The scale is applied to each coordinate (x, y) of the 4 corners
-        # The scale is repeated for each corner (4 times)
         scale = torch.tensor([W, H] * 4, device=device, dtype=obb.dtype)
         obb_pix = obb * scale
     else:
         obb_pix = obb
 
-    obb_pix = obb_pix.view(N, 4, 2)  # Convert flat to (N, 4, 2)
-    center = obb_pix.mean(dim=1)  # Compute box center from corner average
+    verts = obb_pix.view(N, 4, 2)
+    angle = angle.to(device).view(N)
 
-    p0, p1, p2 = obb_pix[:, 0], obb_pix[:, 1], obb_pix[:, 2]
-    width = (p1 - p0).norm(dim=1)  # Width: distance between point 0 and 1
-    height = (p2 - p1).norm(dim=1)  # Height: distance between point 1 and 2
-
-    angle_tensor = angle.to(device).float().view(-1, 1)  # Ensure shape (N, 1)
-
-    return torch.cat(
-        [center, width.unsqueeze(1), height.unsqueeze(1), angle_tensor], dim=1
-    )
+    # Usa la misma canónica que para las predicciones
+    return verts_to_xywhr_with_theta(verts, angle)
 
 
 def get_covariance_matrix(boxes: torch.Tensor):
@@ -453,11 +430,11 @@ def encode_vertices(
 
 def verts_to_xywhr_with_theta(
     verts: torch.Tensor,  # (N, 8) o (N, 4, 2)
-    theta: torch.Tensor,  # (N,) en radianes (tu θ_pred)
+    theta: torch.Tensor,  # (N,) en radianes (θ predicho o GT)
 ) -> torch.Tensor:
     """
-    Proyecta los vértices al marco rotado por -theta y toma los 'soft-extents'
-    para (w,h). Devuelve (cx, cy, w, h, theta). Independiente del orden de vértices.
+    Convierte vértices -> (cx,cy,w,h,θ) usando la orientación θ para definir ejes,
+    y aplica representación canónica: w >= h; si se intercambian, θ += π/2.
     """
     if verts.ndim == 2:
         verts = verts.view(-1, 4, 2)
@@ -468,16 +445,33 @@ def verts_to_xywhr_with_theta(
     c = verts.mean(dim=1, keepdim=True)  # (N,1,2)
     rel = verts - c  # (N,4,2)
 
-    # Ejes unitarios del marco de theta
+    # Ejes locales (u = [cos,sin], v = [-sin,cos])
     u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)  # (N,1,2)
     v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(1)  # (N,1,2)
 
-    # Proyecciones en u (x') y v (y')
+    # Proyecciones sobre u y v: extremos → ancho y alto
     x = (rel * u).sum(dim=-1)  # (N,4)
     y = (rel * v).sum(dim=-1)  # (N,4)
+    w0 = x.max(dim=1).values - x.min(dim=1).values  # (N,)
+    h0 = y.max(dim=1).values - y.min(dim=1).values  # (N,)
 
-    w = x.max(dim=1).values - x.min(dim=1).values  # (N,)
-    h = y.max(dim=1).values - y.min(dim=1).values  # (N,)
+    # Canónica: w >= h
+    swap = w0 < h0
+    w = torch.where(swap, h0, w0)
+    h = torch.where(swap, w0, h0)
+    th = torch.where(swap, theta + math.pi * 0.5, theta)
+    # Envolver a [-π, π)
+    th = wrap_to_pi(th)
 
-    cx, cy = c[..., 0].squeeze(1), c[..., 1].squeeze(1)
-    return torch.stack([cx, cy, w, h, theta], dim=1)  # (N,5)
+    cx = c[..., 0].squeeze(1)
+    cy = c[..., 1].squeeze(1)
+    return torch.cat(
+        [
+            cx.unsqueeze(1),
+            cy.unsqueeze(1),
+            w.unsqueeze(1),
+            h.unsqueeze(1),
+            th.unsqueeze(1),
+        ],
+        dim=1,
+    )

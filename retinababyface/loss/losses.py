@@ -790,7 +790,7 @@ class MultiTaskLoss(nn.Module):
             )
 
             # ---------- Rotation angle regression loss ----------
-            pa_2 = wrap_to_pi(pred_angles[b][abs_pos_idx_2].squeeze(-1))
+            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)
             rot_loss += self.rot_loss(pa_2.unsqueeze(-1), ga_2.unsqueeze(-1))
 
             # ---------- Orthogonality loss ----------

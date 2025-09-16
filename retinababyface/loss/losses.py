@@ -440,48 +440,65 @@ class OBBRegressionLoss(nn.Module):
 
 
 def orthogonality_loss(
-    verts: torch.Tensor,  # (N,4,2) vértices decodificados EN PIXELES
-    theta: torch.Tensor,  # (N,) ángulo predicho en radianes
+    verts: torch.Tensor,  # (N,4,2) decoded vertices in pixel coordinates
+    theta: torch.Tensor,  # (N,) predicted angle in radians
     w_angle: float = 1.0,
     w_side: float = 0.5,
     w_convex: float = 0.2,
     eps: float = 1e-6,
 ) -> torch.Tensor:
     """
-    Regulariza a rectángulo usando el marco rotado por -theta.
-    - 'Ortogonalidad': cos^2 entre aristas adyacentes en el marco alineado.
-    - 'Lados opuestos iguales': (|e0|-|e2|, |e1|-|e3|).
-    - 'Convexidad' (anti bow-tie): coherencia de la orientación de cruces entre aristas.
+    Rectangle regularization loss for quadrilateral vertices.
+
+    This loss encourages predicted quadrilaterals to be close to rectangles by penalizing:
+        1. Non-orthogonality: Squared cosine between adjacent edges in the rotated frame.
+        2. Unequal opposite sides: Squared difference of lengths between opposite edges.
+        3. Non-convexity (anti bow-tie): Inconsistent orientation of edge cross products.
+
+    Args:
+        verts (torch.Tensor): Decoded vertices, shape (N, 4, 2), in pixel coordinates.
+        theta (torch.Tensor): Predicted rotation angles in radians, shape (N,).
+        w_angle (float): Weight for orthogonality term.
+        w_side (float): Weight for opposite sides equality term.
+        w_convex (float): Weight for convexity term.
+        eps (float): Small value to avoid division by zero.
+
+    Returns:
+        torch.Tensor: Scalar loss value (mean over batch).
     """
+    # Ensure verts shape is (N, 4, 2)
     if verts.ndim == 2:
         verts = verts.view(-1, 4, 2)
     N = verts.size(0)
     theta = theta.view(N)
 
-    # Centro + marco rotado
-    c = verts.mean(dim=1, keepdim=True)
-    rel = verts - c
+    # Compute center of each quadrilateral
+    c = verts.mean(dim=1, keepdim=True)  # (N,1,2)
+    rel = verts - c  # Centered vertices
 
+    # Rotation frame aligned with theta
     u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)  # (N,1,2)
     v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(1)  # (N,1,2)
 
-    # Proyección al marco alineado con theta (x', y')
+    # Project vertices to rotated frame (x', y')
     x = (rel * u).sum(dim=-1).unsqueeze(-1)  # (N,4,1)
     y = (rel * v).sum(dim=-1).unsqueeze(-1)  # (N,4,1)
-    p = torch.cat([x, y], dim=-1)  # (N,4,2) coordenadas en marco θ
+    p = torch.cat([x, y], dim=-1)  # (N,4,2) coordinates in theta frame
 
-    # Aristas en ese marco (orden cíclico)
+    # Compute edges in cyclic order
     p0, p1, p2, p3 = p.unbind(dim=1)
     e01, e12, e23, e30 = p1 - p0, p2 - p1, p3 - p2, p0 - p3
 
     def cos2(e, f):
+        # Squared cosine between vectors e and f
         dot = (e * f).sum(dim=-1)
         nrm = (e.norm(dim=-1) * f.norm(dim=-1)).clamp_min(eps)
         return (dot / nrm).pow(2)
 
-    # Ortogonalidad (dos únicas esquinas independientes)
+    # Orthogonality: penalize non-right angles between adjacent edges
     ortho = cos2(e01, e12) + cos2(e12, e23)  # (N,)
-    # Lados opuestos (igualdad de longitudes)
+
+    # Opposite sides: penalize difference in length between opposite edges
     l01, l12, l23, l30 = (
         e01.norm(dim=-1).clamp_min(eps),
         e12.norm(dim=-1).clamp_min(eps),
@@ -490,18 +507,21 @@ def orthogonality_loss(
     )
     sides = (l01 / l23 - 1).pow(2) + (l12 / l30 - 1).pow(2)  # (N,)
 
-    # Convexidad/anti bow-tie: coherencia del signo de los cruces
-    def zcross(a, b):  # componente z de a x b en 2D
+    def zcross(a, b):
+        # Z component of 2D cross product
         return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
 
+    # Convexity: penalize inconsistent orientation of edge cross products
     z1 = zcross(e01, e12)
     z2 = zcross(e12, e23)
     z3 = zcross(e23, e30)
     z4 = zcross(e30, e01)
-    # Suavizamos con tanh y pedimos que todos tengan el mismo signo
-    s = torch.tanh(torch.stack([z1, z2, z3, z4], dim=1))
-    convex = 1.0 - s.mean(dim=1).abs()  # 0 si todos coinciden
 
+    # Smooth with tanh and require all signs to be consistent
+    s = torch.tanh(torch.stack([z1, z2, z3, z4], dim=1))
+    convex = 1.0 - s.mean(dim=1).abs()  # 0 if all signs match
+
+    # Weighted sum of all terms
     loss = w_angle * ortho + w_side * sides + w_convex * convex
     return loss.mean()
 
@@ -782,6 +802,7 @@ class MultiTaskLoss(nn.Module):
             anc_xy_2 = anchors_xy[b][abs_pos_idx_2]
             ga_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
 
+            # OBB regression loss in canonical space
             obb_canonical_loss = self.obb_loss(
                 pred_deltas_2.unsqueeze(0),
                 ga_2.unsqueeze(0).unsqueeze(-1),
@@ -799,7 +820,9 @@ class MultiTaskLoss(nn.Module):
             ).view(-1, 4, 2)
             rect_loss += orthogonality_loss(verts_pred, pa_2)
 
-            # --- reconstrucción de vértices en píxeles (acopla deltas con θ_pred) ---
+            # --- Reconstruction loss in vertex space (auxiliary) ---
+            # Helps stabilize training, but not used during inference
+            # as it requires GT boxes.
             recon_loss = F.smooth_l1_loss(
                 verts_pred.view(-1, 8),  # (N,8)
                 gt_boxes_2.view(-1, 8),  # (N,8)

@@ -22,6 +22,7 @@ from torchinfo import summary
 
 from data_setup.dataset import BabyFacesDataset, make_balanced_sampler
 from data_setup.collate import custom_collate
+from data_setup.samplers import make_stratified_batch_sampler
 from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
@@ -446,21 +447,24 @@ def main():
     )
 
     if args.balanced_sampler:
-        sampler = make_balanced_sampler(train_dataset)
-        # Create data loaders for training and validation datasets
-        train_loader = DataLoader(
+        batch_sampler, info = make_stratified_batch_sampler(
             train_dataset,
             batch_size=args.batch_size,
-            sampler=sampler,
+            seed=42,
+            replacement=True,
+            drop_last=True,  # BN más estable
+        )
+        print(f"[INFO] Stratified quotas (bs={args.batch_size}): {info['quota']}")
+        print(f"[INFO] Group sizes: {info['groups']}")
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=batch_sampler,  # OJO: usar batch_sampler, no sampler ni batch_size
             collate_fn=custom_collate,
             num_workers=4,
             pin_memory=True,
             worker_init_fn=seed_worker,
         )
-        print(
-            f"[INFO] Using balanced sampler for training dataset with {len(sampler)} samples."
-        )
-
     else:
         # Create data loaders for training and validation datasets
         train_loader = DataLoader(

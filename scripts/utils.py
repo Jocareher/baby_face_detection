@@ -24,10 +24,10 @@ def set_seed(seed_value: int = 42) -> None:
 
     # Setting the random seed for Python's built-in random library
     random.seed(seed_value)
-    
+
 
 def seed_worker():
-    """ Seed function for DataLoader workers to ensure reproducibility. """
+    """Seed function for DataLoader workers to ensure reproducibility."""
     # Get the initial seed for the current worker
     worker_seed = torch.initial_seed() % 2**32
     # Set the seed for numpy and random libraries

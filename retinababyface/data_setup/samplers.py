@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Any, Optional
 import torch
 from torch.utils.data import Sampler, WeightedRandomSampler
 
-# Mapea indices de orientación -> nombre (ajústalo a tu dataset si difiere)
+# Map from class index to orientation name
 class_names = {
     0: "left",
     1: "3_4_left",
@@ -19,24 +19,39 @@ class_names = {
 
 def _read_label_file(txt_path: Path) -> List[Tuple[int, float]]:
     """
-    Lee todas las líneas de un .txt. Devuelve lista [(class_idx, child_prob), ...].
-    Maneja archivo inexistente o vacío -> lista vacía.
+    Reads a label file and extracts class indices and child probabilities.
+
+    This function processes a .txt file where each line contains a class index
+    followed by a child probability. It handles cases where the file does not
+    exist or is empty by returning an empty list.
+
+    Args:
+        txt_path (Path): The path to the label file.
+
+    Returns:
+        List[Tuple[int, float]]: A list of tuples, each containing a class index
+        and its corresponding child probability. If the file is missing or empty,
+        returns an empty list.
     """
     if not txt_path.exists():
-        return []
+        return []  # Return an empty list if the file does not exist.
+
+    # Read lines from the file, stripping whitespace and ignoring empty lines.
     lines = [ln.strip() for ln in txt_path.read_text().splitlines() if ln.strip()]
-    pairs = []
+    pairs = []  # Initialize a list to store (class_idx, child_prob) pairs.
+
     for ln in lines:
-        parts = ln.split()
+        parts = ln.split()  # Split the line into parts.
         if len(parts) < 2:
-            continue
+            continue  # Skip lines that do not have at least two parts.
         try:
-            cls = int(parts[0])
-            child_prob = float(parts[1])
-            pairs.append((cls, child_prob))
-        except Exception:
-            continue
-    return pairs
+            cls = int(parts[0])  # Parse the class index.
+            child_prob = float(parts[1])  # Parse the child probability.
+            pairs.append((cls, child_prob))  # Append the tuple to the list.
+        except ValueError:
+            continue  # Skip lines with invalid data.
+
+    return pairs  # Return the list of (class_idx, child_prob) tuples.
 
 
 def build_group_indices(
@@ -44,12 +59,28 @@ def build_group_indices(
     child_thr: float = 0.5,
 ) -> Dict[str, List[int]]:
     """
-    Agrupa indices del dataset en:
-      child_left, child_3_4_left, child_frontal, child_3_4_right, child_right, adult_only, bg
-    Reglas:
-      - Si hay >=1 niño (child_prob>thr), elige la orientación de niño mayoritaria de esa imagen.
-      - Si no hay niños y hay líneas -> adult_only
-      - Si no hay .txt o .txt vacío -> bg
+    Groups dataset indices based on the presence of children and their orientations.
+
+    This function categorizes indices into the following groups:
+      - child_left
+      - child_3_4_left
+      - child_frontal
+      - child_3_4_right
+      - child_right
+      - adult_only
+      - bg (background)
+
+    Rules for grouping:
+      - If there is at least one child (child_prob > child_thr), the predominant orientation of the child in the image is selected.
+      - If no children are present but there are labels, the image is categorized as adult_only.
+      - If the label file does not exist or is empty, the image is categorized as bg.
+
+    Args:
+        dataset: The dataset containing images and their associated label files.
+        child_thr (float): The threshold for considering a child present based on child probability.
+
+    Returns:
+        Dict[str, List[int]]: A dictionary where keys are group names and values are lists of indices corresponding to those groups.
     """
     labels_dir = Path(dataset.root_dir) / dataset.split / "labels"
     groups = defaultdict(list)
@@ -59,22 +90,24 @@ def build_group_indices(
         pairs = _read_label_file(txt)
 
         if not pairs:
-            groups["bg"].append(i)
+            groups["bg"].append(i)  # No labels found, categorize as background.
             continue
 
-        # Niños por orientación
+        # Extract child orientations based on probabilities
         child_orients = [
             cls for (cls, cp) in pairs if (cp > child_thr and 0 <= cls <= 4)
         ]
         if child_orients:
-            cnt = Counter(child_orients)
-            top_cls, _ = cnt.most_common(1)[0]
-            groups[f"child_{class_names[top_cls]}"].append(i)
+            cnt = Counter(child_orients)  # Count occurrences of each orientation.
+            top_cls, _ = cnt.most_common(1)[0]  # Get the most common orientation.
+            groups[f"child_{class_names[top_cls]}"].append(
+                i
+            )  # Categorize by predominant orientation.
         else:
-            # No hay niños -> adultos
+            # No children detected, categorize as adult_only.
             groups["adult_only"].append(i)
 
-    # Asegura que existan todas las claves
+    # Ensure all group keys exist in the dictionary
     for k in [
         "child_left",
         "child_3_4_left",
@@ -86,7 +119,7 @@ def build_group_indices(
     ]:
         groups.setdefault(k, [])
 
-    return dict(groups)
+    return dict(groups)  # Return the grouped indices as a standard dictionary.
 
 
 def scale_quota_for_batch_size(
@@ -97,12 +130,25 @@ def scale_quota_for_batch_size(
     priority_fill: Optional[List[str]] = None,
 ) -> Dict[str, int]:
     """
-    Escala cuotas definidas para bs=32 a cualquier batch_size.
-    - Redondea y asegura mínimo por clases de niño si hay disponibilidad.
-    - Redistribuye sobrantes o déficits en orden de prioridad.
+    Scales the defined quotas for a batch size of 32 to any specified batch size.
+
+    This function adjusts the quotas for different groups based on the desired batch size,
+    ensuring that minimum quotas for child classes are respected if available. It redistributes
+    any surplus or deficit in quotas according to a specified priority order.
+
+    Args:
+        base_quota_32 (Dict[str, int]): A dictionary defining the base quotas for a batch size of 32.
+        batch_size (int): The desired batch size to scale the quotas for.
+        available (Dict[str, int]): A dictionary indicating the number of available samples for each group.
+        min_per_child (int, optional): The minimum number of samples to allocate for child classes if available. Defaults to 1.
+        priority_fill (Optional[List[str]], optional): A list defining the order of priority for filling quotas.
+            If None, defaults to a predefined order.
+
+    Returns:
+        Dict[str, int]: A dictionary with the scaled quotas for each group, ensuring the total equals the specified batch size.
     """
     if priority_fill is None:
-        # Primero minoritarias de niño, luego 3/4, luego frontal, luego adulto/bg
+        # Define the priority order for filling quotas
         priority_fill = [
             "child_left",
             "child_right",
@@ -113,13 +159,13 @@ def scale_quota_for_batch_size(
             "bg",
         ]
 
-    # 1) Escalado lineal
+    # 1) Linear scaling of quotas based on the batch size
     quota = {}
     for k, v in base_quota_32.items():
         q = int(round(v * batch_size / 32.0))
         quota[k] = q
 
-    # 2) Mínimos para niños si el grupo existe
+    # 2) Ensure minimum quotas for child classes if available
     for k in [
         "child_left",
         "child_right",
@@ -130,7 +176,7 @@ def scale_quota_for_batch_size(
         if available.get(k, 0) > 0:
             quota[k] = max(quota.get(k, 0), min_per_child)
 
-    # 3) Ajuste para que la suma == batch_size
+    # 3) Adjust quotas to ensure the total equals the batch size
     total = sum(quota.values())
 
     def inc(k):
@@ -140,19 +186,18 @@ def scale_quota_for_batch_size(
         quota[k] = max(0, quota.get(k, 0) - 1)
 
     if total < batch_size:
-        # rellenar
+        # Fill the deficit
         deficit = batch_size - total
         j = 0
         while deficit > 0:
             k = priority_fill[j % len(priority_fill)]
-            # sólo sumamos si hay material en ese grupo
             if available.get(k, 0) > 0:
                 inc(k)
                 deficit -= 1
             j += 1
     elif total > batch_size:
-        # recortar empezando por bg/adult/frontal
-        order = list(reversed(priority_fill))  # quita primero bg/adult/frontal
+        # Trim excess starting from less prioritized groups
+        order = list(reversed(priority_fill))  # Remove from bg/adult/frontal first
         excess = total - batch_size
         j = 0
         while excess > 0:
@@ -162,7 +207,7 @@ def scale_quota_for_batch_size(
                 excess -= 1
             j += 1
 
-    # Si algún grupo no existe, pon 0
+    # Set quota to 0 for any group that has no available samples
     for k, n in available.items():
         if n == 0:
             quota[k] = 0
@@ -172,9 +217,19 @@ def scale_quota_for_batch_size(
 
 class StratifiedBatchSampler(Sampler[List[int]]):
     """
-    Devuelve lotes estratificados respetando cuota por grupo.
-    - No repite indices dentro del mismo batch.
-    - Con replacement=True puede repetir a lo largo de la época si el grupo se agota.
+    A sampler that returns stratified batches respecting the quota for each group.
+
+    This sampler ensures that:
+    - No indices are repeated within the same batch.
+    - If replacement is enabled, indices can be repeated across epochs if a group is exhausted.
+
+    Args:
+        groups (Dict[str, List[int]]): A dictionary where keys are group names and values are lists of indices for each group.
+        batch_quota (Dict[str, int]): A dictionary defining the number of samples to draw from each group for a batch.
+        n_batches (int): The total number of batches to generate.
+        seed (int, optional): Random seed for reproducibility. Defaults to 42.
+        replacement (bool, optional): If True, allows indices to be reused across batches. Defaults to True.
+        drop_last (bool, optional): If True, drops the last batch if it is smaller than the specified batch size. Defaults to True.
     """
 
     def __init__(
@@ -186,42 +241,52 @@ class StratifiedBatchSampler(Sampler[List[int]]):
         replacement: bool = True,
         drop_last: bool = True,
     ):
-        self.groups = {k: list(v) for k, v in groups.items()}
-        self.batch_quota = dict(batch_quota)
-        self.n_batches = n_batches
-        self.replacement = replacement
-        self.drop_last = drop_last
-        self.rng = random.Random(seed)
+        self.groups = {k: list(v) for k, v in groups.items()}  # Store groups as lists
+        self.batch_quota = dict(batch_quota)  # Store batch quotas
+        self.n_batches = n_batches  # Total number of batches
+        self.replacement = replacement  # Replacement flag
+        self.drop_last = drop_last  # Drop last batch flag
+        self.rng = random.Random(seed)  # Random number generator
 
-        # Crea colas por grupo
+        # Create queues for each group
         self.pools = {}
         for k, idxs in self.groups.items():
-            self.rng.shuffle(idxs)
-            self.pools[k] = deque(idxs)
+            self.rng.shuffle(idxs)  # Shuffle indices for randomness
+            self.pools[k] = deque(idxs)  # Use deque for efficient pops
 
-        # Pre-chequeo: suma de cuotas
+        # Pre-check: sum of quotas must be greater than zero
         self.batch_size = sum(self.batch_quota.values())
-        assert self.batch_size > 0, "batch_quota suma 0."
+        assert self.batch_size > 0, "batch_quota sum must be greater than 0."
 
     def __len__(self):
         return self.n_batches if self.drop_last else self.n_batches
 
     def _draw_from_group(self, k: str, q: int) -> List[int]:
+        """
+        Draws samples from a specified group.
+
+        Args:
+            k (str): The group key from which to draw samples.
+            q (int): The number of samples to draw.
+
+        Returns:
+            List[int]: A list of drawn indices from the specified group.
+        """
         out = []
-        pool = self.pools[k]
+        pool = self.pools[k]  # Get the pool for the group
         for _ in range(q):
             if pool:
-                out.append(pool.popleft())
+                out.append(pool.popleft())  # Draw from the pool
             else:
                 if not self.replacement or len(self.groups[k]) == 0:
-                    # Sin material: salta (o podrías robar de otros grupos)
+                    # If no material and no replacement, skip
                     continue
-                # Re-arma el pool con shuffle y saca uno
+                # Refill the pool and shuffle if exhausted
                 refill = list(self.groups[k])
                 self.rng.shuffle(refill)
                 pool.extend(refill)
-                out.append(pool.popleft())
-        # Evita duplicados accidentales si q>len(grupo) y replacement=False (raro)
+                out.append(pool.popleft())  # Draw from the refilled pool
+        # Avoid accidental duplicates if q > len(group) and replacement is False
         return list(dict.fromkeys(out))
 
     def __iter__(self):
@@ -230,11 +295,11 @@ class StratifiedBatchSampler(Sampler[List[int]]):
             for k, q in self.batch_quota.items():
                 if q <= 0:
                     continue
-                batch.extend(self._draw_from_group(k, q))
+                batch.extend(self._draw_from_group(k, q))  # Draw samples for the batch
 
-            # Si por falta de material el batch quedó corto, rellena al vuelo
+            # If the batch is short due to lack of material, fill on the fly
             if len(batch) < self.batch_size:
-                # pick desde todos los grupos con material
+                # Pick from all groups with available material
                 flat = [i for v in self.groups.values() for i in v]
                 if flat:
                     need = self.batch_size - len(batch)
@@ -244,7 +309,7 @@ class StratifiedBatchSampler(Sampler[List[int]]):
                         if not self.replacement
                         else [self.rng.choice(flat) for _ in range(need)]
                     )
-                    # evita duplicados dentro del mismo batch
+                    # Avoid duplicates within the same batch
                     seen = set(batch)
                     for a in add:
                         if a not in seen:
@@ -253,7 +318,7 @@ class StratifiedBatchSampler(Sampler[List[int]]):
                         if len(batch) == self.batch_size:
                             break
 
-            yield batch
+            yield batch  # Yield the constructed batch
 
 
 def make_stratified_batch_sampler(
@@ -263,12 +328,31 @@ def make_stratified_batch_sampler(
     replacement: bool = True,
     drop_last: bool = True,
 ):
+    """
+    Creates a stratified batch sampler for the given dataset.
+
+    This function builds a sampler that generates batches of data while maintaining
+    the specified distribution of classes. It ensures that each batch contains a
+    balanced representation of different groups based on the defined quotas.
+
+    Args:
+        dataset: The dataset containing images and their associated label files.
+        batch_size (int): The desired size of each batch.
+        seed (int, optional): Random seed for reproducibility. Defaults to 42.
+        replacement (bool, optional): If True, allows indices to be reused across batches. Defaults to True.
+        drop_last (bool, optional): If True, drops the last batch if it is smaller than the specified batch size. Defaults to True.
+
+    Returns:
+        Tuple[StratifiedBatchSampler, Dict[str, Dict[str, int]]]: A tuple containing the stratified batch sampler
+        and a dictionary with the available groups and their corresponding quotas.
+    """
+    # Build group indices based on the dataset
     groups = build_group_indices(dataset, child_thr=0.5)
 
-    # Disponibilidad por grupo
+    # Count the number of available samples in each group
     available = {k: len(v) for k, v in groups.items()}
 
-    # Cuota base pensada para bs=32 (ajústala si quieres otra priorización)
+    # Define base quotas for a batch size of 32
     base_quota_32 = {
         "child_left": 3,
         "child_3_4_left": 4,
@@ -277,22 +361,26 @@ def make_stratified_batch_sampler(
         "child_right": 3,
         "adult_only": 6,
         "bg": 6,
-    }  # suma = 32
+    }  # Total sum = 32
 
+    # Scale the quotas based on the desired batch size
     batch_quota = scale_quota_for_batch_size(
         base_quota_32=base_quota_32,
         batch_size=batch_size,
         available=available,
-        min_per_child=1 if batch_size <= 16 else 2,  # mínimos por orientación
+        min_per_child=1
+        if batch_size <= 16
+        else 2,  # Minimum samples per child orientation
     )
 
-    # nº de batches por época
+    # Calculate the number of batches per epoch
     n_batches = (
         len(dataset) // batch_size
         if drop_last
         else math.ceil(len(dataset) / batch_size)
     )
 
+    # Create the stratified batch sampler
     sampler = StratifiedBatchSampler(
         groups=groups,
         batch_quota=batch_quota,

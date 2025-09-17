@@ -5,7 +5,7 @@ from collections import defaultdict, Counter, deque
 from typing import Dict, List, Tuple, Any, Optional
 
 import torch
-from torch.utils.data import Sampler
+from torch.utils.data import Sampler, WeightedRandomSampler
 
 # Mapea indices de orientación -> nombre (ajústalo a tu dataset si difiere)
 class_names = {
@@ -303,3 +303,55 @@ def make_stratified_batch_sampler(
     )
 
     return sampler, {"groups": available, "quota": batch_quota}
+
+
+def make_balanced_sampler(dataset):
+    """
+    Creates a WeightedRandomSampler for balancing the dataset based on class frequencies.
+
+    This function reads only the .txt label files associated with the dataset, avoiding the need to load images or apply augmentations.
+    It assigns weights inversely proportional to the frequency of the dominant class in each image.
+
+    Args:
+        dataset (BabyFacesDataset): An instance of the BabyFacesDataset.
+
+    Returns:
+        WeightedRandomSampler: A sampler that balances the dataset based on class frequencies.
+    """
+    # 1) Build a list of paths to the label files
+    #    The dataset exposes root_dir, split, and file_list attributes.
+    labels_dir: Path = Path(dataset.root_dir) / dataset.split / "labels"
+    label_files: List[Path] = [labels_dir / f"{stem}.txt" for stem in dataset.file_list]
+
+    # 2) Determine the dominant class for each image
+    #    If no faces are present, assign -1 as the dominant class.
+    dominant: List[int] = []
+    for txt in label_files:
+        if (
+            not txt.exists()
+        ):  # If the label file does not exist, treat as background (-1).
+            dominant.append(-1)
+            continue
+        with open(txt, "r") as f:
+            line = f.readline().strip()  # Read the first line of the label file.
+            if line == "":  # If the file is empty, treat as background (-1).
+                dominant.append(-1)
+            else:
+                cls: int = int(
+                    line.split()[0]
+                )  # Extract the class index from the first line.
+                dominant.append(cls)
+
+    # 3) Compute weights inversely proportional to class frequency
+    freq: Counter = Counter(dominant)  # Count occurrences of each class.
+    weights: torch.Tensor = torch.tensor(
+        [1.0 / freq[c] for c in dominant], dtype=torch.float
+    )  # Assign weights based on inverse frequency.
+
+    # 4) Create the WeightedRandomSampler
+    return WeightedRandomSampler(
+        weights,
+        num_samples=len(weights),
+        replacement=True,
+        generator=torch.Generator().manual_seed(42),
+    )

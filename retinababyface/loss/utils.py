@@ -443,7 +443,7 @@ def encode_vertices(
     return offs.reshape(N, 8).clamp_(-1.0, 1.0)
 
 
-def verts_to_xywhr_strict(verts: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+def verts_to_xywhr_with_theta(verts: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     if verts.ndim == 2:
         verts = verts.view(-1, 4, 2)
     N = verts.size(0)

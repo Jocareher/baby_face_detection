@@ -452,14 +452,14 @@ def main():
             batch_size=args.batch_size,
             seed=42,
             replacement=True,
-            drop_last=True,  # BN más estable
+            drop_last=True,  # to ensure all batches have the same size. More stable for batchnorm
         )
         print(f"[INFO] Stratified quotas (bs={args.batch_size}): {info['quota']}")
         print(f"[INFO] Group sizes: {info['groups']}")
 
         train_loader = DataLoader(
             train_dataset,
-            batch_sampler=batch_sampler,  # OJO: usar batch_sampler, no sampler ni batch_size
+            batch_sampler=batch_sampler,  # Do not use batch_size and shuffle with batch_sampler
             collate_fn=custom_collate,
             num_workers=4,
             pin_memory=True,

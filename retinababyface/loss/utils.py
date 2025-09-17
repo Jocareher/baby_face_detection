@@ -444,23 +444,52 @@ def encode_vertices(
 
 
 def verts_to_xywhr_with_theta(verts: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+    """
+    Converts vertices of oriented bounding boxes to canonical (x, y, w, h, θ) format.
+
+    Takes a set of 4 vertices defining oriented bounding boxes and their rotation angles,
+    and converts them to center coordinates, width, height and canonical rotation angle.
+    The rotation is wrapped to [-π, π] and width/height are ordered so width >= height.
+
+    Args:
+        verts (torch.Tensor): Tensor of shape (N, 4, 2) or (N, 8) containing vertices
+                             of oriented bounding boxes.
+        theta (torch.Tensor): Tensor of shape (N,) containing rotation angles in radians.
+
+    Returns:
+        torch.Tensor: Tensor of shape (N, 5) in (cx, cy, w, h, θ) format where:
+            - cx, cy: center coordinates
+            - w, h: width and height (w >= h)
+            - θ: rotation angle in radians, wrapped to [-π, π]
+    """
+    # Ensure vertices are in (N,4,2) format
     if verts.ndim == 2:
         verts = verts.view(-1, 4, 2)
     N = verts.size(0)
     theta = theta.view(N)
 
-    c = verts.mean(dim=1, keepdim=True)      # (N,1,2)
-    rel = verts - c                          # (N,4,2)
+    # Get box centers by averaging vertices
+    c = verts.mean(dim=1, keepdim=True)  # (N,1,2)
+    rel = verts - c  # Center vertices at origin
 
-    u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)   # eje cejas
-    v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(1)  # ortogonal
+    # Create unit vectors along rotated axes
+    u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)  # Primary axis
+    v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(
+        1
+    )  # Perpendicular axis
 
-    x = (rel * u).sum(dim=-1)   # proyección sobre u
-    y = (rel * v).sum(dim=-1)   # proyección sobre v
+    # Project vertices onto rotated axes
+    x = (rel * u).sum(dim=-1)  # Projections on primary axis
+    y = (rel * v).sum(dim=-1)  # Projections on perpendicular axis
 
+    # Compute width and height as span of projections
     w = x.max(1).values - x.min(1).values
     h = y.max(1).values - y.min(1).values
 
-    cx = c[..., 0].squeeze(1); cy = c[..., 1].squeeze(1)
+    # Extract center coordinates and wrap angle to [-π, π]
+    cx = c[..., 0].squeeze(1)
+    cy = c[..., 1].squeeze(1)
     th = wrap_to_pi(theta)
-    return torch.stack([cx, cy, w, h, th], dim=1)   # SIN swap
+
+    # Return in canonical format
+    return torch.stack([cx, cy, w, h, th], dim=1)

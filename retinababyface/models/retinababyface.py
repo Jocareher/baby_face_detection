@@ -104,7 +104,7 @@ class AngleHead(nn.Module):
         # Normalize to unit vector to get (cos(theta), sin(theta))
         v = F.normalize(v, dim=-1, eps=1e-6)
         # Compute angle in radians using atan2
-        angle = torch.atan2(v[..., 0], v[..., 1]).unsqueeze(-1)
+        angle = torch.atan2(v[..., 1], v[..., 0]).unsqueeze(-1)
         return angle
 
 

@@ -439,91 +439,56 @@ class OBBRegressionLoss(nn.Module):
             )
 
 
-def orthogonality_loss(
-    verts: torch.Tensor,  # (N,4,2) decoded vertices in pixel coordinates
-    theta: torch.Tensor,  # (N,) predicted angle in radians
-    w_angle: float = 1.0,
-    w_side: float = 0.5,
-    w_convex: float = 0.2,
-    eps: float = 1e-6,
-) -> torch.Tensor:
+def orthogonality_loss(verts: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """
-    Rectangle regularization loss for quadrilateral vertices.
+    Computes the orthogonality loss for a set of vertices representing a rectangle.
 
-    This loss encourages predicted quadrilaterals to be close to rectangles by penalizing:
-        1. Non-orthogonality: Squared cosine between adjacent edges in the rotated frame.
-        2. Unequal opposite sides: Squared difference of lengths between opposite edges.
-        3. Non-convexity (anti bow-tie): Inconsistent orientation of edge cross products.
+    The loss encourages the following properties:
+        1. Orthogonality between adjacent edges (should be close to 90 degrees).
+        2. Parallelism between opposite edges (should be close to parallel).
+        3. Equality of lengths of opposite edges (invariant to global scale).
 
     Args:
-        verts (torch.Tensor): Decoded vertices, shape (N, 4, 2), in pixel coordinates.
-        theta (torch.Tensor): Predicted rotation angles in radians, shape (N,).
-        w_angle (float): Weight for orthogonality term.
-        w_side (float): Weight for opposite sides equality term.
-        w_convex (float): Weight for convexity term.
-        eps (float): Small value to avoid division by zero.
+        verts (torch.Tensor): Tensor of shape (N, 8) or (N, 4, 2) representing the vertices of rectangles.
+                              Each rectangle is defined by its vertices in either vertex format or as pairs of coordinates.
+        eps (float): Small value to prevent division by zero in calculations.
 
     Returns:
-        torch.Tensor: Scalar loss value (mean over batch).
+        torch.Tensor: Mean orthogonality loss across all rectangles.
     """
-    # Ensure verts shape is (N, 4, 2)
+    # Reshape vertices to (N, 4, 2) if they are in (N, 8) format
     if verts.ndim == 2:
         verts = verts.view(-1, 4, 2)
-    N = verts.size(0)
-    theta = theta.view(N)
 
-    # Compute center of each quadrilateral
-    c = verts.mean(dim=1, keepdim=True)  # (N,1,2)
-    rel = verts - c  # Centered vertices
+    # Calculate edge vectors
+    e0 = verts[:, 1] - verts[:, 0]  # Edge from v0 to v1
+    e1 = verts[:, 2] - verts[:, 1]  # Edge from v1 to v2
+    e2 = verts[:, 3] - verts[:, 2]  # Edge from v2 to v3
+    e3 = verts[:, 0] - verts[:, 3]  # Edge from v3 to v0
 
-    # Rotation frame aligned with theta
-    u = torch.stack([theta.cos(), theta.sin()], dim=1).unsqueeze(1)  # (N,1,2)
-    v = torch.stack([-theta.sin(), theta.cos()], dim=1).unsqueeze(1)  # (N,1,2)
+    def cos2(a, b):
+        """Calculate the squared cosine of the angle between two vectors."""
+        num = (a * b).sum(-1)
+        den = (a.norm(dim=-1) * b.norm(dim=-1)).clamp_min(eps)
+        return (num / den).pow(2)
 
-    # Project vertices to rotated frame (x', y')
-    x = (rel * u).sum(dim=-1).unsqueeze(-1)  # (N,4,1)
-    y = (rel * v).sum(dim=-1).unsqueeze(-1)  # (N,4,1)
-    p = torch.cat([x, y], dim=-1)  # (N,4,2) coordinates in theta frame
+    # (1) Orthogonality between adjacent edges: cos^2 should be close to 0
+    L_orth = cos2(e0, e1) + cos2(e1, e2) + cos2(e2, e3) + cos2(e3, e0)
 
-    # Compute edges in cyclic order
-    p0, p1, p2, p3 = p.unbind(dim=1)
-    e01, e12, e23, e30 = p1 - p0, p2 - p1, p3 - p2, p0 - p3
+    # (2) Parallelism between opposite edges: |cos| should be close to 1
+    par02 = (e0 * e2).sum(-1) / (e0.norm(dim=-1) * e2.norm(dim=-1) + eps)
+    par13 = (e1 * e3).sum(-1) / (e1.norm(dim=-1) * e3.norm(dim=-1) + eps)
+    L_par = (1 - par02.abs()) + (1 - par13.abs())
 
-    def cos2(e, f):
-        # Squared cosine between vectors e and f
-        dot = (e * f).sum(dim=-1)
-        nrm = (e.norm(dim=-1) * f.norm(dim=-1)).clamp_min(eps)
-        return (dot / nrm).pow(2)
+    # (3) Equality of lengths of opposite edges
+    def len_term(a, b):
+        la, lb = a.norm(dim=-1), b.norm(dim=-1)
+        return ((la - lb) / (la + lb + eps)).pow(2)
 
-    # Orthogonality: penalize non-right angles between adjacent edges
-    ortho = cos2(e01, e12) + cos2(e12, e23)  # (N,)
+    L_len = len_term(e0, e2) + len_term(e1, e3)
 
-    # Opposite sides: penalize difference in length between opposite edges
-    l01, l12, l23, l30 = (
-        e01.norm(dim=-1).clamp_min(eps),
-        e12.norm(dim=-1).clamp_min(eps),
-        e23.norm(dim=-1).clamp_min(eps),
-        e30.norm(dim=-1).clamp_min(eps),
-    )
-    sides = (l01 / l23 - 1).pow(2) + (l12 / l30 - 1).pow(2)  # (N,)
-
-    def zcross(a, b):
-        # Z component of 2D cross product
-        return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
-
-    # Convexity: penalize inconsistent orientation of edge cross products
-    z1 = zcross(e01, e12)
-    z2 = zcross(e12, e23)
-    z3 = zcross(e23, e30)
-    z4 = zcross(e30, e01)
-
-    # Smooth with tanh and require all signs to be consistent
-    s = torch.tanh(torch.stack([z1, z2, z3, z4], dim=1))
-    convex = 1.0 - s.mean(dim=1).abs()  # 0 if all signs match
-
-    # Weighted sum of all terms
-    loss = w_angle * ortho + w_side * sides + w_convex * convex
-    return loss.mean()
+    # Return the mean loss across all rectangles
+    return (L_orth + L_par + L_len).mean()
 
 
 class MultiTaskLoss(nn.Module):
@@ -818,7 +783,7 @@ class MultiTaskLoss(nn.Module):
             verts_pred = decode_vertices(
                 pred_deltas_2, anc_xy_2, pa_2, image_sizes[b]
             ).view(-1, 4, 2)
-            rect_loss += orthogonality_loss(verts_pred, pa_2)
+            rect_loss += orthogonality_loss(verts_pred)
 
             # --- Reconstruction loss in vertex space (auxiliary) ---
             # Helps stabilize training, but not used during inference

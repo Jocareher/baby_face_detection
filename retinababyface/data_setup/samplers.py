@@ -17,7 +17,7 @@ class_names = {
 }
 
 
-def _read_label_file(txt_path: Path) -> List[Tuple[int, float]]:
+def read_label_file(txt_path: Path) -> List[Tuple[int, float]]:
     """
     Reads a label file and extracts class indices and child probabilities.
 
@@ -87,7 +87,7 @@ def build_group_indices(
 
     for i, stem in enumerate(dataset.file_list):
         txt = labels_dir / f"{stem}.txt"
-        pairs = _read_label_file(txt)
+        pairs = read_label_file(txt)
 
         if not pairs:
             groups["bg"].append(i)  # No labels found, categorize as background.
@@ -261,7 +261,7 @@ class StratifiedBatchSampler(Sampler[List[int]]):
     def __len__(self):
         return self.n_batches if self.drop_last else self.n_batches
 
-    def _draw_from_group(self, k: str, q: int) -> List[int]:
+    def draw_from_group(self, k: str, q: int) -> List[int]:
         """
         Draws samples from a specified group.
 
@@ -295,7 +295,7 @@ class StratifiedBatchSampler(Sampler[List[int]]):
             for k, q in self.batch_quota.items():
                 if q <= 0:
                     continue
-                batch.extend(self._draw_from_group(k, q))  # Draw samples for the batch
+                batch.extend(self.draw_from_group(k, q))  # Draw samples for the batch
 
             # If the batch is short due to lack of material, fill on the fly
             if len(batch) < self.batch_size:
@@ -393,53 +393,144 @@ def make_stratified_batch_sampler(
     return sampler, {"groups": available, "quota": batch_quota}
 
 
-def make_balanced_sampler(dataset):
-    """
-    Creates a WeightedRandomSampler for balancing the dataset based on class frequencies.
+labels_maps = {
+    -2: "BG",
+    -1: "Adult",
+    0: "Leftside",
+    1: "3/4 Leftside",
+    2: "Frontal",
+    3: "3/4 Rightside",
+    4: "Rightside",
+}
 
-    This function reads only the .txt label files associated with the dataset, avoiding the need to load images or apply augmentations.
-    It assigns weights inversely proportional to the frequency of the dominant class in each image.
+
+def dominant_group_for_label_file(txt_path: Path) -> int:
+    """
+    Determines the dominant group for a given label file.
+
+    This function analyzes a label file to identify the predominant group based on the
+    class indices present in the file. The rules for determining the dominant group are as follows:
+      - If the file does not exist or is empty, it returns BG (-2).
+      - It counts all lines in the file; lines with class_idx == -1 are counted as Adult.
+      - Class indices in the range [0..4] are counted towards their respective orientations.
+      - The group with the highest count is considered the dominant group. In case of a tie,
+        non-BG groups are prioritized if they exist.
 
     Args:
-        dataset (BabyFacesDataset): An instance of the BabyFacesDataset.
+        txt_path (Path): The path to the label file to be analyzed.
 
     Returns:
-        WeightedRandomSampler: A sampler that balances the dataset based on class frequencies.
+        int: The dominant group index. Possible values include:
+            - -2: Background (BG)
+            - -1: Adult
+            - 0 to 4: Corresponding to different orientations (left, 3/4 left, frontal, 3/4 right, right).
     """
-    # 1) Build a list of paths to the label files
-    #    The dataset exposes root_dir, split, and file_list attributes.
-    labels_dir: Path = Path(dataset.root_dir) / dataset.split / "labels"
-    label_files: List[Path] = [labels_dir / f"{stem}.txt" for stem in dataset.file_list]
+    if (not txt_path.exists()) or txt_path.stat().st_size == 0:
+        return -2  # BG
 
-    # 2) Determine the dominant class for each image
-    #    If no faces are present, assign -1 as the dominant class.
-    dominant: List[int] = []
+    counts = Counter()  # Initialize a counter to track occurrences of each class
+    with open(txt_path, "r") as f:
+        for line in f:
+            line = line.strip()  # Remove leading/trailing whitespace
+            if not line:
+                continue  # Skip empty lines
+            parts = line.split()  # Split the line into parts
+            try:
+                cls = int(float(parts[0]))  # Parse the class index
+            except Exception:
+                continue  # Skip lines with invalid data
+            if cls == -1:
+                counts[-1] += 1  # Count as Adult
+            elif 0 <= cls <= 4:
+                counts[cls] += 1  # Count towards the respective orientation
+
+    if not counts:
+        return -2  # If no interpretable data, treat as BG
+
+    # Determine the dominant group based on the counts
+    group, _ = counts.most_common(1)[0]  # Get the most common group
+    return group
+
+
+def scan_dataset_groups(dataset) -> Tuple[List[int], Dict[int, int]]:
+    """
+    Scans the dataset to determine the group associated with each image and
+    calculates the frequency of each group.
+
+    This function reads the label files for each image in the dataset and
+    identifies the dominant group for each image using the
+    `dominant_group_for_label_file` function. It returns a list of group
+    indices corresponding to each image and a frequency count of how many
+    images belong to each group.
+
+    Args:
+        dataset: The dataset containing images and their associated label files.
+
+    Returns:
+        Tuple[List[int], Dict[int, int]]: A tuple containing:
+            - groups_per_image: A list of group indices (one for each image).
+            - freqs: A dictionary (Counter) with the frequency of each group.
+    """
+    labels_dir = Path(dataset.root_dir) / dataset.split / "labels"
+    label_files = [labels_dir / f"{stem}.txt" for stem in dataset.file_list]
+
+    groups = []
     for txt in label_files:
-        if (
-            not txt.exists()
-        ):  # If the label file does not exist, treat as background (-1).
-            dominant.append(-1)
-            continue
-        with open(txt, "r") as f:
-            line = f.readline().strip()  # Read the first line of the label file.
-            if line == "":  # If the file is empty, treat as background (-1).
-                dominant.append(-1)
-            else:
-                cls: int = int(
-                    line.split()[0]
-                )  # Extract the class index from the first line.
-                dominant.append(cls)
+        g = dominant_group_for_label_file(
+            txt
+        )  # Determine the dominant group for the label file
+        groups.append(g)  # Append the group index to the list
 
-    # 3) Compute weights inversely proportional to class frequency
-    freq: Counter = Counter(dominant)  # Count occurrences of each class.
-    weights: torch.Tensor = torch.tensor(
-        [1.0 / freq[c] for c in dominant], dtype=torch.float
-    )  # Assign weights based on inverse frequency.
+    freqs = Counter(groups)  # Count the frequency of each group
+    return groups, freqs  # Return the list of groups and their frequencies
 
-    # 4) Create the WeightedRandomSampler
-    return WeightedRandomSampler(
+
+def make_weighted_sampler(dataset, smooth: float = 0.0, seed: int = 42):
+    """
+    Creates a weighted sampler for the dataset, assigning weights to each image
+    inversely proportional to the frequency of its dominant group. This helps
+    balance the sampling across different groups, especially in cases where
+    some groups may be underrepresented.
+
+    Args:
+        dataset: The dataset containing images and their associated label files.
+        smooth (float, optional): A smoothing factor to apply to the frequencies.
+            If greater than 0, it helps to mitigate the impact of very low
+            frequencies by adding this value to the counts. Defaults to 0.0.
+        seed (int, optional): Random seed for reproducibility. Defaults to 42.
+
+    Returns:
+        Tuple[WeightedRandomSampler, Dict[str, Any]]: A tuple containing:
+            - sampler: A WeightedRandomSampler instance for drawing samples.
+            - info: A dictionary with the frequency of each group and the total
+              number of images in the dataset.
+    """
+    # Scan the dataset to get the dominant group for each image and their frequencies
+    groups, freqs = scan_dataset_groups(dataset)
+
+    # Calculate inverse weights with optional smoothing: 1/(frequency + smooth)
+    weights = []
+    for g in groups:
+        f = float(freqs[g])  # Get the frequency of the dominant group
+        w = 1.0 / (f + smooth) if f > 0 else 0.0  # Calculate weight
+        weights.append(w)  # Append weight to the list
+
+    # Convert weights to a tensor
+    weights = torch.tensor(weights, dtype=torch.float)
+
+    # Create a WeightedRandomSampler with the calculated weights
+    sampler = WeightedRandomSampler(
         weights,
-        num_samples=len(weights),
-        replacement=True,
-        generator=torch.Generator().manual_seed(42),
+        num_samples=len(weights),  # Number of samples equals the dataset size
+        replacement=True,  # Allow replacement
+        generator=torch.Generator().manual_seed(seed),  # Set random seed
     )
+
+    # Prepare information about the frequencies and number of images
+    info = {
+        "freqs": {
+            labels_maps[k]: int(v) for k, v in freqs.items()
+        },  # Map frequencies to labels
+        "num_images": len(groups),  # Total number of images in the dataset
+    }
+    return sampler, info  # Return the sampler and info

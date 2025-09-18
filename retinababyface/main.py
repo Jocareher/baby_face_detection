@@ -20,9 +20,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
 
-from data_setup.dataset import BabyFacesDataset, make_balanced_sampler
+from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
-from data_setup.samplers import make_stratified_batch_sampler
+from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sampler
 from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
@@ -47,10 +47,11 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--balanced_sampler",
-        action="store_true",
-        default=False,
-        help="Use a balanced sampler for the training dataset.",
+        "--sampler",
+        type=str,
+        default=None,
+        choices=["none", "weighted", "batch"],
+        help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
 
     # Model & input settings
@@ -446,20 +447,32 @@ def main():
         val_dataset, "val", grids_dir, num_images=9, labels_map=labels_map
     )
 
-    if args.balanced_sampler:
+    if args.sampler == "weighted":
+        sampler, info = make_weighted_sampler(train_dataset, smooth=0.0, seed=42)
+        print(f"[INFO] Weighted sampler freqs: {info['freqs']}")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            sampler=sampler,
+            collate_fn=custom_collate,
+            num_workers=4,
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+        )
+
+    elif args.sampler == "batch":
         batch_sampler, info = make_stratified_batch_sampler(
             train_dataset,
             batch_size=args.batch_size,
             seed=42,
             replacement=True,
-            drop_last=True,  # to ensure all batches have the same size. More stable for batchnorm
+            drop_last=True,
         )
         print(f"[INFO] Stratified quotas (bs={args.batch_size}): {info['quota']}")
         print(f"[INFO] Group sizes: {info['groups']}")
-
         train_loader = DataLoader(
             train_dataset,
-            batch_sampler=batch_sampler,  # Do not use batch_size and shuffle with batch_sampler
+            batch_sampler=batch_sampler,
             collate_fn=custom_collate,
             num_workers=4,
             pin_memory=True,

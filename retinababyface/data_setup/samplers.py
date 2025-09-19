@@ -485,52 +485,103 @@ def scan_dataset_groups(dataset) -> Tuple[List[int], Dict[int, int]]:
     return groups, freqs  # Return the list of groups and their frequencies
 
 
-def make_weighted_sampler(dataset, smooth: float = 0.0, seed: int = 42):
+# def make_weighted_sampler(dataset, smooth: float = 0.0, seed: int = 42):
+#     """
+#     Creates a weighted sampler for the dataset, assigning weights to each image
+#     inversely proportional to the frequency of its dominant group. This helps
+#     balance the sampling across different groups, especially in cases where
+#     some groups may be underrepresented.
+
+#     Args:
+#         dataset: The dataset containing images and their associated label files.
+#         smooth (float, optional): A smoothing factor to apply to the frequencies.
+#             If greater than 0, it helps to mitigate the impact of very low
+#             frequencies by adding this value to the counts. Defaults to 0.0.
+#         seed (int, optional): Random seed for reproducibility. Defaults to 42.
+
+#     Returns:
+#         Tuple[WeightedRandomSampler, Dict[str, Any]]: A tuple containing:
+#             - sampler: A WeightedRandomSampler instance for drawing samples.
+#             - info: A dictionary with the frequency of each group and the total
+#               number of images in the dataset.
+#     """
+#     # Scan the dataset to get the dominant group for each image and their frequencies
+#     groups, freqs = scan_dataset_groups(dataset)
+
+#     # Calculate inverse weights with optional smoothing: 1/(frequency + smooth)
+#     weights = []
+#     for g in groups:
+#         f = float(freqs[g])  # Get the frequency of the dominant group
+#         w = 1.0 / (f + smooth) if f > 0 else 0.0  # Calculate weight
+#         weights.append(w)  # Append weight to the list
+
+#     # Convert weights to a tensor
+#     weights = torch.tensor(weights, dtype=torch.float)
+
+#     # Create a WeightedRandomSampler with the calculated weights
+#     sampler = WeightedRandomSampler(
+#         weights,
+#         num_samples=len(weights),  # Number of samples equals the dataset size
+#         replacement=True,  # Allow replacement
+#         generator=torch.Generator().manual_seed(seed),  # Set random seed
+#     )
+
+#     # Prepare information about the frequencies and number of images
+#     info = {
+#         "freqs": {
+#             labels_maps[k]: int(v) for k, v in freqs.items()
+#         },  # Map frequencies to labels
+#         "num_images": len(groups),  # Total number of images in the dataset
+#     }
+#     return sampler, info  # Return the sampler and info
+
+def make_weighted_sampler(dataset):
     """
-    Creates a weighted sampler for the dataset, assigning weights to each image
-    inversely proportional to the frequency of its dominant group. This helps
-    balance the sampling across different groups, especially in cases where
-    some groups may be underrepresented.
+    Creates a WeightedRandomSampler for balancing the dataset based on class frequencies.
+
+    This function reads only the .txt label files associated with the dataset, avoiding the need to load images or apply augmentations.
+    It assigns weights inversely proportional to the frequency of the dominant class in each image.
 
     Args:
-        dataset: The dataset containing images and their associated label files.
-        smooth (float, optional): A smoothing factor to apply to the frequencies.
-            If greater than 0, it helps to mitigate the impact of very low
-            frequencies by adding this value to the counts. Defaults to 0.0.
-        seed (int, optional): Random seed for reproducibility. Defaults to 42.
+        dataset (BabyFacesDataset): An instance of the BabyFacesDataset.
 
     Returns:
-        Tuple[WeightedRandomSampler, Dict[str, Any]]: A tuple containing:
-            - sampler: A WeightedRandomSampler instance for drawing samples.
-            - info: A dictionary with the frequency of each group and the total
-              number of images in the dataset.
+        WeightedRandomSampler: A sampler that balances the dataset based on class frequencies.
     """
-    # Scan the dataset to get the dominant group for each image and their frequencies
-    groups, freqs = scan_dataset_groups(dataset)
+    # 1) Build a list of paths to the label files
+    #    The dataset exposes root_dir, split, and file_list attributes.
+    labels_dir: Path = Path(dataset.root_dir) / dataset.split / "labels"
+    label_files: List[Path] = [labels_dir / f"{stem}.txt" for stem in dataset.file_list]
 
-    # Calculate inverse weights with optional smoothing: 1/(frequency + smooth)
-    weights = []
-    for g in groups:
-        f = float(freqs[g])  # Get the frequency of the dominant group
-        w = 1.0 / (f + smooth) if f > 0 else 0.0  # Calculate weight
-        weights.append(w)  # Append weight to the list
+    # 2) Determine the dominant class for each image
+    #    If no faces are present, assign -1 as the dominant class.
+    dominant: List[int] = []
+    for txt in label_files:
+        if (
+            not txt.exists()
+        ):  # If the label file does not exist, treat as background (-1).
+            dominant.append(-1)
+            continue
+        with open(txt, "r") as f:
+            line = f.readline().strip()  # Read the first line of the label file.
+            if line == "":  # If the file is empty, treat as background (-1).
+                dominant.append(-1)
+            else:
+                cls: int = int(
+                    line.split()[0]
+                )  # Extract the class index from the first line.
+                dominant.append(cls)
 
-    # Convert weights to a tensor
-    weights = torch.tensor(weights, dtype=torch.float)
+    # 3) Compute weights inversely proportional to class frequency
+    freq: Counter = Counter(dominant)  # Count occurrences of each class.
+    weights: torch.Tensor = torch.tensor(
+        [1.0 / freq[c] for c in dominant], dtype=torch.float
+    )  # Assign weights based on inverse frequency.
 
-    # Create a WeightedRandomSampler with the calculated weights
-    sampler = WeightedRandomSampler(
+    # 4) Create the WeightedRandomSampler
+    return WeightedRandomSampler(
         weights,
-        num_samples=len(weights),  # Number of samples equals the dataset size
-        replacement=True,  # Allow replacement
-        generator=torch.Generator().manual_seed(seed),  # Set random seed
+        num_samples=len(weights),
+        replacement=True,
+        generator=torch.Generator().manual_seed(42),
     )
-
-    # Prepare information about the frequencies and number of images
-    info = {
-        "freqs": {
-            labels_maps[k]: int(v) for k, v in freqs.items()
-        },  # Map frequencies to labels
-        "num_images": len(groups),  # Total number of images in the dataset
-    }
-    return sampler, info  # Return the sampler and info

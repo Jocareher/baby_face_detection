@@ -448,8 +448,8 @@ def main():
     )
 
     if args.sampler == "weighted":
-        sampler, info = make_weighted_sampler(train_dataset, smooth=0.0, seed=42)
-        print(f"[INFO] Weighted sampler freqs: {info['freqs']}")
+        sampler = make_weighted_sampler(train_dataset)
+        # Create data loaders for training and validation datasets
         train_loader = DataLoader(
             train_dataset,
             batch_size=args.batch_size,
@@ -458,6 +458,9 @@ def main():
             num_workers=4,
             pin_memory=True,
             worker_init_fn=seed_worker,
+        )
+        print(
+            f"[INFO] Using balanced sampler for training dataset with {len(sampler)} samples."
         )
 
     elif args.sampler == "batch":

@@ -341,7 +341,7 @@ def run_inference(
                             if true_cls in stats:
                                 stats[true_cls]["fn"] += 1
                                 fn_img += 1
-                                gt_matched[best_gt_idx] = True
+                                #gt_matched[best_gt_idx] = True
 
                             # CM and global curves can include classes not in labels_map
                             y_true.append(true_cls)  # GT class row
@@ -420,14 +420,14 @@ def run_inference(
             del imgs, outputs, targets
             torch.cuda.empty_cache()
 
-    # Finalize metrics for each class
-    for cls in labels_map:
-        # Ensure every class has at least one entry in per_true/per_score
-        if not per_true[cls]:
-            # If no predictions for this class, set to empty lists
-            per_true[cls].append(0)
-            # If no predictions for this class, set score to 0.0
-            per_score[cls].append(0.0)
+    # # Finalize metrics for each class
+    # for cls in labels_map:
+    #     # Ensure every class has at least one entry in per_true/per_score
+    #     if not per_true[cls]:
+    #         # If no predictions for this class, set to empty lists
+    #         per_true[cls].append(0)
+    #         # If no predictions for this class, set score to 0.0
+    #         per_score[cls].append(0.0)
 
     print(f"[INFO] Inference completed on {global_idx} samples.")
     return {

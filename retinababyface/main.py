@@ -441,10 +441,10 @@ def main():
 
     # Optional: visualize datasets and save sample grids
     visualize_and_save_dataset_in_script(
-        train_dataset, "train", grids_dir, num_images=9, labels_map=labels_map
+        train_dataset, "train", grids_dir, num_images=args.batch_size, labels_map=labels_map
     )
     visualize_and_save_dataset_in_script(
-        val_dataset, "val", grids_dir, num_images=9, labels_map=labels_map
+        val_dataset, "val", grids_dir, num_images=args.batch_size, labels_map=labels_map
     )
 
     if args.sampler == "weighted":

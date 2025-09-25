@@ -969,9 +969,13 @@ def plot_qualitative_grid(
     )
     axes = axes.flatten()
 
-    for ax, (img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, viz) in zip(
-        axes, samples[: rows * cols]
-    ):
+    for ax, sample in zip(axes, samples[: rows * cols]):
+        # acepta (8) o (9) elementos
+        if len(sample) == 9:
+            img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, _viz = sample
+        else:
+            img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img = sample
+            
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
         ax.set_title(f"{Path(fname).name}\nFP:{fp_img}  FN:{fn_img}", fontsize=7)
@@ -1144,10 +1148,10 @@ def save_individual_predictions(
         dpi = 100
         fig = plt.figure(figsize=(W_out / dpi, H_out / dpi), dpi=dpi)
         ax = fig.add_axes([0, 0, 1, 1])  # ocupar todo el lienzo sin bordes
-        # Mostrar la imagen SIN márgenes/antialias en los bordes:
+        # Imagen anclada al borde del lienzo, sin halo:
         ax.imshow(base_img, extent=(0, W_out, H_out, 0), interpolation="nearest")
         ax.set_xlim(0, W_out)
-        ax.set_ylim(H_out, 0)  # invertir eje Y para coords tipo imagen
+        ax.set_ylim(H_out, 0)  # invertir eje Y (coordenadas de imagen)
         ax.axis("off")
         # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):

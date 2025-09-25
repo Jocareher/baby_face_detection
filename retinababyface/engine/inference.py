@@ -2,11 +2,12 @@ import os
 import math
 import logging
 from pathlib import Path
-from typing import Tuple, List, Dict, Any, Union
+from typing import Tuple, List, Dict, Any, Union, Optional
 
 import torch
 import pandas as pd
 import numpy as np
+from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib import patches, patheffects
 from matplotlib.patches import Polygon as MplPolygon
@@ -116,6 +117,7 @@ def run_inference(
     baby_thres: float,
     device: torch.device,
     labels_map: Dict[int, str],
+    render_original: bool = False,
 ) -> Dict[str, Any]:
     """
     Runs inference on a dataset and collects predictions, ground truths, and metrics.
@@ -131,6 +133,7 @@ def run_inference(
         - baby_thres (float): Baby face confidence threshold for filtering predictions.
         - device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
         - labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
+        - render_original (bool): Whether to render original images instead of normalized ones.
 
     Returns:
         Dict[str, Any]: A dictionary containing:
@@ -196,6 +199,13 @@ def run_inference(
                 fname = dataset.file_list[global_idx]
                 global_idx += 1
                 fp_img, fn_img = 0, 0
+
+                viz_payload = None
+                if render_original:
+                    orig_img_np, (sx, sy) = _load_original_and_scale(
+                        dataset, fname, resize_size
+                    )
+                    viz_payload = {"orig_img": orig_img_np, "scale": (sx, sy)}
 
                 # --------------------- Ground Truth Processing -------------------
                 valid_mask = targets["valid_mask"][b]
@@ -413,6 +423,7 @@ def run_inference(
                         gt_labels.cpu(),
                         fp_img,
                         fn_img,
+                        viz_payload,
                     )
                 )
 
@@ -1042,6 +1053,7 @@ def save_individual_predictions(
             torch.Tensor,
             int,
             int,
+            Optional[Dict[str, Any]],
         ]
     ],
     labels_map: Dict[int, str],
@@ -1086,18 +1098,33 @@ def save_individual_predictions(
         base_dir.mkdir(parents=True, exist_ok=True)
 
     # Iterate over each sample in the dataset
-    for img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img in samples:
-        # Create a new figure for visualization
+    for sample in samples:
+        # Desempaquetado compatible (con o sin viz_payload)
+        if len(sample) == 9:
+            img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, viz = sample
+        else:
+            img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img = sample
+            viz = None
+
         fig, ax = plt.subplots(figsize=(6, 6))
 
-        # Denormalize and display the image
-        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
-        ax.axis("off")  # Remove axis for cleaner visualization
-        ax.set_aspect("equal")  # Maintain aspect ratio
+        # Fondo y factores de escala
+        if viz is not None and viz.get("orig_img", None) is not None:
+            ax.imshow(viz["orig_img"])
+            sx, sy = viz["scale"]
+        else:
+            ax.imshow(denormalize_image(img_t, mean=mean, std=std))
+            sx, sy = 1.0, 1.0
+
+        ax.axis("off")
+        ax.set_aspect("equal")
 
         # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
-            coords = pts.view(4, 2).numpy()  # Convert tensor to numpy array
+            coords = pts.view(4, 2).numpy()
+            # Escalar a resolución original si corresponde
+            coords[:, 0] *= sx
+            coords[:, 1] *= sy
             ax.add_patch(
                 patches.Polygon(
                     coords,
@@ -1128,7 +1155,9 @@ def save_individual_predictions(
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
-            coords = pts.cpu().view(4, 2).numpy()  # Convert tensor to numpy array
+            coords = pts.cpu().view(4, 2).numpy()
+            coords[:, 0] *= sx
+            coords[:, 1] *= sy  # Convert tensor to numpy array
             ax.add_patch(
                 patches.Polygon(
                     coords,
@@ -1202,6 +1231,7 @@ def inference(
     save_figs: bool = True,
     close_figs: bool = True,
     anchors_cache_path: Union[str, Path] = None,
+    render_original: bool = False,
 ) -> Dict[str, Any]:
     """
         This function processes a test dataset through a trained model and generates comprehensive
@@ -1238,6 +1268,7 @@ def inference(
 
             - "mAP": Mean Average Precision across all classes
             - "APs": Dictionary of per-class Average Precision scores
+        -  render_original (bool, optional): Whether to render predictions on original images. Defaults to False.
 
     Generated Outputs:
         - Precision-Recall curves
@@ -1288,6 +1319,7 @@ def inference(
         baby_thres=baby_thres,
         device=device,
         labels_map=labels_map,
+        render_original=render_original,
     )
 
     print("[STEP 3] Computing metrics and plots...")
@@ -1645,3 +1677,40 @@ def export_metrics_and_confusion_csv(
 
     print(f"[INFO] Metrics and confusion matrices saved to {csv_path}")
     return csv_path
+
+
+IMG_EXTS = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
+
+
+def _find_image_path(root_dir: str, split: str, stem: str) -> Path:
+    base = Path(root_dir) / split / "images"
+    # Si stem ya trae extensión, úsala tal cual
+    p = base / stem
+    if p.exists():
+        return p
+    # Si no, probea extensiones comunes
+    for ext in IMG_EXTS:
+        cand = base / f"{stem}{ext}"
+        if cand.exists():
+            return cand
+    # Último recurso: devuelve algo razonable (fallará si no existe)
+    return base / f"{stem}.jpg"
+
+
+def _load_original_and_scale(dataset, fname: str, resize_size: Tuple[int, int]):
+    """
+    Devuelve: (orig_img_np, (sx, sy)) donde sx = W_orig / W_resize, sy = H_orig / H_resize
+    """
+    stem = Path(fname).name  # tu file_list suele traer el nombre (con o sin extensión)
+    stem_wo_ext = Path(stem).stem
+    img_path = _find_image_path(
+        dataset.root_dir, dataset.split, stem
+    )  # primero con nombre completo
+    if not img_path.exists():
+        img_path = _find_image_path(dataset.root_dir, dataset.split, stem_wo_ext)
+
+    img = Image.open(img_path).convert("RGB")
+    W0, H0 = img.size
+    Wr, Hr = resize_size
+    sx, sy = W0 / float(Wr), H0 / float(Hr)
+    return np.array(img), (sx, sy)

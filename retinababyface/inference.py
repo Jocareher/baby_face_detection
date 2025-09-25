@@ -106,6 +106,11 @@ def parse_args():
         default="inference_results",
         help="Directory to save the output figures (default: inference_results/).",
     )
+    parser.add_argument(
+        "--render_original",
+        action="store_true",
+        help="Salvar visualizaciones a resolución original",
+    )
 
     return parser.parse_args()
 
@@ -213,6 +218,7 @@ def main():
         mean=norm_mean,
         std=norm_std,
         anchors_cache_path=anchors_cache_path,
+        render_original=args.render_original,
     )
 
     # 5. Save inference results

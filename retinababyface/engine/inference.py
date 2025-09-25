@@ -1144,7 +1144,10 @@ def save_individual_predictions(
         dpi = 100
         fig = plt.figure(figsize=(W_out / dpi, H_out / dpi), dpi=dpi)
         ax = fig.add_axes([0, 0, 1, 1])  # ocupar todo el lienzo sin bordes
-        ax.imshow(base_img)
+        # Mostrar la imagen SIN márgenes/antialias en los bordes:
+        ax.imshow(base_img, extent=(0, W_out, H_out, 0), interpolation="nearest")
+        ax.set_xlim(0, W_out)
+        ax.set_ylim(H_out, 0)  # invertir eje Y para coords tipo imagen
         ax.axis("off")
         # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):

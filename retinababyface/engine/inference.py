@@ -2,7 +2,7 @@ import os
 import math
 import logging
 from pathlib import Path
-from typing import Tuple, List, Dict, Any, Union, Optional
+from typing import Tuple, List, Dict, Any, Union, Optional, Callable
 
 import torch
 import pandas as pd
@@ -202,10 +202,11 @@ def run_inference(
 
                 viz_payload = None
                 if render_original:
-                    orig_img_np, (sx, sy) = _load_original_and_scale(
-                        dataset, fname, resize_size
-                    )
-                    viz_payload = {"orig_img": orig_img_np, "scale": (sx, sy)}
+                    orig_img_np, (sx, sy) = _load_original_and_scale(dataset, fname, resize_size)
+                    if orig_img_np is not None:
+                        viz_payload = {"orig_img": orig_img_np, "scale": (sx, sy)}
+                    else:
+                        viz_payload = None
 
                 # --------------------- Ground Truth Processing -------------------
                 valid_mask = targets["valid_mask"][b]
@@ -968,7 +969,7 @@ def plot_qualitative_grid(
     )
     axes = axes.flatten()
 
-    for ax, (img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img) in zip(
+    for ax, (img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, viz) in zip(
         axes, samples[: rows * cols]
     ):
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
@@ -1061,6 +1062,9 @@ def save_individual_predictions(
     mean: Tuple[float, float, float],
     std: Tuple[float, float, float],
     split_by_error: bool = True,
+    viz_original_res: bool = False,
+    orig_size_resolver: Optional[Callable[[str], Optional[Tuple[int, int]]]] = None,
+    resize_size: Tuple[int, int] = (640, 640),
 ) -> None:
     """
     Saves individual visualizations of predictions with ground truth (GT) and predicted oriented bounding boxes (OBBs).
@@ -1110,18 +1114,32 @@ def save_individual_predictions(
 
         # Fondo y factores de escala
         if viz is not None and viz.get("orig_img", None) is not None:
+            # caso 1: se mandó el payload desde run_inference
             ax.imshow(viz["orig_img"])
             sx, sy = viz["scale"]
         else:
-            ax.imshow(denormalize_image(img_t, mean=mean, std=std))
+            # caso 2: fallback local usando el resolver y resize_size
+            base_img = denormalize_image(img_t, mean=mean, std=std)  # (H_r,W_r,3)
             sx, sy = 1.0, 1.0
+            if viz_original_res and orig_size_resolver is not None:
+                wh = orig_size_resolver(fname)
+                if wh is not None:
+                    W0, H0 = wh  # (W,H)
+                    Wr, Hr = resize_size
+                    sx = float(W0) / float(Wr)
+                    sy = float(H0) / float(Hr)
+                    try:
+                        base_img = np.asarray(Image.fromarray(base_img).resize((W0, H0)))
+                    except Exception:
+                        sx, sy = 1.0, 1.0  # si algo falla, quedarse en 640
+            ax.imshow(base_img)
 
         ax.axis("off")
         ax.set_aspect("equal")
 
         # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
-            coords = pts.view(4, 2).numpy()
+            coords = pts.detach().cpu().view(4, 2).numpy()
             # Escalar a resolución original si corresponde
             coords[:, 0] *= sx
             coords[:, 1] *= sy
@@ -1402,10 +1420,18 @@ def inference(
     metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
 
     print("[STEP 5] Saving individual prediction images...")
+    resolver = _build_image_size_resolver(test_loader.dataset)
     save_individual_predictions(
-        results["samples"], labels_map, predictions_dir, mean, std
+        samples=results["samples"],
+        labels_map=labels_map,
+        output_dir=predictions_dir,
+        mean=mean,
+        std=std,
+        split_by_error=True,
+        viz_original_res=render_original,
+        orig_size_resolver=resolver,
+        resize_size=resize_size,
     )
-
     print("[DONE] Inference and reporting completed.")
 
     return {"mAP": mAP, "APs": APs}
@@ -1682,35 +1708,58 @@ def export_metrics_and_confusion_csv(
 IMG_EXTS = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
 
 
-def _find_image_path(root_dir: str, split: str, stem: str) -> Path:
-    base = Path(root_dir) / split / "images"
-    # Si stem ya trae extensión, úsala tal cual
-    p = base / stem
-    if p.exists():
-        return p
-    # Si no, probea extensiones comunes
-    for ext in IMG_EXTS:
-        cand = base / f"{stem}{ext}"
-        if cand.exists():
-            return cand
-    # Último recurso: devuelve algo razonable (fallará si no existe)
-    return base / f"{stem}.jpg"
+def _build_image_size_resolver(dataset, images_subdir: str = "images"):
+    """
+    Devuelve una función que, dado fname (stem o ruta), retorna (W0, H0) o None.
+    """
+    root = Path(dataset.root_dir) / dataset.split / images_subdir
+    exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+    def _resolve(fname: str):
+        p = Path(fname)
+        # 1) Si es ruta directa
+        if p.is_file():
+            with Image.open(p) as im:
+                return im.size  # (W,H)
+        # 2) Si es solo el stem, probar en root
+        stem = p.stem if p.suffix else p.name
+        for e in exts:
+            cand = root / f"{stem}{e}"
+            if cand.exists():
+                with Image.open(cand) as im:
+                    return im.size  # (W,H)
+        return None
+
+    return _resolve
 
 
 def _load_original_and_scale(dataset, fname: str, resize_size: Tuple[int, int]):
     """
-    Devuelve: (orig_img_np, (sx, sy)) donde sx = W_orig / W_resize, sy = H_orig / H_resize
+    Carga la imagen original y calcula escala (sx, sy) relativa a resize_size (W_r, H_r).
+    Retorna: (np_img_rgb, (sx, sy)). Si no se puede, vuelve a None y (1,1).
     """
-    stem = Path(fname).name  # tu file_list suele traer el nombre (con o sin extensión)
-    stem_wo_ext = Path(stem).stem
-    img_path = _find_image_path(
-        dataset.root_dir, dataset.split, stem
-    )  # primero con nombre completo
-    if not img_path.exists():
-        img_path = _find_image_path(dataset.root_dir, dataset.split, stem_wo_ext)
-
-    img = Image.open(img_path).convert("RGB")
-    W0, H0 = img.size
+    resolver = _build_image_size_resolver(dataset)
+    wh = resolver(fname)
+    if wh is None:
+        return None, (1.0, 1.0)
+    W0, H0 = wh  # PIL (W,H)
     Wr, Hr = resize_size
-    sx, sy = W0 / float(Wr), H0 / float(Hr)
-    return np.array(img), (sx, sy)
+    sx = float(W0) / float(Wr)
+    sy = float(H0) / float(Hr)
+    # cargar imagen original real como fondo
+    root = Path(dataset.root_dir) / dataset.split / "images"
+    p = Path(fname)
+    if not p.is_file():
+        stem = p.stem if p.suffix else p.name
+        for e in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+            cand = root / f"{stem}{e}"
+            if cand.exists():
+                p = cand
+                break
+    try:
+        with Image.open(p) as im:
+            im = im.convert("RGB")
+            np_img = np.asarray(im)
+            return np_img, (sx, sy)
+    except Exception:
+        return None, (1.0, 1.0)

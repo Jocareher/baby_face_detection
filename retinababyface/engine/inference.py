@@ -1113,30 +1113,39 @@ def save_individual_predictions(
         fig, ax = plt.subplots(figsize=(6, 6))
 
         # Fondo y factores de escala
+        # ------------------------------------------------------------
+        # 1) Preparar fondo (base_img) y factores de escala (sx, sy)
+        # ------------------------------------------------------------
         if viz is not None and viz.get("orig_img", None) is not None:
-            # caso 1: se mandó el payload desde run_inference
-            ax.imshow(viz["orig_img"])
+            base_img = viz["orig_img"]                      # np.uint8 (H0, W0, 3)
             sx, sy = viz["scale"]
         else:
-            # caso 2: fallback local usando el resolver y resize_size
-            base_img = denormalize_image(img_t, mean=mean, std=std)  # (H_r,W_r,3)
+            base_img = denormalize_image(img_t, mean=mean, std=std)  # (Hr, Wr, 3)
             sx, sy = 1.0, 1.0
             if viz_original_res and orig_size_resolver is not None:
                 wh = orig_size_resolver(fname)
                 if wh is not None:
-                    W0, H0 = wh  # (W,H)
+                    W0, H0 = wh
                     Wr, Hr = resize_size
                     sx = float(W0) / float(Wr)
                     sy = float(H0) / float(Hr)
                     try:
+                        from PIL import Image
                         base_img = np.asarray(Image.fromarray(base_img).resize((W0, H0)))
                     except Exception:
-                        sx, sy = 1.0, 1.0  # si algo falla, quedarse en 640
-            ax.imshow(base_img)
+                        sx, sy = 1.0, 1.0  # fallback a 640 si algo falla
 
+        H_out, W_out = int(base_img.shape[0]), int(base_img.shape[1])
+
+        # ------------------------------------------------------------
+        # 2) Crear figura EXACTAMENTE del tamaño del fondo
+        #    (W_out x H_out px)  => figsize = (W_out/dpi, H_out/dpi)
+        # ------------------------------------------------------------
+        dpi = 100
+        fig = plt.figure(figsize=(W_out / dpi, H_out / dpi), dpi=dpi)
+        ax = fig.add_axes([0, 0, 1, 1])  # ocupar todo el lienzo sin bordes
+        ax.imshow(base_img)
         ax.axis("off")
-        ax.set_aspect("equal")
-
         # Draw ground truth OBBs
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
             coords = pts.detach().cpu().view(4, 2).numpy()
@@ -1220,7 +1229,7 @@ def save_individual_predictions(
             save_dir.mkdir(exist_ok=True, parents=True)
 
         # Save the visualization to the appropriate directory
-        fig.savefig(save_dir / Path(fname).name, dpi=100, bbox_inches="tight")
+        fig.savefig(save_dir / Path(fname).name, dpi=dpi, bbox_inches=None, pad_inches=0)
         plt.close(fig)  # Close the figure to free memory
 
     print(f"[INFO] Saved individual predictions to {output_dir}")

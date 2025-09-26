@@ -109,7 +109,7 @@ def parse_args():
     parser.add_argument(
         "--render_original",
         action="store_true",
-        help="Salvar visualizaciones a resolución original",
+        help="Render original images alongside detections.",
     )
 
     return parser.parse_args()

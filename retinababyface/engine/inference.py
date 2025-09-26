@@ -1,4 +1,3 @@
-import os
 import math
 import logging
 from pathlib import Path
@@ -152,6 +151,7 @@ def run_inference(
             - child_pred (List[int]): Predicted labels for child face detection (0 = adult, 1 = child).
             - samples (List[Tuple[Any, Dict[str, torch.Tensor], str, torch.Tensor, torch.Tensor, torch.Tensor, int, int]]):
               List of qualitative samples for visualization, including images, predictions, ground truths, and error counts.
+            - viz_payload (Optional[Dict[str, Any]]): Optional payload for visualization, including original image and scaling factors.
     """
     # Initialize data structures for metrics and qualitative results
     per_true = {c: [] for c in labels_map}
@@ -194,16 +194,27 @@ def run_inference(
                 class_thres,
             )
 
+            # Process each image in the batch
             batch_size = imgs.size(0)
             for b in range(batch_size):
+                # Get filename and initialize FP/FN counters
                 fname = dataset.file_list[global_idx]
+                # Update global index
                 global_idx += 1
+                # Count of false positives and false negatives in this image
                 fp_img, fn_img = 0, 0
 
+                # Load original image for visualization if needed
                 viz_payload = None
+                # Render original image if specified
                 if render_original:
-                    orig_img_np, (sx, sy) = _load_original_and_scale(dataset, fname, resize_size)
+                    # Load original image and compute scaling factors
+                    orig_img_np, (sx, sy) = load_original_and_scale(
+                        dataset, fname, resize_size
+                    )
+                    # If loading was successful, prepare payload
                     if orig_img_np is not None:
+                        # Visualization payload with original image and scaling
                         viz_payload = {"orig_img": orig_img_np, "scale": (sx, sy)}
                     else:
                         viz_payload = None
@@ -934,7 +945,7 @@ def plot_f1_vs_threshold(
     return fig
 
 
-# -------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # IV. Qualitative Grid & Saving Individually
 # -----------------------------------------------------------------------------
 
@@ -951,50 +962,72 @@ def plot_qualitative_grid(
     std: Tuple[float, float, float],
 ) -> plt.Figure:
     """
-    Creates a qualitative grid of predictions and ground truths with OBBs.
+    Creates a grid of sample predictions showing both ground truth and predicted oriented bounding boxes (OBBs).
 
     Args:
-        samples (List): List of (image_tensor, prediction_dict, filename, gt_boxes, gt_angles, gt_labels).
-        labels_map (Dict[int, str]): Mapping from class index to name.
-        grid_shape (Tuple[int, int]): Rows and columns of the grid.
-        mean (Tuple[float, float, float]): Mean values for image normalization.
-        std (Tuple[float, float, float]): Std values for image normalization.
+        samples (List[Tuple]): List of samples, where each sample contains:
+            - image_tensor (torch.Tensor): Normalized image tensor
+            - prediction_dict (Dict[str, torch.Tensor]): Model predictions including:
+                - 'polygons': Vertex coordinates of predicted OBBs
+                - 'labels': Predicted class labels
+                - 'scores': Confidence scores
+                - 'boxes': OBB parameters (x,y,w,h,θ)
+            - filename (str): Original image filename
+            - gt_boxes (torch.Tensor): Ground truth OBB vertex coordinates
+            - gt_angles (torch.Tensor): Ground truth rotation angles
+            - gt_labels (torch.Tensor): Ground truth class labels
+            - fp_count (int): Number of false positives
+            - fn_count (int): Number of false negatives
+            - viz_payload (Optional[Dict]): Optional visualization metadata
+        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels
+        grid_shape (Tuple[int, int]): Number of (rows, columns) in the visualization grid
+        mean (Tuple[float, float, float]): Channel-wise means for image denormalization
+        std (Tuple[float, float, float]): Channel-wise standard deviations for denormalization
 
     Returns:
-        matplotlib.figure.Figure: Qualitative grid figure.
+        matplotlib.figure.Figure: Figure containing the grid of visualizations with both
+        ground truth (green dashed) and predicted (blue solid) oriented bounding boxes,
+        each annotated with class label, angle and confidence score.
     """
     rows, cols = grid_shape
+    # Create figure with white background for better visualization
     fig, axes = plt.subplots(
         rows, cols, figsize=(cols * 4, rows * 4), facecolor="white"
     )
     axes = axes.flatten()
 
+    # Process only enough samples to fill the grid
     for ax, sample in zip(axes, samples[: rows * cols]):
-        # acepta (8) o (9) elementos
+        # Handle both 8-element and 9-element sample tuples (with/without viz_payload)
         if len(sample) == 9:
             img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, _viz = sample
         else:
             img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img = sample
-            
+
+        # Display denormalized image and configure axis
         ax.imshow(denormalize_image(img_t, mean=mean, std=std))
         ax.axis("off")
         ax.set_title(f"{Path(fname).name}\nFP:{fp_img}  FN:{fn_img}", fontsize=7)
         ax.set_aspect("equal")
 
-        # Ground Truth OBBs
+        # Draw ground truth OBBs (green dashed boxes)
         for pts, angle, cls in zip(gt_b, gt_a, gt_l):
             pts_np = pts.view(4, 2).numpy()
+            # Draw OBB polygon
             ax.add_patch(
                 patches.Polygon(
                     pts_np,
                     closed=True,
                     fill=False,
-                    edgecolor="#008000",
+                    edgecolor="#008000",  # Dark green
                     linewidth=2,
                     linestyle="--",
                 )
             )
+            # Draw front edge (orientation indicator)
             ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="orange", linewidth=2)
+
+            # Add label with class and angle at bottom-right
             br_x, br_y = pts_np[:, 0].max(), pts_np[:, 1].max()
             ax.text(
                 br_x,
@@ -1008,23 +1041,27 @@ def plot_qualitative_grid(
                 bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
             )
 
-        # Predicted OBBs
+        # Draw predicted OBBs (blue solid boxes)
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
             pts_np = pts.view(4, 2).numpy()
+            # Draw OBB polygon
             ax.add_patch(
                 patches.Polygon(
                     pts_np,
                     closed=True,
                     fill=False,
-                    edgecolor="#004080",
+                    edgecolor="#004080",  # Dark blue
                     linewidth=1.5,
                 )
             )
+            # Draw front edge (orientation indicator)
             ax.plot(
                 pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="#800000", linewidth=1.5
             )
+
+            # Add label with class, angle and score at top-left
             tl_x, tl_y = pts_np[:, 0].min(), pts_np[:, 1].min()
             ang = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
@@ -1038,7 +1075,7 @@ def plot_qualitative_grid(
                 bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
 
-    # Hide any unused axes
+    # Hide any unused axes in the grid
     for ax in axes[len(samples) :]:
         ax.axis("off")
 
@@ -1067,35 +1104,65 @@ def save_individual_predictions(
     std: Tuple[float, float, float],
     split_by_error: bool = True,
     viz_original_res: bool = False,
-    orig_size_resolver: Optional[Callable[[str], Optional[Tuple[int, int]]]] = None,
+    orig_sizeresolver: Optional[Callable[[str], Optional[Tuple[int, int]]]] = None,
     resize_size: Tuple[int, int] = (640, 640),
 ) -> None:
     """
-    Saves individual visualizations of predictions with ground truth (GT) and predicted oriented bounding boxes (OBBs).
+    Saves individual visualizations of predictions with ground truth for qualitative analysis.
 
-    This function generates and saves images showing both GT and predicted OBBs for qualitative analysis.
-    The images can be optionally split into subdirectories based on error types (e.g., false positives, false negatives).
+    This function generates and saves visualization images showing both ground truth and predicted
+    oriented bounding boxes (OBBs), with options to use original image resolution and split results
+    by error type.
 
     Args:
-        samples (List): List of tuples containing:
-            - Image tensor (torch.Tensor)
-            - Prediction dictionary (Dict[str, torch.Tensor])
-            - File name (str)
-            - Ground truth boxes (torch.Tensor)
-            - Ground truth angles (torch.Tensor)
-            - Ground truth labels (torch.Tensor)
-            - False positive count (int)
-            - False negative count (int)
-        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
-        output_dir (str): Directory where the visualizations will be saved.
-        mean (Tuple[float, float, float]): Mean values for image normalization (used for denormalization).
-        std (Tuple[float, float, float]): Standard deviation values for image normalization (used for denormalization).
-        split_by_error (bool): Whether to split saved images into subdirectories based on error types.
+        samples: List of tuples containing:
+            - Image tensor (normalized)
+            - Prediction dictionary with keys:
+                - 'polygons': Predicted OBB vertices
+                - 'labels': Predicted class labels
+                - 'scores': Confidence scores
+                - 'boxes': OBB parameters (x,y,w,h,θ)
+            - File name
+            - Ground truth OBB vertices
+            - Ground truth angles
+            - Ground truth labels
+            - False positive count
+            - False negative count
+            - Optional visualization payload with:
+                - 'orig_img': Original resolution image
+                - 'scale': (sx,sy) scaling factors
+        labels_map: Mapping from class indices to human-readable labels
+        output_dir: Base directory for saving visualizations
+        mean: Channel means for image denormalization
+        std: Channel standard deviations for denormalization
+        split_by_error: Whether to organize outputs into error type subdirectories:
+            - tp_only/: Perfect predictions
+            - fp/: False positives only
+            - fn/: False negatives only
+            - fp_fn/: Both error types
+        viz_original_res: Whether to render at original image resolution
+        orig_sizeresolver: Function to get original (W,H) from filename
+        resize_size: Target size used during resizing/inference
 
-    Returns:
-        None: Saves visualizations to the specified output directory.
+    The visualization includes:
+        - Ground truth OBBs in dashed green with orange front edge
+        - Predicted OBBs in solid blue with red front edge
+        - Class labels, angles and confidence scores
+        - Optional background in original resolution
+
+    Example directory structure when split_by_error=True:
+        output_dir/
+        ├── tp_only/
+        │   ├── image1.jpg
+        │   └── image2.jpg
+        ├── fp/
+        │   └── image3.jpg
+        ├── fn/
+        │   └── image4.jpg
+        └── fp_fn/
+            └── image5.jpg
     """
-    # Convert output directory to Path object
+    # Convert output directory to Path object for easier manipulation
     base_dir = Path(output_dir)
 
     # Create subdirectories for different error types if splitting is enabled
@@ -1105,29 +1172,26 @@ def save_individual_predictions(
     else:
         base_dir.mkdir(parents=True, exist_ok=True)
 
-    # Iterate over each sample in the dataset
+    # Process each sample
     for sample in samples:
-        # Desempaquetado compatible (con o sin viz_payload)
+        # Handle samples with or without visualization payload
         if len(sample) == 9:
             img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, viz = sample
         else:
             img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img = sample
             viz = None
 
-        fig, ax = plt.subplots(figsize=(6, 6))
-
-        # Fondo y factores de escala
-        # ------------------------------------------------------------
-        # 1) Preparar fondo (base_img) y factores de escala (sx, sy)
-        # ------------------------------------------------------------
+        # Determine background image and scaling factors
         if viz is not None and viz.get("orig_img", None) is not None:
-            base_img = viz["orig_img"]                      # np.uint8 (H0, W0, 3)
+            # Use provided original resolution image if available
+            base_img = viz["orig_img"]  # np.uint8 (H0, W0, 3)
             sx, sy = viz["scale"]
         else:
+            # Fallback to denormalized tensor and try upscaling if requested
             base_img = denormalize_image(img_t, mean=mean, std=std)  # (Hr, Wr, 3)
             sx, sy = 1.0, 1.0
-            if viz_original_res and orig_size_resolver is not None:
-                wh = orig_size_resolver(fname)
+            if viz_original_res and orig_sizeresolver is not None:
+                wh = orig_sizeresolver(fname)
                 if wh is not None:
                     W0, H0 = wh
                     Wr, Hr = resize_size
@@ -1135,30 +1199,32 @@ def save_individual_predictions(
                     sy = float(H0) / float(Hr)
                     try:
                         from PIL import Image
-                        base_img = np.asarray(Image.fromarray(base_img).resize((W0, H0)))
+
+                        base_img = np.asarray(
+                            Image.fromarray(base_img).resize((W0, H0))
+                        )
                     except Exception:
-                        sx, sy = 1.0, 1.0  # fallback a 640 si algo falla
+                        sx, sy = 1.0, 1.0  # fallback to 640x640 if resize fails
 
+        # Setup matplotlib figure to match image dimensions exactly
         H_out, W_out = int(base_img.shape[0]), int(base_img.shape[1])
-
-        # ------------------------------------------------------------
-        # 2) Crear figura EXACTAMENTE del tamaño del fondo
-        #    (W_out x H_out px)  => figsize = (W_out/dpi, H_out/dpi)
-        # ------------------------------------------------------------
         dpi = 100
         fig = plt.figure(figsize=(W_out / dpi, H_out / dpi), dpi=dpi)
-        ax = fig.add_axes([0, 0, 1, 1])  # ocupar todo el lienzo sin bordes
-        # Imagen anclada al borde del lienzo, sin halo:
+        ax = fig.add_axes([0, 0, 1, 1])  # use full canvas without margins
+
+        # Display base image with correct alignment and no interpolation artifacts
         ax.imshow(base_img, extent=(0, W_out, H_out, 0), interpolation="nearest")
         ax.set_xlim(0, W_out)
-        ax.set_ylim(H_out, 0)  # invertir eje Y (coordenadas de imagen)
+        ax.set_ylim(H_out, 0)  # invert Y axis for image coordinates
         ax.axis("off")
-        # Draw ground truth OBBs
+
+        # Draw ground truth OBBs (dashed green with orange front edge)
         for pts, ang, lbl in zip(gt_b, gt_a, gt_l):
             coords = pts.detach().cpu().view(4, 2).numpy()
-            # Escalar a resolución original si corresponde
+            # Scale coordinates to original resolution if needed
             coords[:, 0] *= sx
             coords[:, 1] *= sy
+            # Draw OBB polygon
             ax.add_patch(
                 patches.Polygon(
                     coords,
@@ -1169,9 +1235,10 @@ def save_individual_predictions(
                     linestyle="--",
                 )
             )
+            # Draw front edge in orange
             ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="orange", linewidth=2)
 
-            # Add label and angle text at the bottom-right corner of the OBB
+            # Add class label and angle at bottom-right with green background
             br_x, br_y = coords[:, 0].max(), coords[:, 1].max()
             ax.text(
                 br_x,
@@ -1185,13 +1252,15 @@ def save_individual_predictions(
                 bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
             )
 
-        # Draw predicted OBBs
+        # Draw predicted OBBs (solid blue with red front edge)
         for i, (pts, lbl, score) in enumerate(
             zip(out["polygons"], out["labels"], out["scores"])
         ):
             coords = pts.cpu().view(4, 2).numpy()
+            # Scale coordinates to original resolution if needed
             coords[:, 0] *= sx
-            coords[:, 1] *= sy  # Convert tensor to numpy array
+            coords[:, 1] *= sy
+            # Draw OBB polygon
             ax.add_patch(
                 patches.Polygon(
                     coords,
@@ -1201,11 +1270,12 @@ def save_individual_predictions(
                     linewidth=1.5,
                 )
             )
+            # Draw front edge in dark red
             ax.plot(
                 coords[[0, 1], 0], coords[[0, 1], 1], color="#800000", linewidth=1.5
             )
 
-            # Add label, angle, and confidence score text at the top-left corner of the OBB
+            # Add class label, angle and confidence at top-left with blue background
             tl_x, tl_y = coords[:, 0].min(), coords[:, 1].min()
             ang_pred = math.degrees(float(out["boxes"][i, 4]))
             ax.text(
@@ -1219,7 +1289,7 @@ def save_individual_predictions(
                 bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
             )
 
-        # Determine the subdirectory based on error type if splitting is enabled
+        # Determine output subdirectory based on error types
         if not split_by_error:
             save_dir = base_dir
         else:
@@ -1230,14 +1300,16 @@ def save_individual_predictions(
             elif fp_img and fn_img:
                 subdir = "fp_fn"  # Both false positives and false negatives
             else:
-                subdir = "tp_only"  # True positives only
+                subdir = "tp_only"  # Perfect predictions (true positives only)
 
             save_dir = base_dir / subdir
             save_dir.mkdir(exist_ok=True, parents=True)
 
-        # Save the visualization to the appropriate directory
-        fig.savefig(save_dir / Path(fname).name, dpi=dpi, bbox_inches=None, pad_inches=0)
-        plt.close(fig)  # Close the figure to free memory
+        # Save visualization without padding and close to free memory
+        fig.savefig(
+            save_dir / Path(fname).name, dpi=dpi, bbox_inches=None, pad_inches=0
+        )
+        plt.close(fig)
 
     print(f"[INFO] Saved individual predictions to {output_dir}")
 
@@ -1436,7 +1508,7 @@ def inference(
     metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
 
     print("[STEP 5] Saving individual prediction images...")
-    resolver = _build_image_size_resolver(test_loader.dataset)
+    resolver = build_image_sizeresolver(test_loader.dataset)
     save_individual_predictions(
         samples=results["samples"],
         labels_map=labels_map,
@@ -1445,7 +1517,7 @@ def inference(
         std=std,
         split_by_error=True,
         viz_original_res=render_original,
-        orig_size_resolver=resolver,
+        orig_sizeresolver=resolver,
         resize_size=resize_size,
     )
     print("[DONE] Inference and reporting completed.")
@@ -1721,61 +1793,109 @@ def export_metrics_and_confusion_csv(
     return csv_path
 
 
-IMG_EXTS = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
-
-
-def _build_image_size_resolver(dataset, images_subdir: str = "images"):
+def build_image_sizeresolver(dataset, images_subdir: str = "images") -> callable:
     """
-    Devuelve una función que, dado fname (stem o ruta), retorna (W0, H0) o None.
+    Builds a function that resolves original image dimensions from a dataset.
+
+    Creates a callable that attempts to load and get dimensions of an original image,
+    first trying the filename directly and then searching in the dataset's image directory
+    with different extensions.
+
+    Args:
+        dataset: Dataset object with root_dir and split attributes defining image location
+        images_subdir (str, optional): Subdirectory name containing images. Defaults to "images"
+
+    Returns:
+        callable: Function that takes a filename (stem or path) and returns:
+            - Tuple[int, int]: Original (width, height) if image is found
+            - None: If image cannot be found or opened
+
+    Example:
+        >>> resolver = build_image_sizeresolver(dataset)
+        >>> size = resolver("image001.jpg")  # Returns (1024, 768) or None
     """
+    # Construct path to images directory from dataset attributes
     root = Path(dataset.root_dir) / dataset.split / images_subdir
+
+    # Common image file extensions to try if bare filename is provided
     exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
-    def _resolve(fname: str):
+    def resolve(fname: str) -> tuple[int, int] | None:
         p = Path(fname)
-        # 1) Si es ruta directa
+
+        # Strategy 1: Try direct path if it's a complete filepath
         if p.is_file():
             with Image.open(p) as im:
-                return im.size  # (W,H)
-        # 2) Si es solo el stem, probar en root
+                return im.size  # Returns (width, height)
+
+        # Strategy 2: Try different extensions in dataset image directory
+        # Extract stem (filename without extension) to try with different extensions
         stem = p.stem if p.suffix else p.name
-        for e in exts:
-            cand = root / f"{stem}{e}"
-            if cand.exists():
-                with Image.open(cand) as im:
-                    return im.size  # (W,H)
+        for ext in exts:
+            candidate = root / f"{stem}{ext}"
+            if candidate.exists():
+                with Image.open(candidate) as im:
+                    return im.size
+
+        # Return None if image cannot be found or opened
         return None
 
-    return _resolve
+    return resolve
 
 
-def _load_original_and_scale(dataset, fname: str, resize_size: Tuple[int, int]):
+def load_original_and_scale(dataset, fname: str, resize_size: Tuple[int, int]):
     """
-    Carga la imagen original y calcula escala (sx, sy) relativa a resize_size (W_r, H_r).
-    Retorna: (np_img_rgb, (sx, sy)). Si no se puede, vuelve a None y (1,1).
+    Load the original image and calculate the scaling factors (sx, sy) relative to the resized dimensions.
+
+    Args:
+        dataset: The dataset object containing image metadata and paths.
+        fname (str): The filename of the image to load.
+        resize_size (Tuple[int, int]): The target size (W_r, H_r) to which the image was resized.
+
+    Returns:
+        Tuple[np.ndarray, Tuple[float, float]]: A tuple containing:
+            - np_img_rgb (np.ndarray): The original image in RGB format as a NumPy array.
+            - (sx, sy) (Tuple[float, float]): Scaling factors for width and height.
+              Returns (1.0, 1.0) if the image cannot be loaded.
     """
-    resolver = _build_image_size_resolver(dataset)
+    # Build a function to resolve the original image dimensions from the dataset
+    resolver = build_image_sizeresolver(dataset)
+
+    # Get the original width and height of the image
     wh = resolver(fname)
     if wh is None:
-        return None, (1.0, 1.0)
-    W0, H0 = wh  # PIL (W,H)
-    Wr, Hr = resize_size
-    sx = float(W0) / float(Wr)
-    sy = float(H0) / float(Hr)
-    # cargar imagen original real como fondo
+        return None, (
+            1.0,
+            1.0,
+        )  # Return None and default scaling factors if image not found
+
+    W0, H0 = wh  # Original image dimensions (width, height)
+    Wr, Hr = resize_size  # Resized image dimensions
+    sx = float(W0) / float(Wr)  # Calculate scaling factor for width
+    sy = float(H0) / float(Hr)  # Calculate scaling factor for height
+
+    # Load the original image from the dataset's images directory
     root = Path(dataset.root_dir) / dataset.split / "images"
     p = Path(fname)
+
+    # Check if the provided path is a valid file
     if not p.is_file():
+        # If not, try to find the image with common extensions
         stem = p.stem if p.suffix else p.name
         for e in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
             cand = root / f"{stem}{e}"
             if cand.exists():
-                p = cand
+                p = cand  # Update path to the found image
                 break
+
     try:
+        # Open the image and convert it to RGB format
         with Image.open(p) as im:
             im = im.convert("RGB")
-            np_img = np.asarray(im)
-            return np_img, (sx, sy)
+            np_img = np.asarray(im)  # Convert the image to a NumPy array
+            return np_img, (sx, sy)  # Return the image and scaling factors
     except Exception:
-        return None, (1.0, 1.0)
+        return None, (
+            1.0,
+            1.0,
+        )  # Return None and default scaling factors if an error occurs

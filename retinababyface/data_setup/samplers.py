@@ -368,9 +368,9 @@ def make_stratified_batch_sampler(
         base_quota_32=base_quota_32,
         batch_size=batch_size,
         available=available,
-        min_per_child=1
-        if batch_size <= 16
-        else 2,  # Minimum samples per child orientation
+        min_per_child=(
+            1 if batch_size <= 16 else 2
+        ),  # Minimum samples per child orientation
     )
 
     # Calculate the number of batches per epoch

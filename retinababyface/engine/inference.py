@@ -492,9 +492,11 @@ def compute_map_and_pr(
             - Dict[int, float]: Average Precision per class.
     """
     APs = {
-        cls: average_precision_score(per_true[cls], per_score[cls])
-        if sum(per_true[cls]) > 0
-        else 0.0
+        cls: (
+            average_precision_score(per_true[cls], per_score[cls])
+            if sum(per_true[cls]) > 0
+            else 0.0
+        )
         for cls in per_true
     }
     mAP = float(np.mean(list(APs.values())))

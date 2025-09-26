@@ -118,9 +118,9 @@ def save_reproducibility_metadata(
         "python_ver": sys.version.replace("\n", " "),
         "torch_ver": torch.__version__,
         "cuda_ver": torch.version.cuda or "cpu",
-        "device_name": torch.cuda.get_device_name(0)
-        if torch.cuda.is_available()
-        else "cpu",
+        "device_name": (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+        ),
         "git_commit": git_commit,
         "git_branch": git_branch,
         "git_dirty": git_dirty,

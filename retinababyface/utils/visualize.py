@@ -90,7 +90,9 @@ def draw_obb(
     cls_txt = (
         labels_map.get(int(class_idx), str(class_idx))
         if (labels_map and class_idx is not None)
-        else str(class_idx) if class_idx is not None else "?"
+        else str(class_idx)
+        if class_idx is not None
+        else "?"
     )
     ang_txt = f"{math.degrees(float(angle)):.1f}°" if angle is not None else ""
     ax.text(

@@ -33,79 +33,97 @@ def evaluate_sota(
     min_score: float = 0.0,
 ):
     """
-    Recorre test/, hace matching, computa:
-      - PR/AP global cara/no-cara (SOTA)
-      - Recall por orientación
-      - TP/FP/FN globales y por clase
-    Guarda plots y CSV.
+    Evaluate the performance of a State-of-the-Art (SOTA) face detection model
+    against ground truth (GT) data for baby faces, including orientation-specific metrics.
+
+    This function computes:
+      - Precision-Recall (PR) and Average Precision (AP) for face/no-face detection.
+      - Recall per orientation class.
+      - True Positives (TP), False Positives (FP), and False Negatives (FN) globally and per class.
+
+    Outputs:
+      - Precision-Recall curve plot.
+      - Recall per orientation bar plot.
+      - Metrics summary in a CSV file.
+
+    Args:
+        data_root (Path): Root directory of the dataset (contains `test/images` and `test/labels`).
+        split (str): Dataset split to evaluate (e.g., "test").
+        sota_dir (Path): Directory containing SOTA model predictions in `.txt` format.
+        out_dir (Path): Output directory for saving plots and metrics.
+        iou_th (float): IoU threshold for matching predictions with ground truth. Default is 0.5.
+        min_score (float): Minimum confidence score to filter predictions. Default is 0.0.
+
+    Returns:
+        dict: A dictionary containing evaluation metrics such as AP, recalls, and counts.
     """
     images_dir = data_root / split / "images"
     labels_dir = data_root / split / "labels"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Acumuladores
-    # PR global (face/no-face): un solo "clase" 0
-    per_true_face = {0: []}
-    per_score_face = {0: []}
+    # Accumulators for global PR (face/no-face)
+    per_true_face = {0: []}  # True labels for PR computation
+    per_score_face = {0: []}  # Scores for PR computation
 
-    # Contadores por orientación
-    gt_per_cls = {c: 0 for c in LABELS_MAP}
-    tp_per_cls = {c: 0 for c in LABELS_MAP}
-    fn_per_cls = {c: 0 for c in LABELS_MAP}
-    fp_global = 0
+    # Counters for orientation-specific metrics
+    gt_per_cls = {c: 0 for c in LABELS_MAP}  # Ground truth counts per class
+    tp_per_cls = {c: 0 for c in LABELS_MAP}  # True positives per class
+    fn_per_cls = {c: 0 for c in LABELS_MAP}  # False negatives per class
+    fp_global = 0  # Global false positives (all unmatched predictions)
 
-    # Para lectura tamaño imagen
+    # Helper function to get image dimensions
     def img_size(p: Path) -> Tuple[int, int]:
         with Image.open(p) as im:
-            return im.size  # (W,H)
+            return im.size  # (Width, Height)
 
-    # Loop por imágenes
+    # Gather all image files in the dataset split
     exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
     jpgs = []
     for pat in exts:
         jpgs += list(images_dir.glob(pat))
     jpgs = sorted(jpgs)
+
+    # Loop through each image
     for img_p in jpgs:
         stem = img_p.stem
-        gt_p = labels_dir / f"{stem}.txt"
-        pr_p = sota_dir / f"{stem}.txt"
+        gt_p = labels_dir / f"{stem}.txt"  # Ground truth file
+        pr_p = sota_dir / f"{stem}.txt"  # Prediction file
 
-        W, H = img_size(img_p)
+        W, H = img_size(img_p)  # Image dimensions
 
-        # GT bebés
+        # Read ground truth (GT) data
         gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))
         for c in gt_cls.tolist():
-            gt_per_cls[int(c)] += 1
+            gt_per_cls[int(c)] += 1  # Count GT instances per class
 
-        # Pred SOTA
+        # Read SOTA predictions
         pr_xywhr, pr_scores = read_sota_preds_xywhr_xyxy(
             pred_txt_path=pr_p, img_wh=(W, H), min_score=min_score
         )
 
-        # Si no hay GT bebés:
+        # If no ground truth exists for the image
         if gt_xywhr.numel() == 0:
-            # Todas las predicciones son FP globales
+            # All predictions are false positives
             fp_global += int(pr_xywhr.shape[0])
-            # También alimentar PR global (negativos)
+            # Add predictions to global PR computation as negatives
             for s in pr_scores.tolist():
                 per_true_face[0].append(0)
                 per_score_face[0].append(float(s))
             continue
 
-        # Matching
+        # Perform matching between GT and predictions
         matches, unmatched_gt, unmatched_pr = greedy_match(
             gt_xywhr, pr_xywhr, pr_scores, iou_th=iou_th
         )
 
-        # Marcar PR global
+        # Update global PR computation
         matched_pr_idx = set([m for (_, m, _) in matches])
-        # alimentar PR global
         for j, s in enumerate(pr_scores.tolist()):
             is_tp = 1 if j in matched_pr_idx else 0
             per_true_face[0].append(is_tp)
             per_score_face[0].append(float(s))
 
-        # contadores por clase (TP/FN) usando gt_cls
+        # Update class-specific TP and FN counts
         matched_gt_idx = set([g for (g, _, _) in matches])
         for gi in matched_gt_idx:
             c = int(gt_cls[gi].item())
@@ -113,37 +131,40 @@ def evaluate_sota(
         for gi in unmatched_gt:
             c = int(gt_cls[gi].item())
             fn_per_cls[c] += 1
-    # ======= Métricas y salidas =======
-    # AP global (cara/no-cara)
+
+    # ======= Compute Metrics and Save Outputs =======
+
+    # Compute global Average Precision (AP) for face/no-face
     mAP, APs = compute_map_and_pr(per_true_face, per_score_face)
     ap_face = APs[0]
 
-    # Plot PR global
+    # Plot Precision-Recall curve
     pr_fig = plot_precision_recall(
         per_true_face, per_score_face, labels_map={0: "Face"}, mAP=mAP
     )
     pr_fig.savefig(out_dir / "precision_recall_face.png", dpi=150, bbox_inches="tight")
     plt.close(pr_fig)
 
-    # Recall por orientación
+    # Compute recall per orientation class
     recalls = {
         c: (tp_per_cls[c] / gt_per_cls[c]) if gt_per_cls[c] > 0 else 0.0
         for c in LABELS_MAP
     }
-    # Plot bar
+
+    # Plot recall per orientation as a bar chart
     fig, ax = plt.subplots(figsize=(8, 4))
     xs = list(LABELS_MAP.keys())
     ax.bar([LABELS_MAP[x] for x in xs], [recalls[x] for x in xs])
     ax.set_ylim(0, 1)
     ax.set_ylabel("Recall")
-    ax.set_title("Recall por orientación (SOTA vs. GT bebé)")
+    ax.set_title("Recall per Orientation (SOTA vs. GT Baby)")
     for i, c in enumerate(xs):
         ax.text(i, recalls[c] + 0.02, f"{recalls[c]:.2f}", ha="center", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_dir / "recall_per_orientation.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    # CSV
+    # Save metrics to a CSV file
     with open(out_dir / "sota_metrics.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value"])
@@ -164,6 +185,7 @@ def evaluate_sota(
         w.writerow([])
         w.writerow(["FP_global", fp_global])
 
+    # Print results to the console
     print("\n[RESULTS]")
     print(f"  AP (face/no-face): {ap_face:.4f}")
     for c in LABELS_MAP:
@@ -171,7 +193,7 @@ def evaluate_sota(
             f"  {LABELS_MAP[c]:<15s}  GT:{gt_per_cls[c]:4d}  TP:{tp_per_cls[c]:4d}  "
             f"FN:{fn_per_cls[c]:4d}  Recall:{recalls[c]:.3f}"
         )
-    print(f"  FP global (todas las imágenes): {fp_global}")
+    print(f"  FP global (all images): {fp_global}")
 
     return {
         "AP_face": ap_face,
@@ -187,27 +209,27 @@ def evaluate_sota(
 
 def main():
     ap = argparse.ArgumentParser(
-        "Evaluate SOTA (face/no-face) contra GT bebé + orientaciones"
+        "Evaluate SOTA (face/no-face) against GT baby + orientations"
     )
     ap.add_argument(
         "--data-root",
         type=str,
         required=True,
-        help="Raíz del dataset (con test/images y test/labels)",
+        help="Root directory of the dataset (contains test/images and test/labels)",
     )
-    ap.add_argument("--split", type=str, default="test")
+    ap.add_argument(
+        "--split", type=str, default="test", help="Dataset split to evaluate"
+    )
     ap.add_argument(
         "--sota-dir",
         type=str,
         required=True,
-        help="Directorio con .txt de predicciones SOTA",
+        help="Directory containing SOTA predictions in .txt format",
     )
-    ap.add_argument("--out", type=str, required=True, help="Directorio de salida")
+    ap.add_argument("--out", type=str, required=True, help="Output directory")
+    ap.add_argument("--iou", type=float, default=0.5, help="IoU threshold for matching")
     ap.add_argument(
-        "--iou", type=float, default=0.5, help="IoU threshold para matching"
-    )
-    ap.add_argument(
-        "--min-score", type=float, default=0.0, help="Filtrar predicciones por score"
+        "--min-score", type=float, default=0.0, help="Filter predictions by score"
     )
     args = ap.parse_args()
 

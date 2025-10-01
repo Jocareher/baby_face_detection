@@ -79,7 +79,6 @@ def read_gt_baby_xywhr(
     return torch.stack(xywhr_list, dim=0), torch.tensor(cls_list, dtype=torch.long)
 
 
-# --- 2) Parseo de predicciones SOTA: score x y w h angle(=0) ---
 def read_sota_preds_xywhr_xyxy(
     pred_txt_path: Path,
     img_wh: Tuple[int, int],
@@ -180,7 +179,95 @@ def read_sota_preds_xywhr_xyxy(
     return torch.stack(xywhr_list, dim=0), torch.tensor(score_list, dtype=torch.float32)
 
 
-# --- 3) Matching greedy por IoU ---
+def read_yolo_oriented_preds_xywhr(
+    pred_txt_path: Path,
+    min_score: float = 0.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Reads YOLO-oriented predictions from a text file and converts them to a consistent format.
+
+    The input file is expected to have lines formatted as:
+        class_idx x1 y1 x2 y2 angle_radians score
+    where:
+        - class_idx: Class index (integer, 0-based).
+        - x1, y1: Top-left corner of the bounding box (in pixels).
+        - x2, y2: Bottom-right corner of the bounding box (in pixels).
+        - angle_radians: Rotation angle of the bounding box in radians.
+        - score: Confidence score of the prediction (float).
+
+    Args:
+        pred_txt_path (Path): Path to the predictions file.
+        min_score (float): Minimum score threshold for filtering predictions.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            - pred_xywhr: Tensor of shape (P, 5) containing bounding boxes in pixel coordinates
+              as (cx, cy, w, h, θ).
+            - pred_cls: Tensor of shape (P,) containing class indices for each prediction.
+            - pred_scores: Tensor of shape (P,) containing confidence scores for each prediction.
+
+    If the file does not exist or contains no valid predictions, returns empty tensors.
+    """
+    if not pred_txt_path.exists():
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.long),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+    xywhr_list, cls_list, score_list = [], [], []
+    with open(pred_txt_path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue  # Skip empty lines
+            toks = line.split()
+            if len(toks) < 7:
+                # Skip malformed lines
+                continue
+
+            # Parse values from the line
+            cls_idx = int(float(toks[0]))  # Class index
+            x1 = float(toks[1])  # Top-left x-coordinate
+            y1 = float(toks[2])  # Top-left y-coordinate
+            x2 = float(toks[3])  # Bottom-right x-coordinate
+            y2 = float(toks[4])  # Bottom-right y-coordinate
+            theta = float(toks[5])  # Rotation angle in radians
+            score = float(toks[6])  # Confidence score
+
+            if score < min_score:
+                continue  # Skip predictions below the score threshold
+
+            # Normalize the order of corners and compute (cx, cy, w, h)
+            x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
+            y_min, y_max = (y1, y2) if y1 <= y2 else (y2, y1)
+            w = max(0.0, x_max - x_min)  # Width of the bounding box
+            h = max(0.0, y_max - y_min)  # Height of the bounding box
+            if w <= 0.0 or h <= 0.0:
+                continue  # Skip invalid boxes
+            cx = x_min + w / 2.0  # Center x-coordinate
+            cy = y_min + h / 2.0  # Center y-coordinate
+
+            # Append the parsed values to their respective lists
+            xywhr_list.append(torch.tensor([cx, cy, w, h, theta], dtype=torch.float32))
+            cls_list.append(cls_idx)
+            score_list.append(score)
+
+    if len(xywhr_list) == 0:
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.long),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+    # Stack results into tensors
+    return (
+        torch.stack(xywhr_list, dim=0),
+        torch.tensor(cls_list, dtype=torch.long),
+        torch.tensor(score_list, dtype=torch.float32),
+    )
+
+
 def greedy_match(
     gt_xywhr: torch.Tensor,
     pr_xywhr: torch.Tensor,

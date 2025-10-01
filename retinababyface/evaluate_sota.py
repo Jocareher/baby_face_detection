@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Any, List
 
+import numpy as np
+import torch
 from PIL import Image
 import matplotlib.pyplot as plt
 
@@ -12,8 +14,16 @@ from benchmark.benchmark import (
     read_sota_preds_xywhr_xyxy,
     greedy_match,
     read_gt_baby_xywhr,
+    read_yolo_oriented_preds_xywhr,
 )
-from engine.inference import plot_precision_recall, compute_map_and_pr
+from engine.inference import (
+    plot_precision_recall,
+    compute_map_and_pr,
+    plot_boxplots,
+    plot_confusion_matrix,
+    plot_f1_vs_threshold,
+)
+from data_setup.augmentations import wrap_to_pi
 
 LABELS_MAP: Dict[int, str] = {
     0: "Leftside",
@@ -207,6 +217,269 @@ def evaluate_sota(
     }
 
 
+def evaluate_yolo_oriented(
+    data_root: Path,
+    split: str,
+    pred_dir: Path,
+    out_dir: Path,
+    iou_th: float = 0.5,
+    min_score: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Compara el modelo YOLO-based (con orientación) contra GT bebé (orientaciones 0..4).
+    Genera: PR/AP/mAP, CM, IoU/Δθ boxplots, F1 vs threshold, y CSV con TP/FP/FN por clase.
+    """
+    images_dir = data_root / split / "images"
+    labels_dir = data_root / split / "labels"
+    out_dir = Path(out_dir)
+    figs_dir = out_dir / "figures"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    figs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Acumuladores al estilo run_inference
+    per_true = {c: [] for c in LABELS_MAP}
+    per_score = {c: [] for c in LABELS_MAP}
+    stats = {c: {"tp": 0, "fp": 0, "fn": 0} for c in LABELS_MAP}
+    iou_errs = {c: [] for c in LABELS_MAP}
+    angle_errs = {c: [] for c in LABELS_MAP}
+    y_true: List[int] = []
+    y_pred: List[int] = []
+    all_gts: List[int] = []
+    all_preds: List[int] = []
+    all_scores: List[float] = []
+
+    def ensure_present_for_all_classes():
+        # Igual que en tu pipeline: si una clase quedó sin entradas, mete (0, 0.0) para no romper plots.
+        for cls in LABELS_MAP:
+            if not per_true[cls]:
+                per_true[cls].append(0)
+                per_score[cls].append(0.0)
+
+    def img_size(p: Path) -> Tuple[int, int]:
+        with Image.open(p) as im:
+            return im.size  # (W,H)
+
+    # Recorre imágenes
+    jpgs = sorted(list(images_dir.glob("*.jpg"))) + sorted(
+        list(images_dir.glob("*.png"))
+    )
+    for img_p in jpgs:
+        stem = img_p.stem
+        gt_p = labels_dir / f"{stem}.txt"
+        pr_p = pred_dir / f"{stem}.txt"
+
+        W, H = img_size(img_p)
+
+        # ---- GT bebés ----
+        gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))
+        G = int(gt_xywhr.shape[0])
+
+        # ---- Predicciones YOLO-based ----
+        pr_xywhr, pr_cls, pr_scores = read_yolo_oriented_preds_xywhr(
+            pr_p, min_score=min_score
+        )
+        P = int(pr_xywhr.shape[0])
+
+        # Caso sin GT bebés: toda pred es FP (por su clase)
+        if G == 0:
+            for j in range(P):
+                c_det = int(pr_cls[j])
+                s_det = float(pr_scores[j])
+                if c_det in stats:
+                    stats[c_det]["fp"] += 1
+                    per_true[c_det].append(0)
+                    per_score[c_det].append(s_det)
+
+                y_true.append(-1)
+                y_pred.append(c_det)
+                all_gts.append(-1)
+                all_preds.append(c_det)
+                all_scores.append(s_det)
+            continue
+
+        # ---- Matching por IoU ----
+        matches, unmatched_gt, unmatched_pr = greedy_match(
+            gt_xywhr, pr_xywhr, pr_scores, iou_th=iou_th
+        )
+
+        matched_gt_idx = {g for (g, _, _) in matches}
+        matched_pr_idx = {p for (_, p, _) in matches}
+
+        # ---- Procesar matches ----
+        for gi, pj, iou_val in matches:
+            true_cls = int(gt_cls[gi])
+            pred_cls = int(pr_cls[pj])
+            score_det = float(pr_scores[pj])
+
+            if pred_cls == true_cls and true_cls in stats:
+                # TP clase correcta
+                stats[true_cls]["tp"] += 1
+                per_true[true_cls].append(1)
+                per_score[true_cls].append(score_det)
+                y_true.append(true_cls)
+                y_pred.append(true_cls)
+
+                # IoU y error angular
+                iou_errs[true_cls].append(float(iou_val))
+                dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr[gi, 4])
+                angle_errs[true_cls].append(float(torch.abs(dtheta) * 180.0 / np.pi))
+
+                all_gts.append(true_cls)
+                all_preds.append(true_cls)
+                all_scores.append(score_det)
+
+            else:
+                # Confusión de clase: FP para pred_cls, FN para true_cls
+                if pred_cls in stats:
+                    stats[pred_cls]["fp"] += 1
+                    per_true[pred_cls].append(0)
+                    per_score[pred_cls].append(score_det)
+
+                if true_cls in stats:
+                    stats[true_cls]["fn"] += 1
+
+                y_true.append(true_cls)
+                y_pred.append(pred_cls)
+                all_gts.append(true_cls)
+                all_preds.append(pred_cls)
+                all_scores.append(score_det)
+
+        # ---- Predicciones no emparejadas → FP ----
+        for pj in unmatched_pr:
+            c_det = int(pr_cls[pj])
+            s_det = float(pr_scores[pj])
+            if c_det in stats:
+                stats[c_det]["fp"] += 1
+                per_true[c_det].append(0)
+                per_score[c_det].append(s_det)
+
+            y_true.append(-1)
+            y_pred.append(c_det)
+            all_gts.append(-1)
+            all_preds.append(c_det)
+            all_scores.append(s_det)
+
+        # ---- GT no emparejados → FN ----
+        for gi in unmatched_gt:
+            c_gt = int(gt_cls[gi])
+            if c_gt in stats:
+                stats[c_gt]["fn"] += 1
+                # Para PR por clase: marcar que existe el GT con score 0
+                per_true[c_gt].append(1)
+                per_score[c_gt].append(0.0)
+
+            y_true.append(c_gt)
+            y_pred.append(-1)
+            all_gts.append(c_gt)
+            all_preds.append(-1)
+            all_scores.append(0.0)
+
+    # ==========
+    # Métricas
+    # ==========
+    ensure_present_for_all_classes()
+    mAP, APs = compute_map_and_pr(per_true, per_score)
+
+    # PR por clase + PR global
+    pr_fig = plot_precision_recall(per_true, per_score, LABELS_MAP, mAP=mAP)
+    pr_fig.savefig(figs_dir / "precision_recall.png", dpi=150, bbox_inches="tight")
+    plt.close(pr_fig)
+
+    # CM raw/normalized (incluye BG=-1)
+    cm_figs = plot_confusion_matrix(y_true=y_true, y_pred=y_pred, labels_map=LABELS_MAP)
+    cm_figs["raw"].savefig(figs_dir / "class_cm_raw.png", dpi=150, bbox_inches="tight")
+    plt.close(cm_figs["raw"])
+    cm_figs["normalized"].savefig(
+        figs_dir / "class_cm_normalized.png", dpi=150, bbox_inches="tight"
+    )
+    plt.close(cm_figs["normalized"])
+
+    # IoU boxplots por clase
+    iou_data = [
+        {"class": LABELS_MAP[c], "iou": v} for c, vals in iou_errs.items() for v in vals
+    ]
+    if len(iou_data) > 0:
+        iou_fig = plot_boxplots(
+            iou_data,
+            x_field="class",
+            y_field="iou",
+            title="IoU Distribution per Class (YOLO Oriented)",
+            labels_map=LABELS_MAP,
+            y_lim=(0, 1),
+        )
+        iou_fig.savefig(figs_dir / "iou_boxplot.png", dpi=150, bbox_inches="tight")
+        plt.close(iou_fig)
+
+    # Error angular boxplots por clase
+    ang_data = [
+        {"class": LABELS_MAP[c], "error°": v}
+        for c, vals in angle_errs.items()
+        for v in vals
+    ]
+    if len(ang_data) > 0:
+        ang_fig = plot_boxplots(
+            ang_data,
+            x_field="class",
+            y_field="error°",
+            title="Angle-Error Distribution per Class (YOLO Oriented)",
+            labels_map=LABELS_MAP,
+            y_lim=(0, 180),
+        )
+        ang_fig.savefig(figs_dir / "angle_boxplot.png", dpi=150, bbox_inches="tight")
+        plt.close(ang_fig)
+
+    # F1 vs threshold
+    f1_fig = plot_f1_vs_threshold(
+        all_gts=all_gts,
+        all_scores=all_scores,
+        all_preds=all_preds,
+        labels_map=LABELS_MAP,
+    )
+    f1_fig.savefig(figs_dir / "f1_threshold.png", dpi=150, bbox_inches="tight")
+    plt.close(f1_fig)
+
+    # CSV con resumen por clase
+    with open(out_dir / "yolo_oriented_metrics.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "value"])
+        w.writerow(["mAP", f"{mAP:.4f}"])
+        w.writerow([])
+        w.writerow(["class", "AP", "TP", "FP", "FN", "mean_IoU", "mean_angle_err_deg"])
+        for c in LABELS_MAP:
+            ap_c = APs.get(c, 0.0)
+            tp = stats[c]["tp"]
+            fp = stats[c]["fp"]
+            fn = stats[c]["fn"]
+            miou = np.mean(iou_errs[c]) if len(iou_errs[c]) > 0 else 0.0
+            mang = np.mean(angle_errs[c]) if len(angle_errs[c]) > 0 else 0.0
+            w.writerow(
+                [LABELS_MAP[c], f"{ap_c:.4f}", tp, fp, fn, f"{miou:.4f}", f"{mang:.2f}"]
+            )
+
+    print("\n[RESULTS - YOLO Oriented]")
+    print(f"  mAP: {mAP:.4f}")
+    for c in LABELS_MAP:
+        ap_c = APs.get(c, 0.0)
+        print(
+            f"  {LABELS_MAP[c]:<15s}  AP:{ap_c:6.3f}  TP:{stats[c]['tp']:4d}  FP:{stats[c]['fp']:4d}  "
+            f"FN:{stats[c]['fn']:4d}  IoUμ:{(np.mean(iou_errs[c]) if iou_errs[c] else 0):.3f}  "
+            f"Δθμ°:{(np.mean(angle_errs[c]) if angle_errs[c] else 0):.1f}"
+        )
+
+    return {
+        "mAP": mAP,
+        "APs": APs,
+        "stats": stats,
+        "iou_errs": iou_errs,
+        "angle_errs": angle_errs,
+        "y_true": y_true,
+        "y_pred": y_pred,
+        "all_gts": all_gts,
+        "all_preds": all_preds,
+        "all_scores": all_scores,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(
         "Evaluate SOTA (face/no-face) against GT baby + orientations"
@@ -226,6 +499,11 @@ def main():
         required=True,
         help="Directory containing SOTA predictions in .txt format",
     )
+    ap.add_argument(
+        "--obb",
+        action="store_true",
+        help="Whether to evaluate YOLO-based oriented model",
+    )
     ap.add_argument("--out", type=str, required=True, help="Output directory")
     ap.add_argument("--iou", type=float, default=0.5, help="IoU threshold for matching")
     ap.add_argument(
@@ -233,14 +511,28 @@ def main():
     )
     args = ap.parse_args()
 
-    evaluate_sota(
-        data_root=Path(args.data_root),
-        split=args.split,
-        sota_dir=Path(args.sota_dir),
-        out_dir=Path(args.out),
-        iou_th=args.iou,
-        min_score=args.min_score,
-    )
+    if args.obb:
+        if not args.sota_dir:
+            raise ValueError(
+                "For --obb evaluation, --sota-dir (predictions) is required."
+            )
+        evaluate_yolo_oriented(
+            data_root=Path(args.data_root),
+            split=args.split,
+            pred_dir=Path(args.sota_dir),
+            out_dir=Path(args.out),
+            iou_th=args.iou,
+            min_score=args.min_score,
+        )
+    else:
+        evaluate_sota(
+            data_root=Path(args.data_root),
+            split=args.split,
+            sota_dir=Path(args.sota_dir),
+            out_dir=Path(args.out),
+            iou_th=args.iou,
+            min_score=args.min_score,
+        )
 
 
 if __name__ == "__main__":

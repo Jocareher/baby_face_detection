@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import csv
+import json
 from pathlib import Path
 from typing import Tuple, Dict, Any, List
 
@@ -43,114 +44,159 @@ def evaluate_sota(
     out_dir: Path,
     iou_th: float = 0.5,
     min_score: float = 0.0,
-):
+) -> Dict[str, Any]:
     """
-    Evaluate the performance of a State-of-the-Art (SOTA) face detection model
-    against ground truth (GT) data for baby faces, including orientation-specific metrics.
-
-    This function computes:
-      - Precision-Recall (PR) and Average Precision (AP) for face/no-face detection.
-      - Recall per orientation class.
-      - True Positives (TP), False Positives (FP), and False Negatives (FN) globally and per class.
+    Evaluate a SOTA (state-of-the-art) face detector against ground truth (GT) data for baby faces.
+    The evaluation includes:
+      - Precision-Recall (PR) and Average Precision (AP) for face/no-face classification.
+      - Recall per orientation class (e.g., frontal, left-side, etc.).
+      - Global false positives (FP) count, including unmatched predictions per image.
+      - IoU analysis for true positives (TP), including histograms, boxplots, and statistics.
+      - Exclusion of class -1 (non-baby/adult) from matching (all predictions on adults are treated as FP).
 
     Outputs:
-      - Precision-Recall curve plot.
-      - Recall per orientation bar plot.
-      - Metrics summary in a CSV file.
+      - PR curve for face/no-face classification.
+      - Recall per orientation class as a bar plot.
+      - IoU statistics and distribution plots.
+      - CSV files for matches and summary metrics.
 
     Args:
-        data_root (Path): Root directory of the dataset (contains `test/images` and `test/labels`).
+        data_root (Path): Root directory of the dataset (contains split/images and split/labels).
         split (str): Dataset split to evaluate (e.g., "test").
-        sota_dir (Path): Directory containing SOTA model predictions in `.txt` format.
-        out_dir (Path): Output directory for saving plots and metrics.
-        iou_th (float): IoU threshold for matching predictions with ground truth. Default is 0.5.
-        min_score (float): Minimum confidence score to filter predictions. Default is 0.0.
+        sota_dir (Path): Directory containing SOTA predictions in .txt format.
+        out_dir (Path): Output directory for evaluation results.
+        iou_th (float): IoU threshold for matching predictions to ground truth.
+        min_score (float): Minimum score threshold for filtering predictions.
 
     Returns:
-        dict: A dictionary containing evaluation metrics such as AP, recalls, and counts.
+        Dict[str, Any]: Dictionary containing evaluation metrics and statistics.
     """
     images_dir = data_root / split / "images"
     labels_dir = data_root / split / "labels"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Accumulators for global PR (face/no-face)
-    per_true_face = {0: []}  # True labels for PR computation
-    per_score_face = {0: []}  # Scores for PR computation
+    # ===== PR global (face/no-face) =====
+    # Track true positives (TP) and false positives (FP) for face/no-face classification
+    per_true_face: Dict[int, List[int]] = {0: []}  # 1 if prediction is TP, 0 if FP
+    per_score_face: Dict[int, List[float]] = {0: []}  # Confidence scores of predictions
 
-    # Counters for orientation-specific metrics
-    gt_per_cls = {c: 0 for c in LABELS_MAP}  # Ground truth counts per class
-    tp_per_cls = {c: 0 for c in LABELS_MAP}  # True positives per class
-    fn_per_cls = {c: 0 for c in LABELS_MAP}  # False negatives per class
-    fp_global = 0  # Global false positives (all unmatched predictions)
+    # ===== Orientation-specific counters =====
+    # Track ground truth (GT), true positives (TP), and false negatives (FN) per orientation class
+    gt_per_cls = {c: 0 for c in LABELS_MAP}
+    tp_per_cls = {c: 0 for c in LABELS_MAP}
+    fn_per_cls = {c: 0 for c in LABELS_MAP}
 
-    # Helper function to get image dimensions
+    # ===== Global false positives =====
+    fp_global = 0  # Total number of false positives across all images
+
+    # ===== IoU (TPs) =====
+    # Track IoU values for true positives and prepare data for boxplots and CSV outputs
+    all_iou: List[float] = []
+    all_scores_matched: List[float] = []
+    iou_per_cls: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}
+    iou_data_for_boxplot: List[
+        Dict[str, Any]
+    ] = []  # For boxplots: {"class": label_name, "IoU": value}
+    all_rows_matches: List[
+        List[Any]
+    ] = []  # CSV rows: [image, gt_idx, pred_idx, score, iou, class_name]
+
+    # Helper function: Get image size (width, height)
     def img_size(p: Path) -> Tuple[int, int]:
         with Image.open(p) as im:
-            return im.size  # (Width, Height)
+            return im.size  # (W, H)
 
-    # Gather all image files in the dataset split
+    # Collect all image files with supported extensions
     exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
-    jpgs = []
+    jpgs: List[Path] = []
     for pat in exts:
         jpgs += list(images_dir.glob(pat))
     jpgs = sorted(jpgs)
 
-    # Loop through each image
+    # ===== Loop through images =====
     for img_p in jpgs:
         stem = img_p.stem
-        gt_p = labels_dir / f"{stem}.txt"  # Ground truth file
-        pr_p = sota_dir / f"{stem}.txt"  # Prediction file
+        gt_p = labels_dir / f"{stem}.txt"
+        pr_p = sota_dir / f"{stem}.txt"
 
-        W, H = img_size(img_p)  # Image dimensions
+        W, H = img_size(img_p)
 
-        # Read ground truth (GT) data
+        # --- Read ground truth (GT) data ---
+        # GT may include class -1 (non-baby/adult), which is excluded from matching
         gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))
-        for c in gt_cls.tolist():
-            gt_per_cls[int(c)] += 1  # Count GT instances per class
+        if gt_cls.numel() > 0:
+            keep_baby = gt_cls != -1  # Exclude class -1
+            gt_xywhr_baby = gt_xywhr[keep_baby]
+            gt_cls_baby = gt_cls[keep_baby]
+        else:
+            gt_xywhr_baby = gt_xywhr
+            gt_cls_baby = gt_cls
 
-        # Read SOTA predictions
+        # Count GT instances per baby class
+        for c in gt_cls_baby.tolist():
+            gt_per_cls[int(c)] += 1
+
+        # --- Read SOTA predictions ---
         pr_xywhr, pr_scores = read_sota_preds_xywhr_xyxy(
             pred_txt_path=pr_p, img_wh=(W, H), min_score=min_score
         )
 
-        # If no ground truth exists for the image
-        if gt_xywhr.numel() == 0:
-            # All predictions are false positives
+        # If no GT baby instances exist, all predictions are false positives
+        if gt_xywhr_baby.numel() == 0:
             fp_global += int(pr_xywhr.shape[0])
-            # Add predictions to global PR computation as negatives
             for s in pr_scores.tolist():
                 per_true_face[0].append(0)
                 per_score_face[0].append(float(s))
             continue
 
-        # Perform matching between GT and predictions
+        # --- Match predictions to GT (babies only) ---
         matches, unmatched_gt, unmatched_pr = greedy_match(
-            gt_xywhr, pr_xywhr, pr_scores, iou_th=iou_th
+            gt_xywhr_baby, pr_xywhr, pr_scores, iou_th=iou_th
         )
 
-        # Update global PR computation
+        # PR global: Mark predictions as TP if matched, otherwise FP
         matched_pr_idx = set([m for (_, m, _) in matches])
         for j, s in enumerate(pr_scores.tolist()):
             is_tp = 1 if j in matched_pr_idx else 0
             per_true_face[0].append(is_tp)
             per_score_face[0].append(float(s))
 
-        # Update class-specific TP and FN counts
-        matched_gt_idx = set([g for (g, _, _) in matches])
-        for gi in matched_gt_idx:
-            c = int(gt_cls[gi].item())
+        # Process matches: IoU/TP and class-specific counters
+        rows_matches = []
+        for gi, pj, iou in matches:
+            c = int(gt_cls_baby[gi].item())
+            class_name = LABELS_MAP[c]
+            iou_val = float(iou)
+            score_val = float(pr_scores[pj].item())
+
+            all_iou.append(iou_val)
+            all_scores_matched.append(score_val)
+            iou_per_cls[c].append(iou_val)
+            iou_data_for_boxplot.append({"class": class_name, "IoU": iou_val})
+
             tp_per_cls[c] += 1
+            rows_matches.append(
+                [img_p.name, int(gi), int(pj), score_val, iou_val, class_name]
+            )
+
+        # Count false negatives (unmatched GT instances) per class
         for gi in unmatched_gt:
-            c = int(gt_cls[gi].item())
+            c = int(gt_cls_baby[gi].item())
             fn_per_cls[c] += 1
 
-    # ======= Compute Metrics and Save Outputs =======
+        # Count false positives (unmatched predictions)
+        fp_global += len(unmatched_pr)
 
-    # Compute global Average Precision (AP) for face/no-face
+        # Save rows for matches CSV
+        all_rows_matches.extend(rows_matches)
+
+    # ===== Metrics and Outputs =====
+
+    # Compute global AP (face/no-face)
     mAP, APs = compute_map_and_pr(per_true_face, per_score_face)
     ap_face = APs[0]
 
-    # Plot Precision-Recall curve
+    # Plot PR curve for face/no-face classification
     pr_fig = plot_precision_recall(
         per_true_face, per_score_face, labels_map={0: "Face"}, mAP=mAP
     )
@@ -163,7 +209,7 @@ def evaluate_sota(
         for c in LABELS_MAP
     }
 
-    # Plot recall per orientation as a bar chart
+    # Plot recall per orientation class
     fig, ax = plt.subplots(figsize=(8, 4))
     xs = list(LABELS_MAP.keys())
     ax.bar([LABELS_MAP[x] for x in xs], [recalls[x] for x in xs])
@@ -171,17 +217,88 @@ def evaluate_sota(
     ax.set_ylabel("Recall")
     ax.set_title("Recall per Orientation (SOTA vs. GT Baby)")
     for i, c in enumerate(xs):
-        ax.text(i, recalls[c] + 0.02, f"{recalls[c]:.2f}", ha="center", fontsize=10)
+        ax.text(
+            i,
+            min(0.98, recalls[c] + 0.02),
+            f"{recalls[c]:.2f}",
+            ha="center",
+            fontsize=10,
+        )
     fig.tight_layout()
     fig.savefig(out_dir / "recall_per_orientation.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    # Save metrics to a CSV file
+    # ===== IoU Statistics and Plots =====
+    if len(all_iou) > 0:
+        iou_arr = np.asarray(all_iou, dtype=np.float32)
+        iou_stats = {
+            "count": int(iou_arr.size),
+            "mean": float(iou_arr.mean()),
+            "median": float(np.median(iou_arr)),
+            "p25": float(np.percentile(iou_arr, 25)),
+            "p75": float(np.percentile(iou_arr, 75)),
+            "std": float(iou_arr.std(ddof=0)),
+        }
+    else:
+        iou_stats = {
+            "count": 0,
+            "mean": 0.0,
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "std": 0.0,
+        }
+
+    # Save IoU statistics to JSON
+    with open(out_dir / "iou_stats.json", "w") as jf:
+        json.dump(iou_stats, jf, indent=2)
+
+    # Plot IoU histogram for true positives
+    if len(all_iou) > 0:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.hist(all_iou, bins=20, range=(0, 1), edgecolor="black")
+        ax.set_xlabel("IoU (TP)")
+        ax.set_ylabel("Count")
+        ax.set_title("IoU Distribution (TP)")
+        fig.tight_layout()
+        fig.savefig(out_dir / "iou_hist.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    # Plot IoU boxplot per class
+    if len(iou_data_for_boxplot) > 0:
+        fig_bp = plot_boxplots(
+            data=iou_data_for_boxplot,
+            x_field="class",  # Grouping key (uses labels_map[c] as string)
+            y_field="IoU",  # Metric to plot
+            title="IoU per Orientation (TP)",
+            labels_map=LABELS_MAP,  # Mapping {idx:int -> name:str}
+            y_lim=(0.0, 1.0),
+            cmap_name="tab10",
+        )
+        fig_bp.savefig(
+            out_dir / "iou_boxplot_per_class.png", dpi=150, bbox_inches="tight"
+        )
+        plt.close(fig_bp)
+
+    # Save matches to CSV
+    with open(out_dir / "matches.csv", "w", newline="") as fcsv:
+        wcsv = csv.writer(fcsv)
+        wcsv.writerow(["image", "gt_idx", "pred_idx", "score", "iou", "class"])
+        wcsv.writerows(all_rows_matches)
+
+    # Save summary metrics to CSV
     with open(out_dir / "sota_metrics.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value"])
         w.writerow(["AP_face", f"{ap_face:.4f}"])
         w.writerow(["mAP_face", f"{mAP:.4f}"])
+        w.writerow([])
+        w.writerow(["IoU_count_TP", iou_stats["count"]])
+        w.writerow(["IoU_mean", f"{iou_stats['mean']:.4f}"])
+        w.writerow(["IoU_median", f"{iou_stats['median']:.4f}"])
+        w.writerow(["IoU_p25", f"{iou_stats['p25']:.4f}"])
+        w.writerow(["IoU_p75", f"{iou_stats['p75']:.4f}"])
+        w.writerow(["IoU_std", f"{iou_stats['std']:.4f}"])
         w.writerow([])
         w.writerow(["class", "GT", "TP", "FN", "Recall"])
         for c in LABELS_MAP:
@@ -197,7 +314,7 @@ def evaluate_sota(
         w.writerow([])
         w.writerow(["FP_global", fp_global])
 
-    # Print results to the console
+    # Print summary to console
     print("\n[RESULTS]")
     print(f"  AP (face/no-face): {ap_face:.4f}")
     for c in LABELS_MAP:
@@ -206,9 +323,16 @@ def evaluate_sota(
             f"FN:{fn_per_cls[c]:4d}  Recall:{recalls[c]:.3f}"
         )
     print(f"  FP global (all images): {fp_global}")
+    if len(all_iou) > 0:
+        print(
+            f"  IoU(TP): mean={iou_stats['mean']:.3f}, "
+            f"median={iou_stats['median']:.3f}, p25={iou_stats['p25']:.3f}, "
+            f"p75={iou_stats['p75']:.3f}, std={iou_stats['std']:.3f}"
+        )
 
     return {
         "AP_face": ap_face,
+        "mAP_face": mAP,
         "per_true_face": per_true_face,
         "per_score_face": per_score_face,
         "gt_per_cls": gt_per_cls,
@@ -216,6 +340,7 @@ def evaluate_sota(
         "fn_per_cls": fn_per_cls,
         "recalls": recalls,
         "fp_global": fp_global,
+        "iou_stats": iou_stats,
     }
 
 

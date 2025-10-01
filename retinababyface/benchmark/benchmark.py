@@ -329,3 +329,20 @@ def greedy_match(
     unmatched_pr = [j for j, t in enumerate(pr_taken.tolist()) if not t]
 
     return matches, unmatched_gt, unmatched_pr
+
+
+def count_adults_in_gt(gt_txt_path: Path) -> int:
+    """Cuenta líneas con child_prob==0 en el .txt (adultos). Si no existe el .txt retorna 0."""
+    if not gt_txt_path.exists():
+        return 0
+    n_adults = 0
+    with open(gt_txt_path, "r") as f:
+        for line in f:
+            toks = line.strip().split()
+            if not toks:
+                continue
+            # Formato GT: cls_idx child_prob x1 y1 ... x4 y4 angle
+            if len(toks) >= 2 and toks[1].isdigit():
+                if int(toks[1]) == 0:
+                    n_adults += 1
+    return n_adults

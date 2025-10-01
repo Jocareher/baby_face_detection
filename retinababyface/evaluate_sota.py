@@ -9,12 +9,14 @@ import numpy as np
 import torch
 from PIL import Image
 import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 from benchmark.benchmark import (
     read_sota_preds_xywhr_xyxy,
     greedy_match,
     read_gt_baby_xywhr,
     read_yolo_oriented_preds_xywhr,
+    count_adults_in_gt,
 )
 from engine.inference import (
     plot_precision_recall,
@@ -281,16 +283,20 @@ def evaluate_yolo_oriented(
         P = int(pr_xywhr.shape[0])
 
         # Caso sin GT bebés: toda pred es FP (por su clase)
+        # ---- Caso sin GT bebés ----
         if G == 0:
+            n_adults = count_adults_in_gt(gt_p)
             if P == 0:
-                # BG "verdadero" y "predicho" → cuenta como TN en BG (aparece como TP en la fila BG de la CM)
-                y_true.append(-1)
-                y_pred.append(-1)
-                all_gts.append(-1)
-                all_preds.append(-1)
-                all_scores.append(0.0)
+                # TN: adultos (uno por adulto) o 1 si es puro fondo (no hay .txt)
+                tn_count = n_adults if n_adults > 0 else 1
+                for _ in range(tn_count):
+                    y_true.append(-1)
+                    y_pred.append(-1)
+                    all_gts.append(-1)
+                    all_preds.append(-1)
+                    all_scores.append(0.0)
             else:
-                # Toda pred es FP (por su clase) + filas BG en CM
+                # Predicciones en imagen sin bebés ⇒ todas FP
                 for j in range(P):
                     c_det = int(pr_cls[j])
                     s_det = float(pr_scores[j])
@@ -298,7 +304,6 @@ def evaluate_yolo_oriented(
                         stats[c_det]["fp"] += 1
                         per_true[c_det].append(0)
                         per_score[c_det].append(s_det)
-
                     y_true.append(-1)
                     y_pred.append(c_det)
                     all_gts.append(-1)
@@ -383,17 +388,21 @@ def evaluate_yolo_oriented(
             all_scores.append(0.0)
 
     # ==========
-    # Métricas
+    # Compute Metrics
     # ==========
+
+    # Ensure all classes are represented in the metrics, even if no predictions exist for them
     ensure_present_for_all_classes()
+
+    # Compute mean Average Precision (mAP) and AP per class
     mAP, APs = compute_map_and_pr(per_true, per_score)
 
-    # PR por clase + PR global
+    # Plot Precision-Recall (PR) curves for each class and save the figure
     pr_fig = plot_precision_recall(per_true, per_score, LABELS_MAP, mAP=mAP)
     pr_fig.savefig(figs_dir / "precision_recall.png", dpi=150, bbox_inches="tight")
     plt.close(pr_fig)
 
-    # CM raw/normalized (incluye BG=-1)
+    # Plot confusion matrices (raw and normalized) and save the figures
     cm_figs = plot_confusion_matrix(y_true=y_true, y_pred=y_pred, labels_map=LABELS_MAP)
     cm_figs["raw"].savefig(figs_dir / "class_cm_raw.png", dpi=150, bbox_inches="tight")
     plt.close(cm_figs["raw"])
@@ -402,7 +411,7 @@ def evaluate_yolo_oriented(
     )
     plt.close(cm_figs["normalized"])
 
-    # IoU boxplots por clase
+    # Plot IoU distribution as boxplots for each class and save the figure
     iou_data = [
         {"class": LABELS_MAP[c], "iou": v} for c, vals in iou_errs.items() for v in vals
     ]
@@ -418,7 +427,7 @@ def evaluate_yolo_oriented(
         iou_fig.savefig(figs_dir / "iou_boxplot.png", dpi=150, bbox_inches="tight")
         plt.close(iou_fig)
 
-    # Error angular boxplots por clase
+    # Plot angular error distribution as boxplots for each class and save the figure
     ang_data = [
         {"class": LABELS_MAP[c], "error°": v}
         for c, vals in angle_errs.items()
@@ -429,14 +438,14 @@ def evaluate_yolo_oriented(
             ang_data,
             x_field="class",
             y_field="error°",
-            title="Angle-Error Distribution per Class (YOLO Oriented)",
+            title="Angle-Error Distribution per Class (OBBabyFace)",
             labels_map=LABELS_MAP,
             y_lim=(0, 180),
         )
         ang_fig.savefig(figs_dir / "angle_boxplot.png", dpi=150, bbox_inches="tight")
         plt.close(ang_fig)
 
-    # F1 vs threshold
+    # Plot F1 score vs. threshold curve and save the figure
     f1_fig = plot_f1_vs_threshold(
         all_gts=all_gts,
         all_scores=all_scores,
@@ -446,91 +455,110 @@ def evaluate_yolo_oriented(
     f1_fig.savefig(figs_dir / "f1_threshold.png", dpi=150, bbox_inches="tight")
     plt.close(f1_fig)
 
-    # CSV con resumen por clase
     # ======================
-    #  Métricas detalladas
+    # Write Detailed Metrics to CSV
     # ======================
-    # 1) Matrices de confusión (raw y normalizada) para reutilizar aquí
+
+    # Compute raw and normalized confusion matrices for all classes (including background)
     labels_full = list(LABELS_MAP.keys()) + [-1]
     names_full = [LABELS_MAP.get(l, "BG") for l in labels_full]
-    from sklearn.metrics import confusion_matrix
     cm_raw = confusion_matrix(y_true, y_pred, labels=labels_full)
     cm_norm = cm_raw.astype(float)
     row_sums = cm_norm.sum(axis=1, keepdims=True)
     cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
 
-    # 2) Métricas por clase desde la CM
+    # Helper function for safe division
     def safe_div(a, b):
         return (a / b) if b > 0 else 0.0
 
+    # Compute mean and standard deviation for IoU and angular errors per class
     iou_mean = {c: (float(np.mean(v)) if len(v) else 0.0) for c, v in iou_errs.items()}
-    iou_std  = {c: (float(np.std(v))  if len(v) else 0.0) for c, v in iou_errs.items()}
-    ang_mean = {c: (float(np.mean(v)) if len(v) else 0.0) for c, v in angle_errs.items()}
-    ang_std  = {c: (float(np.std(v))  if len(v) else 0.0) for c, v in angle_errs.items()}
+    iou_std = {c: (float(np.std(v)) if len(v) else 0.0) for c, v in iou_errs.items()}
+    ang_mean = {
+        c: (float(np.mean(v)) if len(v) else 0.0) for c, v in angle_errs.items()
+    }
+    ang_std = {c: (float(np.std(v)) if len(v) else 0.0) for c, v in angle_errs.items()}
 
-    # CSV principal “metrics_per_class.csv”
+    # Build rows for per-class metrics using the confusion matrix
     per_class_rows = []
-    print("\n# --- METRICS PER CLASS -------------------------------------------------")
-    print("Class,TP,FP,FN,Precision,Recall,F1,AP_PR,IoU_mean,IoU_std,Angle_mean_deg,Angle_std_deg")
     for idx_i, cls in enumerate(labels_full):
         name = LABELS_MAP.get(cls, "BG")
         TP = int(cm_raw[idx_i, idx_i])
         FP = int(cm_raw[:, idx_i].sum() - TP)
         FN = int(cm_raw[idx_i, :].sum() - TP)
         prec = safe_div(TP, TP + FP)
-        rec  = safe_div(TP, TP + FN)
-        f1   = safe_div(2 * prec * rec, prec + rec) if (prec + rec) > 0 else 0.0
+        rec = safe_div(TP, TP + FN)
+        f1 = safe_div(2 * prec * rec, (prec + rec)) if (prec + rec) > 0 else 0.0
         ap_pr = float(APs.get(cls, 0.0)) if cls in APs else 0.0
-        miou  = iou_mean.get(cls, 0.0)
-        siou  = iou_std.get(cls, 0.0)
-        mang  = ang_mean.get(cls, 0.0)
-        sang  = ang_std.get(cls, 0.0)
+        miou = iou_mean.get(cls, 0.0)
+        siou = iou_std.get(cls, 0.0)
+        mang = ang_mean.get(cls, 0.0)
+        sang = ang_std.get(cls, 0.0)
 
-        print(f"{name},{TP},{FP},{FN},{prec:.4f},{rec:.4f},{f1:.4f},{ap_pr:.4f},{miou:.4f},{siou:.4f},{mang:.4f},{sang:.4f}")
-        per_class_rows.append([
-            name, TP, FP, FN, f"{prec:.4f}", f"{rec:.4f}", f"{f1:.4f}",
-            f"{ap_pr:.4f}", f"{miou:.4f}", f"{siou:.4f}", f"{mang:.4f}", f"{sang:.4f}"
-        ])
+        per_class_rows.append(
+            [
+                name,
+                TP,
+                FP,
+                FN,
+                f"{prec:.4f}",
+                f"{rec:.4f}",
+                f"{f1:.4f}",
+                f"{ap_pr:.4f}",
+                f"{miou:.4f}",
+                f"{siou:.4f}",
+                f"{mang:.4f}",
+                f"{sang:.4f}",
+            ]
+        )
 
-    # mAP global (como antes) — guardo un archivo chico para el “headline”
-    with open(out_dir / "yolo_oriented_metrics.csv", "w", newline="") as f:
+    # Write all metrics to a single CSV file
+    csv_path = out_dir / "metrics.csv"
+    with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
+
+        # Write global metrics
         w.writerow(["metric", "value"])
         w.writerow(["mAP", f"{mAP:.4f}"])
+        w.writerow([])
 
-    # Guardar el CSV detallado por clase
-    with open(out_dir / "metrics_per_class.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["Class","TP","FP","FN","Precision","Recall","F1","AP_PR","IoU_mean","IoU_std","Angle_mean_deg","Angle_std_deg"])
+        # Write per-class metrics
+        w.writerow(["# --- METRICS PER CLASS ---"])
+        w.writerow(
+            [
+                "Class",
+                "TP",
+                "FP",
+                "FN",
+                "Precision",
+                "Recall",
+                "F1",
+                "AP_PR",
+                "IoU_mean",
+                "IoU_std",
+                "Angle_mean_deg",
+                "Angle_std_deg",
+            ]
+        )
         w.writerows(per_class_rows)
+        w.writerow([])
 
-    # 3) Guardar CM RAW como CSV
-    with open(out_dir / "confusion_raw.csv", "w", newline="") as f:
-        w = csv.writer(f)
+        # Write raw confusion matrix
+        w.writerow(["# --- CONFUSION MATRIX RAW ---"])
         w.writerow([""] + names_full)
         for i, rname in enumerate(names_full):
-            row_vals = [int(v) for v in cm_raw[i].tolist()]
-            w.writerow([rname] + row_vals)
+            w.writerow([rname] + [int(v) for v in cm_raw[i].tolist()])
+        w.writerow([])
 
-    # 4) Guardar CM NORMALIZED como CSV
-    with open(out_dir / "confusion_normalized.csv", "w", newline="") as f:
-        w = csv.writer(f)
+        # Write normalized confusion matrix
+        w.writerow(["# --- CONFUSION MATRIX NORMALIZED ---"])
         w.writerow([""] + names_full)
         for i, rname in enumerate(names_full):
-            row_vals = [f"{v:.4f}" for v in cm_norm[i].tolist()]
-            w.writerow([rname] + row_vals)
+            w.writerow([rname] + [f"{float(v):.4f}" for v in cm_norm[i].tolist()])
 
-    # 5) (Opcional) Imprimir matrices al estilo del ejemplo
-    print("\n# --- CONFUSION MATRIX RAW ----------------------------------------------")
-    print("," + ",".join(names_full))
-    for i, rname in enumerate(names_full):
-        print(",".join([rname] + [str(int(v)) for v in cm_raw[i].tolist()]))
+    print(f"[INFO] Wrote consolidated metrics to {csv_path}")
 
-    print("\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------")
-    print("," + ",".join(names_full))
-    for i, rname in enumerate(names_full):
-        print(",".join([rname] + [f"{v:.4f}" for v in cm_norm[i].tolist()]))
-
+    # Print summary of results to the console
     print("\n[RESULTS - YOLO Oriented]")
     print(f"  mAP: {mAP:.4f}")
     for c in LABELS_MAP:
@@ -541,6 +569,7 @@ def evaluate_yolo_oriented(
             f"Δθμ°:{(np.mean(angle_errs[c]) if angle_errs[c] else 0):.1f}"
         )
 
+    # Return detailed metrics as a dictionary
     return {
         "mAP": mAP,
         "APs": APs,

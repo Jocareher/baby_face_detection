@@ -551,3 +551,115 @@ def remap_labels_in_dataset(root_dir: str) -> None:
     print(
         "All label files successfully remapped and saved to 'labels_updated/' directories."
     )
+
+
+def remap_labels_obbabyface(
+    root_dir: str = Path,
+    labels_subdir: str = "labels",
+    out_subdir: str = "labels_remapped",
+) -> None:
+    """
+    Remaps class indices in OBB (Oriented Bounding Box) annotation files.
+
+    This function reads `.txt` label files from a specified directory, remaps the class indices
+    according to a predefined mapping, and writes the updated annotations to a new directory.
+    It supports two formats for each line in the `.txt` files:
+        - 7 tokens: `class_idx x1 y1 x2 y2 angle_radians score`
+        - 6 tokens: `class_idx x1 y1 x2 y2 angle_radians` (assumes `score=1.0` if missing)
+
+    Lines that are empty, start with `#`, or are malformed are ignored.
+
+    Args:
+        root_dir (str | Path): Path to the root directory containing the `labels_subdir`.
+        labels_subdir (str): Name of the subdirectory containing the input `.txt` label files. Defaults to "labels".
+        out_subdir (str): Name of the subdirectory where the remapped `.txt` files will be saved. Defaults to "labels_remapped".
+
+    Raises:
+        FileNotFoundError: If the input directory does not exist.
+
+    Outputs:
+        - Remapped `.txt` files are saved in the `out_subdir` directory.
+        - Prints a summary of the remapping process, including the number of files processed,
+          lines read, and lines written.
+
+    Example:
+        remap_labels_obbabyface("dataset", labels_subdir="labels", out_subdir="labels_remapped")
+    """
+    root_dir = Path(root_dir)
+    in_dir = root_dir / labels_subdir
+    out_dir = root_dir / out_subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mapping of old class indices to new class indices
+    LABEL_INDEX_SWAP = {
+        0: 1,  # 3/4 Leftside → 1
+        1: 3,  # 3/4 Rightside → 3
+        2: 2,  # Frontal → 2
+        3: 0,  # Left Profile → 0
+        4: 4,  # Right Profile → 4
+    }
+
+    if not in_dir.exists():
+        raise FileNotFoundError(f"Input directory does not exist: {in_dir}")
+
+    n_files, n_lines, n_kept = 0, 0, 0
+
+    # Iterate through all `.txt` files in the input directory
+    for txt_path in sorted(in_dir.glob("*.txt")):
+        n_files += 1
+        updated_lines: list[str] = []
+
+        with open(txt_path, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):  # Skip empty lines or comments
+                    continue
+                parts = line.split()
+                n_lines += 1
+
+                # Check for valid formats: 6 tokens (no score) or 7 tokens (with score)
+                if len(parts) not in (6, 7):
+                    print(f"[WARN] Malformed line in {txt_path.name}: {line}")
+                    continue
+
+                try:
+                    # Remap the class index using the predefined mapping
+                    old_idx = int(parts[0])
+                    new_idx = LABEL_INDEX_SWAP[old_idx]
+                except Exception:
+                    print(f"[ERROR] Invalid class_idx in {txt_path.name}: {parts[0]}")
+                    continue
+
+                # If the score is missing, assume a default score of 1.0
+                if len(parts) == 6:
+                    # class_idx, x1, y1, x2, y2, angle_radians -> add score=1.0
+                    parts = parts + ["1.0"]
+
+                # Replace the class index with the new index
+                parts[0] = str(new_idx)
+
+                # Validate that the remaining fields are numeric
+                try:
+                    _ = [float(t) for t in parts[1:6]]  # x1, y1, x2, y2, angle
+                    _ = float(parts[6])  # score
+                except Exception:
+                    print(f"[WARN] Non-numeric values in {txt_path.name}: {line}")
+                    continue
+
+                # Add the updated line to the list
+                updated_lines.append(" ".join(parts))
+                n_kept += 1
+
+        # Write the remapped annotations to the output directory
+        out_path = out_dir / txt_path.name
+        with open(out_path, "w") as fo:
+            fo.write("\n".join(updated_lines))
+            if updated_lines:
+                fo.write("\n")
+
+    # Print a summary of the remapping process
+    print(
+        f"[OK] Remapping complete. Files processed: {n_files} | "
+        f"Lines read: {n_lines} | Lines written: {n_kept}\n"
+        f"Output directory: {out_dir}"
+    )

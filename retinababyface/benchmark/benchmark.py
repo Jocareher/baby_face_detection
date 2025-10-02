@@ -268,18 +268,35 @@ def read_yolo_oriented_preds_xywhr(
         torch.tensor(cls_list, dtype=torch.long),
         torch.tensor(score_list, dtype=torch.float32),
     )
-
-
+    
 def read_pcn_preds_xywhr(
     pred_txt_path: Path,
     img_wh: Tuple[int, int],
     min_score: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Lee predicciones PCN: x1 y1 x2 y2 angle_degrees score
-    Devuelve:
-      - pred_xywhr: (P,5) con (cx, cy, w, h, theta_rad)
-      - pred_scores: (P,)
+    Reads PCN (Progressive Calibration Networks) predictions from a text file and converts them to a consistent format.
+
+    The input file is expected to have lines formatted as:
+        x1 y1 x2 y2 angle_degrees score
+    where:
+        - x1, y1: Top-left corner of the bounding box (in pixels).
+        - x2, y2: Bottom-right corner of the bounding box (in pixels).
+        - angle_degrees: Rotation angle of the bounding box in degrees.
+        - score: Confidence score of the prediction (float).
+
+    Args:
+        pred_txt_path (Path): Path to the predictions file.
+        img_wh (Tuple[int, int]): Width and height of the image in pixels.
+        min_score (float): Minimum score threshold for filtering predictions.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]:
+            - pred_xywhr: Tensor of shape (P, 5) containing bounding boxes in pixel coordinates
+              as (cx, cy, w, h, θ) where θ is in radians.
+            - pred_scores: Tensor of shape (P,) containing confidence scores for each prediction.
+
+    If the file does not exist or contains no valid predictions, returns empty tensors.
     """
     W0, H0 = img_wh
     if not pred_txt_path.exists():
@@ -294,25 +311,27 @@ def read_pcn_preds_xywhr(
         for raw in f:
             line = raw.strip()
             if not line:
-                continue
+                continue  # Skip empty lines
             toks = line.split()
-            # soporta líneas con >=6 valores; toma los 6 primeros válidos
+            # Ensure the line has at least 6 values (x1, y1, x2, y2, angle, score)
             if len(toks) < 6:
                 continue
             try:
+                # Parse bounding box coordinates, angle, and score
                 x1 = float(toks[0])
                 y1 = float(toks[1])
                 x2 = float(toks[2])
                 y2 = float(toks[3])
-                ang_deg = float(toks[4])
-                score = float(toks[5])
-            except Exception:
+                ang_deg = float(toks[4])  # Angle in degrees
+                score = float(toks[5])  # Confidence score
+            except ValueError:
+                # Skip lines with invalid numeric values
                 continue
 
             if score < min_score:
-                continue
+                continue  # Skip predictions below the score threshold
 
-            # clamp & ordenar
+            # Clamp coordinates to image boundaries and ensure proper ordering
             x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
             y_min, y_max = (y1, y2) if y1 <= y2 else (y2, y1)
             x_min = max(0.0, min(x_min, W0 - 1))
@@ -320,31 +339,36 @@ def read_pcn_preds_xywhr(
             x_max = max(0.0, min(x_max, W0 - 1))
             y_max = max(0.0, min(y_max, H0 - 1))
 
-            w = max(0.0, x_max - x_min)
-            h = max(0.0, y_max - y_min)
+            # Compute bounding box dimensions
+            w = max(0.0, x_max - x_min)  # Width
+            h = max(0.0, y_max - y_min)  # Height
             if w <= 0.0 or h <= 0.0:
-                continue
+                continue  # Skip invalid boxes
 
+            # Compute the center of the bounding box
             cx = x_min + w / 2.0
             cy = y_min + h / 2.0
 
-            theta = math.radians(ang_deg)  # a radianes
-            # opcional: normalizar a [-pi, pi]
+            # Convert angle from degrees to radians
+            theta = math.radians(ang_deg)
+            # Normalize angle to the range [-π, π]
             if theta > math.pi or theta < -math.pi:
                 theta = ((theta + math.pi) % (2 * math.pi)) - math.pi
 
-            xywhr_list.append(
-                torch.tensor([cx, cy, w, h, float(theta)], dtype=torch.float32)
-            )
+            # Append the bounding box and score to their respective lists
+            xywhr_list.append(torch.tensor([cx, cy, w, h, float(theta)], dtype=torch.float32))
             score_list.append(float(score))
 
     if not xywhr_list:
+        # Return empty tensors if no valid predictions were found
         return (
             torch.empty((0, 5), dtype=torch.float32),
             torch.empty((0,), dtype=torch.float32),
         )
 
+    # Stack results into tensors
     return torch.stack(xywhr_list, dim=0), torch.tensor(score_list, dtype=torch.float32)
+
 
 
 def greedy_match(
@@ -411,17 +435,37 @@ def greedy_match(
 
 
 def count_adults_in_gt(gt_txt_path: Path) -> int:
-    """Cuenta líneas con child_prob==0 en el .txt (adultos). Si no existe el .txt retorna 0."""
+    """
+    Counts the number of annotations in the ground truth file where `child_prob` is 0 (adults).
+
+    The ground truth file is expected to have lines formatted as:
+        cls_idx child_prob x1 y1 x2 y2 x3 y3 x4 y4 angle
+    where:
+        - cls_idx: Class index (integer, 0-based).
+        - child_prob: Indicator (1 for baby, 0 for adult).
+        - x1, y1, ..., x4, y4: Normalized coordinates of the bounding box vertices.
+        - angle: Rotation angle in radians.
+
+    Args:
+        gt_txt_path (Path): Path to the ground truth annotation file.
+
+    Returns:
+        int: The number of annotations with `child_prob` equal to 0 (adults).
+             Returns 0 if the file does not exist or contains no valid annotations.
+    """
     if not gt_txt_path.exists():
-        return 0
-    n_adults = 0
+        return 0  # Return 0 if the file does not exist
+
+    n_adults = 0  # Counter for adult annotations
     with open(gt_txt_path, "r") as f:
         for line in f:
-            toks = line.strip().split()
+            toks = line.strip().split()  # Split the line into tokens
             if not toks:
-                continue
-            # Formato GT: cls_idx child_prob x1 y1 ... x4 y4 angle
+                continue  # Skip empty lines
+
+            # Check if the line has at least two tokens and the second token is a digit
             if len(toks) >= 2 and toks[1].isdigit():
-                if int(toks[1]) == 0:
-                    n_adults += 1
+                if int(toks[1]) == 0:  # Check if `child_prob` is 0 (adult)
+                    n_adults += 1  # Increment the counter for adults
+
     return n_adults

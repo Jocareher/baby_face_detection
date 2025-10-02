@@ -1822,7 +1822,7 @@ def build_image_sizeresolver(dataset, images_subdir: str = "images") -> callable
     # Common image file extensions to try if bare filename is provided
     exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
-    def resolve(fname: str) -> tuple[int, int] | None:
+    def resolve(fname: str) -> tuple[int, int]:
         p = Path(fname)
 
         # Strategy 1: Try direct path if it's a complete filepath

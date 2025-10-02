@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import torch
 from pathlib import Path
@@ -266,6 +268,83 @@ def read_yolo_oriented_preds_xywhr(
         torch.tensor(cls_list, dtype=torch.long),
         torch.tensor(score_list, dtype=torch.float32),
     )
+
+
+def read_pcn_preds_xywhr(
+    pred_txt_path: Path,
+    img_wh: Tuple[int, int],
+    min_score: float = 0.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Lee predicciones PCN: x1 y1 x2 y2 angle_degrees score
+    Devuelve:
+      - pred_xywhr: (P,5) con (cx, cy, w, h, theta_rad)
+      - pred_scores: (P,)
+    """
+    W0, H0 = img_wh
+    if not pred_txt_path.exists():
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+    xywhr_list, score_list = [], []
+
+    with open(pred_txt_path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            toks = line.split()
+            # soporta líneas con >=6 valores; toma los 6 primeros válidos
+            if len(toks) < 6:
+                continue
+            try:
+                x1 = float(toks[0])
+                y1 = float(toks[1])
+                x2 = float(toks[2])
+                y2 = float(toks[3])
+                ang_deg = float(toks[4])
+                score = float(toks[5])
+            except Exception:
+                continue
+
+            if score < min_score:
+                continue
+
+            # clamp & ordenar
+            x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
+            y_min, y_max = (y1, y2) if y1 <= y2 else (y2, y1)
+            x_min = max(0.0, min(x_min, W0 - 1))
+            y_min = max(0.0, min(y_min, H0 - 1))
+            x_max = max(0.0, min(x_max, W0 - 1))
+            y_max = max(0.0, min(y_max, H0 - 1))
+
+            w = max(0.0, x_max - x_min)
+            h = max(0.0, y_max - y_min)
+            if w <= 0.0 or h <= 0.0:
+                continue
+
+            cx = x_min + w / 2.0
+            cy = y_min + h / 2.0
+
+            theta = math.radians(ang_deg)  # a radianes
+            # opcional: normalizar a [-pi, pi]
+            if theta > math.pi or theta < -math.pi:
+                theta = ((theta + math.pi) % (2 * math.pi)) - math.pi
+
+            xywhr_list.append(
+                torch.tensor([cx, cy, w, h, float(theta)], dtype=torch.float32)
+            )
+            score_list.append(float(score))
+
+    if not xywhr_list:
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+    return torch.stack(xywhr_list, dim=0), torch.tensor(score_list, dtype=torch.float32)
 
 
 def greedy_match(

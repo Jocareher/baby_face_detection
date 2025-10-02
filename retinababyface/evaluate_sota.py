@@ -81,8 +81,8 @@ def evaluate_sota(
 
     # ===== PR global (face/no-face) =====
     # Track true positives (TP) and false positives (FP) for face/no-face classification
-        # PR global cara/no-cara
-    per_true_face: Dict[int, List[int]]  = {0: []}
+    # PR global cara/no-cara
+    per_true_face: Dict[int, List[int]] = {0: []}
     per_score_face: Dict[int, List[float]] = {0: []}
 
     # Initialize dictionaries to track ground truth (GT), true positives (TP), and false negatives (FN) per class
@@ -95,10 +95,16 @@ def evaluate_sota(
 
     # Initialize lists and dictionaries to store IoU and angle error statistics for true positives (TPs)
     all_iou: List[float] = []  # List to store IoU values for all TPs
-    all_scores_matched: List[float] = []  # List to store confidence scores for matched predictions
-    iou_per_cls: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}  # IoU values per class
+    all_scores_matched: List[
+        float
+    ] = []  # List to store confidence scores for matched predictions
+    iou_per_cls: Dict[int, List[float]] = {
+        c: [] for c in LABELS_MAP
+    }  # IoU values per class
     iou_data_for_boxplot: List[Dict[str, Any]] = []  # Data for IoU boxplots
-    angle_errs_per_cls: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}  # Angle errors per class
+    angle_errs_per_cls: Dict[int, List[float]] = {
+        c: [] for c in LABELS_MAP
+    }  # Angle errors per class
     angle_data_for_boxplot: List[Dict[str, Any]] = []  # Data for angle error boxplots
 
     # Helper function to get the size of an image
@@ -122,7 +128,9 @@ def evaluate_sota(
         W, H = img_size(img_p)  # Get image dimensions
 
         # --- Process ground truth (GT) data ---
-        gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))  # Read GT bounding boxes and classes
+        gt_xywhr, gt_cls = read_gt_baby_xywhr(
+            gt_p, (W, H)
+        )  # Read GT bounding boxes and classes
         if gt_cls.numel() > 0:
             # Exclude adults (-1) from GT data
             keep_baby = gt_cls != -1
@@ -164,7 +172,9 @@ def evaluate_sota(
         # Update precision-recall data for face/no-face classification
         matched_pr_idx = set([m for (_, m, _) in matches])
         for j, s in enumerate(pr_scores.tolist()):
-            is_tp = 1 if j in matched_pr_idx else 0  # Check if prediction is a true positive
+            is_tp = (
+                1 if j in matched_pr_idx else 0
+            )  # Check if prediction is a true positive
             per_true_face[0].append(is_tp)
             per_score_face[0].append(float(s))
 
@@ -209,12 +219,17 @@ def evaluate_sota(
     ap_face = APs[0]
 
     # Generate precision-recall curve for face/no-face classification
-    pr_fig = plot_precision_recall(per_true_face, per_score_face, labels_map={0: "Face"}, mAP=mAP)
+    pr_fig = plot_precision_recall(
+        per_true_face, per_score_face, labels_map={0: "Face"}, mAP=mAP
+    )
     pr_fig.savefig(out_dir / "precision_recall_face.png", dpi=150, bbox_inches="tight")
     plt.close(pr_fig)
 
     # Compute recall per orientation class
-    recalls = {c: (tp_per_cls[c] / gt_per_cls[c]) if gt_per_cls[c] > 0 else 0.0 for c in LABELS_MAP}
+    recalls = {
+        c: (tp_per_cls[c] / gt_per_cls[c]) if gt_per_cls[c] > 0 else 0.0
+        for c in LABELS_MAP
+    }
 
     # Generate bar plot for recall per orientation class
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -224,7 +239,13 @@ def evaluate_sota(
     ax.set_ylabel("Recall")
     ax.set_title("Recall per Orientation (SOTA vs. GT Baby)")
     for i, c in enumerate(xs):
-        ax.text(i, min(0.98, recalls[c] + 0.02), f"{recalls[c]:.2f}", ha="center", fontsize=10)
+        ax.text(
+            i,
+            min(0.98, recalls[c] + 0.02),
+            f"{recalls[c]:.2f}",
+            ha="center",
+            fontsize=10,
+        )
     fig.tight_layout()
     fig.savefig(out_dir / "recall_per_orientation.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -241,7 +262,14 @@ def evaluate_sota(
             "std": float(iou_arr.std(ddof=0)),
         }
     else:
-        iou_stats = {"count": 0, "mean": 0.0, "median": 0.0, "p25": 0.0, "p75": 0.0, "std": 0.0}
+        iou_stats = {
+            "count": 0,
+            "mean": 0.0,
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "std": 0.0,
+        }
 
     # Save IoU statistics to a JSON file
     with open(out_dir / "iou_stats.json", "w") as jf:
@@ -261,10 +289,17 @@ def evaluate_sota(
     # Generate IoU boxplots per class
     if len(iou_data_for_boxplot) > 0:
         fig_bp = plot_boxplots(
-            data=iou_data_for_boxplot, x_field="class", y_field="IoU",
-            title="IoU per Orientation (TP)", labels_map=LABELS_MAP, y_lim=(0.0, 1.0), cmap_name="tab10",
+            data=iou_data_for_boxplot,
+            x_field="class",
+            y_field="IoU",
+            title="IoU per Orientation (TP)",
+            labels_map=LABELS_MAP,
+            y_lim=(0.0, 1.0),
+            cmap_name="tab10",
         )
-        fig_bp.savefig(out_dir / "iou_boxplot_per_class.png", dpi=150, bbox_inches="tight")
+        fig_bp.savefig(
+            out_dir / "iou_boxplot_per_class.png", dpi=150, bbox_inches="tight"
+        )
         plt.close(fig_bp)
 
     # Generate angle error boxplots per class (only for PCN predictions)
@@ -277,7 +312,9 @@ def evaluate_sota(
             labels_map=LABELS_MAP,
             y_lim=(0, 180),
         )
-        ang_fig.savefig(out_dir / "angle_boxplot_per_class.png", dpi=150, bbox_inches="tight")
+        ang_fig.savefig(
+            out_dir / "angle_boxplot_per_class.png", dpi=150, bbox_inches="tight"
+        )
         plt.close(ang_fig)
 
     # Write summary metrics to a CSV file
@@ -300,11 +337,19 @@ def evaluate_sota(
                 w.writerow([])
                 w.writerow(["Angle_count_TP", len(all_angles)])
                 w.writerow(["Angle_mean_deg", f"{np.mean(all_angles):.2f}"])
-                w.writerow(["Angle_std_deg",  f"{np.std(all_angles):.2f}"])
+                w.writerow(["Angle_std_deg", f"{np.std(all_angles):.2f}"])
         w.writerow([])
         w.writerow(["class", "GT", "TP", "FN", "Recall"])
         for c in LABELS_MAP:
-            w.writerow([LABELS_MAP[c], gt_per_cls[c], tp_per_cls[c], fn_per_cls[c], f"{recalls[c]:.4f}"])
+            w.writerow(
+                [
+                    LABELS_MAP[c],
+                    gt_per_cls[c],
+                    tp_per_cls[c],
+                    fn_per_cls[c],
+                    f"{recalls[c]:.4f}",
+                ]
+            )
         w.writerow([])
         w.writerow(["FP_global", fp_global])
 
@@ -312,10 +357,14 @@ def evaluate_sota(
     print("\n[RESULTS]")
     print(f"  AP (face/no-face): {ap_face:.4f}")
     for c in LABELS_MAP:
-        print(f"  {LABELS_MAP[c]:<15s}  GT:{gt_per_cls[c]:4d}  TP:{tp_per_cls[c]:4d}  FN:{fn_per_cls[c]:4d}  Recall:{recalls[c]:.3f}")
+        print(
+            f"  {LABELS_MAP[c]:<15s}  GT:{gt_per_cls[c]:4d}  TP:{tp_per_cls[c]:4d}  FN:{fn_per_cls[c]:4d}  Recall:{recalls[c]:.3f}"
+        )
     print(f"  FP global (all images): {fp_global}")
     if len(all_iou) > 0:
-        print(f"  IoU(TP): mean={iou_stats['mean']:.3f}, median={iou_stats['median']:.3f}, p25={iou_stats['p25']:.3f}, p75={iou_stats['p75']:.3f}, std={iou_stats['std']:.3f}")
+        print(
+            f"  IoU(TP): mean={iou_stats['mean']:.3f}, median={iou_stats['median']:.3f}, p25={iou_stats['p25']:.3f}, p75={iou_stats['p75']:.3f}, std={iou_stats['std']:.3f}"
+        )
     if not aabb_mode and any(angle_errs_per_cls[c] for c in LABELS_MAP):
         mu = np.mean([v for c in angle_errs_per_cls for v in angle_errs_per_cls[c]])
         sd = np.std([v for c in angle_errs_per_cls for v in angle_errs_per_cls[c]])

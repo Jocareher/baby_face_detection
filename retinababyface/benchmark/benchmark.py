@@ -1,9 +1,11 @@
 import math
+from pathlib import Path
+from typing import Tuple, List, Dict, Any
 
 import numpy as np
 import torch
-from pathlib import Path
-from typing import Tuple, List
+from matplotlib import pyplot as plt
+
 from loss.utils import verts_to_xywhr_with_theta, batch_probiou
 
 
@@ -268,7 +270,8 @@ def read_yolo_oriented_preds_xywhr(
         torch.tensor(cls_list, dtype=torch.long),
         torch.tensor(score_list, dtype=torch.float32),
     )
-    
+
+
 def read_pcn_preds_xywhr(
     pred_txt_path: Path,
     img_wh: Tuple[int, int],
@@ -356,7 +359,9 @@ def read_pcn_preds_xywhr(
                 theta = ((theta + math.pi) % (2 * math.pi)) - math.pi
 
             # Append the bounding box and score to their respective lists
-            xywhr_list.append(torch.tensor([cx, cy, w, h, float(theta)], dtype=torch.float32))
+            xywhr_list.append(
+                torch.tensor([cx, cy, w, h, float(theta)], dtype=torch.float32)
+            )
             score_list.append(float(score))
 
     if not xywhr_list:
@@ -368,7 +373,6 @@ def read_pcn_preds_xywhr(
 
     # Stack results into tensors
     return torch.stack(xywhr_list, dim=0), torch.tensor(score_list, dtype=torch.float32)
-
 
 
 def greedy_match(
@@ -469,3 +473,73 @@ def count_adults_in_gt(gt_txt_path: Path) -> int:
                     n_adults += 1  # Increment the counter for adults
 
     return n_adults
+
+
+def compute_loc_curves_from_predictions(
+    y_is_tp: List[int], y_scores: List[float], n_gt: int, n_steps: int = 200
+) -> Dict[str, Any]:
+    scores = np.asarray(y_scores, dtype=np.float32)
+    is_tp = np.asarray(y_is_tp, dtype=np.int32)
+    if scores.size == 0 or n_gt <= 0:
+        z = np.array([])
+        return {
+            "thresholds": z,
+            "precision": z,
+            "recall": z,
+            "f1": z,
+            "best_idx": -1,
+            "best_th": 0.0,
+            "best_P": 0.0,
+            "best_R": 0.0,
+            "best_F1": 0.0,
+        }
+    thresholds = np.linspace(0.0, 1.0, n_steps)
+    precs, recs, f1s = [], [], []
+    for t in thresholds:
+        keep = scores >= t
+        tp = int((is_tp[keep] == 1).sum())
+        fp = int((is_tp[keep] == 0).sum())
+        P = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+        R = (tp / n_gt) if n_gt > 0 else 0.0
+        F1 = (2 * P * R / (P + R)) if (P + R) > 0 else 0.0
+        precs.append(P)
+        recs.append(R)
+        f1s.append(F1)
+    precs = np.asarray(precs)
+    recs = np.asarray(recs)
+    f1s = np.asarray(f1s)
+    best_idx = int(f1s.argmax()) if f1s.size > 0 else -1
+    return {
+        "thresholds": thresholds,
+        "precision": precs,
+        "recall": recs,
+        "f1": f1s,
+        "best_idx": best_idx,
+        "best_th": float(thresholds[best_idx]) if best_idx >= 0 else 0.0,
+        "best_P": float(precs[best_idx]) if best_idx >= 0 else 0.0,
+        "best_R": float(recs[best_idx]) if best_idx >= 0 else 0.0,
+        "best_F1": float(f1s[best_idx]) if best_idx >= 0 else 0.0,
+    }
+
+
+def plot_precision_recall_vs_threshold(th, prec, rec, best_th=None, out_path=None):
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    ax.plot(th, prec, label="Precision")
+    ax.plot(th, rec, label="Recall")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.05)
+    ax.set_xlabel("Threshold")
+    ax.set_ylabel("Score")
+    ax.set_title("Precision and Recall vs. Threshold (Localization-only)")
+    if best_th is not None:
+        ax.axvline(best_th, linestyle="--", linewidth=1, color="gray")
+        ax.text(
+            best_th, 1.02, f"best={best_th:.3f}", ha="center", va="bottom", fontsize=9
+        )
+    ax.legend(loc="best")
+    fig.tight_layout()
+    if out_path is not None:
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        return fig

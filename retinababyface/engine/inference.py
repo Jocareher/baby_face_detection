@@ -105,7 +105,7 @@ def prepare_anchors(
 # -----------------------------------------------------------------------------
 
 
-def run_inference(
+def run_evaluation(
     model: torch.nn.Module,
     loader: DataLoader,
     anchors_xy: torch.Tensor,
@@ -1416,7 +1416,7 @@ def inference(
     )
 
     print("[STEP 2] Running inference...")
-    results = run_inference(
+    results = run_evaluation(
         model=model,
         loader=test_loader,
         anchors_xy=anchors_xy,

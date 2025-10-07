@@ -19,6 +19,7 @@ from benchmark.benchmark import (
     greedy_match,
     read_gt_baby_xywhr,
     read_yolo_oriented_preds_xywhr,
+    read_retinababyface_preds_xywhr,
     read_pcn_preds_xywhr,
     count_adults_in_gt,
     compute_loc_curves_from_predictions,
@@ -431,13 +432,14 @@ def evaluate_sota(
     }
 
 
-def evaluate_yolo_oriented(
+def evaluate_obb(
     data_root: Path,
     split: str,
     pred_dir: Path,
     out_dir: Path,
     iou_th: float = 0.5,
     min_score: float = 0.0,
+    model_version: str = "yolo",
 ) -> Dict[str, Any]:
     """
     Compara el YOLO-oriented vs GT bebé (orientaciones 0..4).
@@ -502,9 +504,14 @@ def evaluate_yolo_oriented(
         G = int(gt_xywhr.shape[0])
 
         # ---- Predicciones YOLO-oriented ----
-        pr_xywhr, pr_cls, pr_scores = read_yolo_oriented_preds_xywhr(
-            pr_p, min_score=min_score
-        )
+        if model_version == "yolo":
+            pr_xywhr, pr_cls, pr_scores = read_yolo_oriented_preds_xywhr(
+                pr_p, min_score=min_score
+            )
+        else:
+            pr_xywhr, pr_cls, pr_scores = read_retinababyface_preds_xywhr(
+                pr_p, min_score=min_score
+            )
         P = int(pr_xywhr.shape[0])
 
         # ---- Caso sin GT bebés ----
@@ -915,6 +922,12 @@ def main():
         help="Whether to evaluate YOLO-based oriented model",
     )
     ap.add_argument(
+        "--model_variant",
+        type=str,
+        required=True,
+        help="Model variant: 'yolo' or 'retina' (for --yolo_obb only)",
+    )
+    ap.add_argument(
         "--aabb_mode",
         action="store_true",
         help="Whether to evaluate YOLO-based oriented model",
@@ -931,13 +944,14 @@ def main():
             raise ValueError(
                 "For --yolo_obb evaluation, --sota-dir (predictions) is required."
             )
-        evaluate_yolo_oriented(
+        evaluate_obb(
             data_root=Path(args.data_root),
             split=args.split,
             pred_dir=Path(args.sota_dir),
             out_dir=Path(args.out),
             iou_th=args.iou,
             min_score=args.min_score,
+            model_version=args.model_variant,
         )
     else:
         evaluate_sota(

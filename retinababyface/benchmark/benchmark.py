@@ -272,6 +272,97 @@ def read_yolo_oriented_preds_xywhr(
     )
 
 
+import math
+from pathlib import Path
+from typing import Tuple
+import torch
+
+
+def read_retinababyface_preds_xywhr(
+    pred_txt_path: Path,
+    min_score: float = 0.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Lee predicciones exportadas por RetinaBabyFace en formato:
+        class_idx x1 y1 x2 y2 x3 y3 x4 y4 angle_rads score
+    (todas las coordenadas en píxeles absolutos)
+
+    Devuelve:
+        - pred_xywhr: (P,5) -> (cx, cy, w, h, theta_rad)
+        - pred_cls:   (P,)
+        - pred_scores:(P,)
+    """
+    if not pred_txt_path.exists():
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.long),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+    xywhr_list, cls_list, score_list = [], [], []
+
+    with open(pred_txt_path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+
+            toks = line.split()
+            # Se esperan 11 tokens: cls + 8 coords + angle + score
+            if len(toks) < 11:
+                # línea malformada: saltar
+                continue
+
+            try:
+                cls_idx = int(float(toks[0]))
+                x1, y1 = float(toks[1]), float(toks[2])
+                x2, y2 = float(toks[3]), float(toks[4])
+                x3, y3 = float(toks[5]), float(toks[6])
+                x4, y4 = float(toks[7]), float(toks[8])
+                theta = float(toks[9])  # en radianes (AngleHead)
+                score = float(toks[10])
+            except Exception:
+                continue
+
+            if score < min_score:
+                continue
+
+            # Asumimos rectángulo orientado con vértices en orden v0,v1,v2,v3
+            # (tal como pintas: frente = v0->v1)
+            # Centro:
+            cx = (x1 + x2 + x3 + x4) * 0.25
+            cy = (y1 + y2 + y3 + y4) * 0.25
+
+            # Ancho ~ distancia v0->v1, Alto ~ distancia v1->v2
+            def dist(ax, ay, bx, by):
+                dx, dy = (bx - ax), (by - ay)
+                return math.hypot(dx, dy)
+
+            w = dist(x1, y1, x2, y2)
+            h = dist(x2, y2, x3, y3)
+
+            # Evitar cajas degeneradas
+            if w <= 0.0 or h <= 0.0:
+                continue
+
+            xywhr_list.append(torch.tensor([cx, cy, w, h, theta], dtype=torch.float32))
+            cls_list.append(cls_idx)
+            score_list.append(score)
+
+    if not xywhr_list:
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.long),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+    return (
+        torch.stack(xywhr_list, dim=0),
+        torch.tensor(cls_list, dtype=torch.long),
+        torch.tensor(score_list, dtype=torch.float32),
+    )
+
+
 def read_pcn_preds_xywhr(
     pred_txt_path: Path,
     img_wh: Tuple[int, int],

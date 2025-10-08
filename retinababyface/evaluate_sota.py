@@ -1088,7 +1088,6 @@ def main():
     ap.add_argument(
         "--model_variant",
         type=str,
-        required=True,
         help="Model variant: 'yolo' or 'retina' (for --yolo_obb only)",
     )
     ap.add_argument(
@@ -1099,7 +1098,7 @@ def main():
     ap.add_argument("--output_dir", type=str, required=True, help="Output directory")
     ap.add_argument("--iou", type=float, default=0.5, help="IoU threshold for matching")
     ap.add_argument(
-        "--min-score", type=float, default=0.0, help="Filter predictions by score"
+        "--min_score", type=float, default=0.0, help="Filter predictions by score"
     )
     args = ap.parse_args()
 
@@ -1112,7 +1111,7 @@ def main():
             data_root=Path(args.data_root),
             split=args.split,
             pred_dir=Path(args.sota_dir),
-            out_dir=Path(args.out),
+            out_dir=Path(args.output_dir),
             iou_th=args.iou,
             min_score=args.min_score,
             model_version=args.model_variant,
@@ -1122,7 +1121,7 @@ def main():
             data_root=Path(args.data_root),
             split=args.split,
             sota_dir=Path(args.sota_dir),
-            out_dir=Path(args.out),
+            out_dir=Path(args.output_dir),
             iou_th=args.iou,
             min_score=args.min_score,
             aabb_mode=args.aabb_mode,

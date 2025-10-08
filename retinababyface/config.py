@@ -156,8 +156,8 @@ def get_train_transform(
     if use_augmentation:
         return transforms.Compose(
             [
-                # RandomHorizontalFlipOBB(prob=0.5),
-                RandomRotateOBB(max_angle=30, prob=0.3),
+                RandomHorizontalFlipOBB(prob=0.5),
+                RandomRotateOBB(max_angle=15, prob=0.3),
                 # RandomScaleTranslateOBB(
                 #     scale_range=(0.85, 1.15),
                 #     translate_range=(-0.1, 0.1),

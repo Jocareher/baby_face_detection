@@ -189,7 +189,7 @@ def write_predictions_txt(
 
 
 # ---------------------- export main -----------------------------------------
-@torch.no_grad()
+@torch.inference_mode()
 def export_predictions(
     model: torch.nn.Module,
     loader: DataLoader,

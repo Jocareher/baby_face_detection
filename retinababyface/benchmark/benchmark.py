@@ -272,27 +272,36 @@ def read_yolo_oriented_preds_xywhr(
     )
 
 
-import math
-from pathlib import Path
-from typing import Tuple
-import torch
-
-
 def read_retinababyface_preds_xywhr(
     pred_txt_path: Path,
     min_score: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Lee predicciones exportadas por RetinaBabyFace en formato:
-        class_idx x1 y1 x2 y2 x3 y3 x4 y4 angle_rads score
-    (todas las coordenadas en píxeles absolutos)
+    Reads predictions exported by RetinaBabyFace and converts them to a consistent format.
 
-    Devuelve:
-        - pred_xywhr: (P,5) -> (cx, cy, w, h, theta_rad)
-        - pred_cls:   (P,)
-        - pred_scores:(P,)
+    The input file is expected to have lines formatted as:
+        class_idx x1 y1 x2 y2 x3 y3 x4 y4 angle_rads score
+    where:
+        - class_idx: Class index (integer, 0-based).
+        - x1, y1, ..., x4, y4: Absolute pixel coordinates of the bounding box vertices.
+        - angle_rads: Rotation angle of the bounding box in radians.
+        - score: Confidence score of the prediction (float).
+
+    Args:
+        pred_txt_path (Path): Path to the predictions file.
+        min_score (float): Minimum score threshold for filtering predictions.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            - pred_xywhr: Tensor of shape (P, 5) containing bounding boxes in pixel coordinates
+              as (cx, cy, w, h, θ) where θ is in radians.
+            - pred_cls: Tensor of shape (P,) containing class indices for each prediction.
+            - pred_scores: Tensor of shape (P,) containing confidence scores for each prediction.
+
+    If the file does not exist or contains no valid predictions, returns empty tensors.
     """
     if not pred_txt_path.exists():
+        # Return empty tensors if the file does not exist
         return (
             torch.empty((0, 5), dtype=torch.float32),
             torch.empty((0,), dtype=torch.long),
@@ -305,35 +314,35 @@ def read_retinababyface_preds_xywhr(
         for raw in f:
             line = raw.strip()
             if not line:
-                continue
+                continue  # Skip empty lines
 
             toks = line.split()
-            # Se esperan 11 tokens: cls + 8 coords + angle + score
+            # Expecting 11 tokens: class_idx + 8 coordinates + angle + score
             if len(toks) < 11:
-                # línea malformada: saltar
-                continue
+                continue  # Skip malformed lines
 
             try:
+                # Parse class index, bounding box vertices, angle, and score
                 cls_idx = int(float(toks[0]))
                 x1, y1 = float(toks[1]), float(toks[2])
                 x2, y2 = float(toks[3]), float(toks[4])
                 x3, y3 = float(toks[5]), float(toks[6])
                 x4, y4 = float(toks[7]), float(toks[8])
-                theta = float(toks[9])  # en radianes (AngleHead)
-                score = float(toks[10])
-            except Exception:
+                theta = float(toks[9])  # Rotation angle in radians
+                score = float(toks[10])  # Confidence score
+            except ValueError:
+                # Skip lines with invalid numeric values
                 continue
 
             if score < min_score:
-                continue
+                continue  # Skip predictions below the score threshold
 
-            # Asumimos rectángulo orientado con vértices en orden v0,v1,v2,v3
-            # (tal como pintas: frente = v0->v1)
-            # Centro:
+            # Compute the center of the bounding box as the average of the vertices
             cx = (x1 + x2 + x3 + x4) * 0.25
             cy = (y1 + y2 + y3 + y4) * 0.25
 
-            # Ancho ~ distancia v0->v1, Alto ~ distancia v1->v2
+            # Compute the width as the distance between vertices v0 and v1
+            # Compute the height as the distance between vertices v1 and v2
             def dist(ax, ay, bx, by):
                 dx, dy = (bx - ax), (by - ay)
                 return math.hypot(dx, dy)
@@ -341,21 +350,24 @@ def read_retinababyface_preds_xywhr(
             w = dist(x1, y1, x2, y2)
             h = dist(x2, y2, x3, y3)
 
-            # Evitar cajas degeneradas
+            # Skip degenerate bounding boxes with non-positive width or height
             if w <= 0.0 or h <= 0.0:
                 continue
 
+            # Append the bounding box, class index, and score to their respective lists
             xywhr_list.append(torch.tensor([cx, cy, w, h, theta], dtype=torch.float32))
             cls_list.append(cls_idx)
             score_list.append(score)
 
     if not xywhr_list:
+        # Return empty tensors if no valid predictions were found
         return (
             torch.empty((0, 5), dtype=torch.float32),
             torch.empty((0,), dtype=torch.long),
             torch.empty((0,), dtype=torch.float32),
         )
 
+    # Stack results into tensors
     return (
         torch.stack(xywhr_list, dim=0),
         torch.tensor(cls_list, dtype=torch.long),
@@ -569,8 +581,42 @@ def count_adults_in_gt(gt_txt_path: Path) -> int:
 def compute_loc_curves_from_predictions(
     y_is_tp: List[int], y_scores: List[float], n_gt: int, n_steps: int = 200
 ) -> Dict[str, Any]:
+    """
+    Computes localization performance curves (precision, recall, F1-score)
+    as a function of score thresholds.
+
+    This function evaluates the localization performance of a model by calculating
+    precision, recall, and F1-score at various score thresholds. It also identifies
+    the threshold that maximizes the F1-score.
+
+    Args:
+        y_is_tp (List[int]): A list of binary values (1 for true positive, 0 for false positive)
+                             indicating whether each prediction is a true positive.
+        y_scores (List[float]): A list of confidence scores corresponding to the predictions.
+        n_gt (int): The total number of ground truth objects.
+        n_steps (int, optional): The number of thresholds to evaluate between 0 and 1.
+                                 Defaults to 200.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the following keys:
+            - "thresholds": Array of evaluated thresholds.
+            - "precision": Array of precision values at each threshold.
+            - "recall": Array of recall values at each threshold.
+            - "f1": Array of F1-scores at each threshold.
+            - "best_idx": Index of the threshold with the highest F1-score.
+            - "best_th": Threshold value that maximizes the F1-score.
+            - "best_P": Precision at the best threshold.
+            - "best_R": Recall at the best threshold.
+            - "best_F1": Maximum F1-score achieved.
+
+    If there are no predictions or the number of ground truth objects is zero,
+    the function returns empty arrays and default values.
+    """
+    # Convert inputs to numpy arrays for efficient computation
     scores = np.asarray(y_scores, dtype=np.float32)
     is_tp = np.asarray(y_is_tp, dtype=np.int32)
+
+    # Handle edge cases where there are no predictions or no ground truth objects
     if scores.size == 0 or n_gt <= 0:
         z = np.array([])
         return {
@@ -584,22 +630,41 @@ def compute_loc_curves_from_predictions(
             "best_R": 0.0,
             "best_F1": 0.0,
         }
+
+    # Generate evenly spaced thresholds between 0 and 1
     thresholds = np.linspace(0.0, 1.0, n_steps)
+
+    # Initialize lists to store precision, recall, and F1-score at each threshold
     precs, recs, f1s = [], [], []
+
+    # Iterate over each threshold and compute precision, recall, and F1-score
     for t in thresholds:
+        # Keep predictions with scores greater than or equal to the current threshold
         keep = scores >= t
-        tp = int((is_tp[keep] == 1).sum())
-        fp = int((is_tp[keep] == 0).sum())
-        P = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
-        R = (tp / n_gt) if n_gt > 0 else 0.0
-        F1 = (2 * P * R / (P + R)) if (P + R) > 0 else 0.0
+
+        # Count true positives (TP) and false positives (FP) for the current threshold
+        tp = int((is_tp[keep] == 1).sum())  # True positives
+        fp = int((is_tp[keep] == 0).sum())  # False positives
+
+        # Compute precision (P), recall (R), and F1-score (F1)
+        P = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0  # Precision
+        R = (tp / n_gt) if n_gt > 0 else 0.0  # Recall
+        F1 = (2 * P * R / (P + R)) if (P + R) > 0 else 0.0  # F1-score
+
+        # Append the computed values to their respective lists
         precs.append(P)
         recs.append(R)
         f1s.append(F1)
+
+    # Convert lists to numpy arrays for consistency
     precs = np.asarray(precs)
     recs = np.asarray(recs)
     f1s = np.asarray(f1s)
+
+    # Identify the index of the threshold that maximizes the F1-score
     best_idx = int(f1s.argmax()) if f1s.size > 0 else -1
+
+    # Return the computed metrics and the best threshold information
     return {
         "thresholds": thresholds,
         "precision": precs,
@@ -614,23 +679,58 @@ def compute_loc_curves_from_predictions(
 
 
 def plot_precision_recall_vs_threshold(th, prec, rec, best_th=None, out_path=None):
+    """
+    Plots precision and recall as functions of the score threshold.
+
+    This function generates a plot showing how precision and recall vary with the
+    score threshold. It optionally highlights the best threshold (e.g., the one
+    that maximizes F1-score) and saves the plot to a file or returns the figure object.
+
+    Args:
+        th (array-like): Array of threshold values.
+        prec (array-like): Array of precision values corresponding to the thresholds.
+        rec (array-like): Array of recall values corresponding to the thresholds.
+        best_th (float, optional): The threshold value to highlight on the plot.
+                                    Defaults to None.
+        out_path (str or Path, optional): Path to save the plot as an image file.
+                                          If None, the function returns the figure object.
+                                          Defaults to None.
+
+    Returns:
+        matplotlib.figure.Figure: The generated plot as a figure object if `out_path` is None.
+                                  Otherwise, the plot is saved to the specified path, and
+                                  the function returns None.
+    """
+    # Create a new figure and axis for the plot
     fig, ax = plt.subplots(figsize=(7.5, 4.5))
-    ax.plot(th, prec, label="Precision")
-    ax.plot(th, rec, label="Recall")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1.05)
-    ax.set_xlabel("Threshold")
-    ax.set_ylabel("Score")
-    ax.set_title("Precision and Recall vs. Threshold (Localization-only)")
+
+    # Plot precision and recall curves
+    ax.plot(th, prec, label="Precision", color="blue")
+    ax.plot(th, rec, label="Recall", color="orange")
+
+    # Set axis limits and labels
+    ax.set_xlim(0, 1)  # Thresholds range from 0 to 1
+    ax.set_ylim(0, 1.05)  # Precision and recall values range from 0 to 1
+    ax.set_xlabel("Threshold")  # X-axis label
+    ax.set_ylabel("Score")  # Y-axis label
+    ax.set_title("Precision and Recall vs. Threshold (Localization-only)")  # Plot title
+
+    # Highlight the best threshold if provided
     if best_th is not None:
-        ax.axvline(best_th, linestyle="--", linewidth=1, color="gray")
+        ax.axvline(best_th, linestyle="--", linewidth=1, color="gray")  # Vertical line
         ax.text(
             best_th, 1.02, f"best={best_th:.3f}", ha="center", va="bottom", fontsize=9
-        )
+        )  # Annotate the best threshold
+
+    # Add a legend to the plot
     ax.legend(loc="best")
+
+    # Adjust layout for better appearance
     fig.tight_layout()
+
+    # Save the plot to a file or return the figure object
     if out_path is not None:
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")  # Save to file
+        plt.close(fig)  # Close the figure to free memory
     else:
-        return fig
+        return fig  # Return the figure object

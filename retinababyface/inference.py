@@ -11,8 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 import torch
 from torch.utils.data import DataLoader
 
-from data_setup.dataset import BabyFacesDataset
-from data_setup.collate import custom_collate
+from data_setup.dataset import BabyFacesDataset, ImageFolderDataset
+from data_setup.collate import custom_collate, images_only_collate
 from models.retinababyface import RetinaBabyFace
 from engine.inference import (
     infer_with_rotated_nms,
@@ -217,6 +217,11 @@ def parse_args():
     )
     parser.add_argument("--root_dir", type=str, required=True, help="Dataset root.")
     parser.add_argument(
+        "--images-dir",
+        type=str,
+        help="Run in images-only mode: recursively load images from this directory (no labels).",
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="inference_export",
@@ -229,7 +234,13 @@ def parse_args():
         choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit", "vggface2"],
     )
     parser.add_argument("--out_channel", type=int, default=config.DEFAULT_OUT_CHANNELS)
-    parser.add_argument("--split", type=str, default="test")
+    parser.add_argument(
+        "--split",
+        type=str,
+        choices={"train", "val", "test"},
+        default="test",
+        help="Dataset split to load from BabyFacesDataset.",
+    )
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
     parser.add_argument("--face_thres", type=float, default=config.FACE_THRESH)
@@ -241,7 +252,16 @@ def parse_args():
         action="store_true",
         help="Dibujar sobre la resolución original (recomendado).",
     )
-    return parser.parse_args()
+
+    args = parser.parse_args()
+
+    # Enforce mutual exclusivity: either split or images-dir
+    if (args.split is None) == (args.images - dir is None):  # both None or both set
+        parser.error("You must provide exactly one of: --split OR --images-dir")
+
+    if args.split and not args.root_dir:
+        parser.error("--root-dir is required when using --split")
+    return args
 
 
 def main():
@@ -258,19 +278,39 @@ def main():
     # Dataset/Loader
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
     val_transform = config.get_val_transform(img_size=resize_size)
-    test_dataset = BabyFacesDataset(
-        root_dir=args.root_dir, split=args.split, transform=val_transform
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=custom_collate,
-        num_workers=4,
-        pin_memory=True,
-        worker_init_fn=seed_worker,
-    )
-    print(f"[INFO] Loaded {len(test_dataset)} samples from '{args.split}'.")
+    # Choose dataset mode
+    if args.images_dir is not None:
+        # Images-only (no labels)
+        test_dataset = ImageFolderDataset(
+            images_dir=args.images_dir, transform=val_transform
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            collate_fn=images_only_collate,  # <— returns {"image": batch}
+            num_workers=4,
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+        )
+        print(
+            f"[INFO] Loaded {len(test_dataset)} images from '{args.images_dir}' (images-only mode)."
+        )
+    else:
+        # Original BabyFacesDataset mode
+        test_dataset = BabyFacesDataset(
+            root_dir=args.root_dir, split=args.split, transform=val_transform
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            collate_fn=custom_collate,  # <— returns {"image": batch, "target": padded_targets}
+            num_workers=4,
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+        )
+        print(f"[INFO] Loaded {len(test_dataset)} samples from split '{args.split}'.")
 
     # Modelo
     model = RetinaBabyFace(

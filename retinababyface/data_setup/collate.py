@@ -80,3 +80,18 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "image": images,
         "target": targets,
     }  # Return the stacked images and padded targets.
+
+
+def images_only_collate(
+    batch: List[Dict[str, torch.Tensor]]
+) -> Dict[str, torch.Tensor]:
+    """
+    Collate for ImageFolderDataset that returns a dict with "image" only,
+    stacked to (B, C, H, W) to satisfy export_predictions.
+    """
+    imgs = [sample["image"] for sample in batch]
+    imgs = [
+        img if isinstance(img, torch.Tensor) else torch.as_tensor(img) for img in imgs
+    ]
+    images = torch.stack(imgs, dim=0)
+    return {"image": images}

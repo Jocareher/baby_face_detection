@@ -27,16 +27,16 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 # Default Hyperparameters
 # =======================
 DEFAULT_EPOCHS = 100
-DEFAULT_LR = 1e-4
+DEFAULT_LR = 3e-4
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_WEIGHT_DECAY = 1e-4
-DEFAULT_OPTIMIZER = "ADAM"
-DEFAULT_SCHEDULER = None
+DEFAULT_OPTIMIZER = "ADAMW"
+DEFAULT_SCHEDULER = "Cosine"
 DEFAULT_CLIP_VALUE = None
 DEFAULT_GRAD_CLIP_MODE = "Norm"
-DEFAULT_PATIENCE = 3
-DEFAULT_OUT_CHANNELS = 64
-DEFAULT_BACKBONE_MODE = "feature_extractor"
+DEFAULT_PATIENCE = 20
+DEFAULT_OUT_CHANNELS = 128
+DEFAULT_BACKBONE_MODE = "train_all"
 
 # =======================
 # Precomputed OBB Statistics
@@ -104,15 +104,15 @@ ANCHORS_CACHE_PATH = os.path.abspath(
 # Loss Function Weights
 # =======================
 ALPHA = [
-    3.33,
+    1.6,
+    1.2,
     1.0,
-    0.56,
-    1.0,
-    3.33,
-]  # Values according to dataset's distribution (old_values = [1.5, 1.5, 1.5, 2.5, 2.5])
+    1.2,
+    1.6,
+]  # Values according to dataset's distribution (3.33, 1.0, 0.56, 1.0, 3.33) (old_values = [1.5, 1.5, 1.5, 2.5, 2.5])
 GAMMA = 2.0
 POS_IOU_THRESH_1 = 0.6
-NEG_IOU_THRESH_1 = 0.3
+NEG_IOU_THRESH_1 = 0.4
 POS_IOU_THRESH_2 = 0.5
 NEG_IOU_THRESH_2 = 0.4
 NEG_SAMPLES_RATIO = 5
@@ -120,12 +120,12 @@ FACE_POS_WEIGHT = 2.0  # Weight for positive face samples in the loss function
 LAMBDA_CLS = 1.0
 LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0
-LAMBDA_ROT = 1.0
+LAMBDA_ROT = 2.0
 LAMBDA_RECT = 1.0  # Weight for the rectangle loss
 LAMBDA_CHILD = 1.0
 OBB_LOSS_TYPE = "smooth_l1"  # "smooth_l1", "l1"
-ROT_LOSS_TYPE = "cosine"  # "cosine", "vector"
-CLS_LOSS_TYPE = "focal"  # "focal", "ls"s
+ROT_LOSS_TYPE = "vector"  # "cosine", "vector"
+CLS_LOSS_TYPE = "ls"  # "focal", "ls"s
 SIGMA_L2_CLS = None  # For L2Loss, if used
 
 # =======================

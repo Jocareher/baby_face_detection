@@ -3,6 +3,8 @@ import random
 import numpy as np
 import torch
 
+from typing import Any, Optional
+
 
 def set_seed(seed_value: int = 42) -> None:
     """
@@ -62,3 +64,68 @@ def seed_worker(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+
+def to_numpy(x: Any) -> Optional[np.ndarray]:
+    """
+    Converts the input to a NumPy array.
+
+    Handles PyTorch Tensors by detaching them from the computational graph
+    and moving them to the CPU before conversion.
+
+    Args:
+        x: The input object, which can be None, a PyTorch Tensor, or any
+           object convertible by np.asarray.
+
+    Returns:
+        The resulting NumPy ndarray, or None if the input was None.
+    """
+    if x is None:
+        # Return None directly if the input is None
+        return None
+    if isinstance(x, torch.Tensor):
+        # Detach from graph, move to CPU, and convert to NumPy
+        return x.detach().cpu().numpy()
+    # Convert other types (lists, tuples, existing NumPy arrays, etc.)
+    return np.asarray(x)
+
+
+def ensure_polygons_42_shape(polys_np: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """
+    Standardizes a batch of polygons to the (N, 4, 2) float32 format.
+
+    Accepts polygons in two shapes:
+    1. Flat format: (N, 8) where N is the number of polygons.
+    2. Per-vertex format: (N, 4, 2) where N is the number of polygons.
+
+    Args:
+        polys_np: A NumPy array of polygons (N, 8) or (N, 4, 2), or None.
+
+    Returns:
+        A NumPy array of polygons with shape (N, 4, 2) and dtype float32,
+        or None if the input was None or empty.
+
+    Raises:
+        ValueError: If the input array has a shape that is not supported.
+    """
+    if polys_np is None:
+        # Handle None input
+        return None
+
+    # Ensure input is a standard NumPy array, handling potential PyTorch Tensors
+    polys_np = to_numpy(polys_np)
+
+    if polys_np.size == 0:
+        # Handle empty array
+        return None
+
+    if polys_np.ndim == 2 and polys_np.shape[1] == 8:
+        # (N, 8) format: reshape to (N, 4, 2)
+        return polys_np.reshape(-1, 4, 2).astype(np.float32)
+
+    if polys_np.ndim == 3 and polys_np.shape[1:] == (4, 2):
+        # (N, 4, 2) format: ensure correct dtype
+        return polys_np.astype(np.float32)
+
+    # Raise an error for unsupported shapes
+    raise ValueError(f"Unsupported polygon shape: {polys_np.shape}")

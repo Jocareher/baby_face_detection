@@ -10,9 +10,11 @@ import matplotlib.pyplot as plt
 import torch
 from matplotlib.patches import Polygon
 from PIL import Image, ImageDraw, ImageFont
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 
 from loss.utils import xyxyxyxy2xywhr, xywhr2xyxyxyxy, decode_vertices
+from utils.helpers import to_numpy, ensure_polygons_42_shape
 
 
 def denormalize_image(
@@ -490,3 +492,302 @@ def visualize_adultfaces_grid(
     # Adjust layout to avoid overlapping elements
     plt.tight_layout()
     plt.show()
+
+
+def xywhr_to_poly42_shape(
+    cx: float, cy: float, w: float, h: float, theta: float
+) -> np.ndarray:
+    """
+    Converts a rotated bounding box defined by center, size, and angle
+    to a set of 4 polygon vertices (4, 2).
+
+    The vertices are ordered typically as: top-left, top-right, bottom-right, bottom-left.
+
+    Args:
+        cx: Center x-coordinate.
+        cy: Center y-coordinate.
+        w: Width of the box.
+        h: Height of the box.
+        theta: Rotation angle (in radians).
+
+    Returns:
+        A NumPy array of shape (4, 2) and dtype float32, representing the
+        four vertices of the rotated polygon.
+    """
+    # Calculate half-dimensions for local coordinates
+    dx, dy = w / 2.0, h / 2.0
+
+    # Pre-calculate trigonometric values for rotation matrix
+    c, s = math.cos(theta), math.sin(theta)
+
+    # Base vertices in the local, unrotated frame (center at 0, 0)
+    # Order: Top-Left, Top-Right, Bottom-Right, Bottom-Left
+    base = [(-dx, -dy), (dx, -dy), (dx, dy), (-dx, dy)]
+
+    pts = []
+    # Apply rotation and translation to each base vertex
+    for x, y in base:
+        # Rotation: x' = x*cos(theta) - y*sin(theta)
+        #           y' = x*sin(theta) + y*cos(theta)
+        # Then translation: x_final = cx + x', y_final = cy + y'
+        px = cx + x * c - y * s
+        py = cy + x * s + y * c
+        pts.append((px, py))
+
+    # Return the vertices as a (4, 2) NumPy array with float32 type
+    return np.asarray(pts, dtype=np.float32)
+
+
+def draw_predictions_on_image(
+    base_img: np.ndarray,  # (H, W, 3) image in uint8 format
+    polygons_xy: np.ndarray,  # (N, 4, 2) coordinates relative to base_img
+    labels: np.ndarray,  # (N,) integer labels
+    scores: np.ndarray,  # (N,) prediction confidence scores
+    angles_rad: np.ndarray,  # (N,) rotation angles in radians (e.g., from AngleHead)
+    labels_map: Dict[int, str],  # Map from integer label ID to string name
+) -> np.ndarray:
+    """
+    Renders oriented bounding box (OBB) predictions onto an image using Matplotlib,
+    and returns the result as a NumPy array.
+
+    This function sets up a Matplotlib figure exactly matching the input image
+    dimensions and uses plotting patches to visualize the OBBs, labels, and scores.
+    The final figure is captured from the canvas and returned as a standard
+    (H, W, 3) NumPy array.
+
+    Args:
+        base_img: The source image data as a NumPy array (H, W, 3, uint8).
+        polygons_xy: The vertices of the rotated bounding boxes (N, 4, 2) in image coordinates.
+        labels: The class index for each prediction (N,).
+        scores: The confidence score for each prediction (N,).
+        angles_rad: The rotation angle (in radians) for each box (N,).
+        labels_map: A dictionary mapping label IDs to human-readable names.
+
+    Returns:
+        The annotated image as a NumPy array (H, W, 3, uint8).
+    """
+    # 1. Input Check
+    # If no polygons are provided, return a copy of the base image immediately.
+    if polygons_xy is None or len(polygons_xy) == 0:
+        return base_img.copy()
+
+    H, W = int(base_img.shape[0]), int(base_img.shape[1])
+
+    # 2. Matplotlib Figure Setup
+    # Create a figure exactly the size of the image in pixels (assuming 100 DPI).
+    dpi = 100
+    fig = plt.figure(figsize=(W / dpi, H / dpi), dpi=dpi)
+    canvas = FigureCanvas(fig)
+    ax = fig.add_axes([0, 0, 1, 1])  # Use the entire canvas area
+
+    # Display the base image
+    ax.imshow(base_img, extent=(0, W, H, 0), interpolation="nearest")
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)  # Invert Y axis for standard image coordinates (top-down)
+    ax.axis("off")  # Hide axes, ticks, and labels
+
+    # Ensure inputs are standardized NumPy arrays (robustness)
+    polys = np.asarray(polygons_xy, dtype=np.float32)
+    lbls = np.asarray(labels)
+    scrs = np.asarray(scores, dtype=np.float32)
+    angs = np.asarray(angles_rad, dtype=np.float32)
+
+    # 3. Draw Predictions
+    for i in range(polys.shape[0]):
+        coords = polys[i]  # (4,2) vertices for the current box
+
+        # Draw OBB contour (Solid Blue: #004080)
+        ax.add_patch(
+            Polygon(coords, closed=True, fill=False, edgecolor="#004080", linewidth=1.5)
+        )
+        # Highlight front edge (v0 -> v1) (Solid Dark Red: #800000)
+        ax.plot(coords[[0, 1], 0], coords[[0, 1], 1], color="#800000", linewidth=1.5)
+
+        # 4. Add Text Label
+        # Find the top-left corner (TL) of the axis-aligned bounding box (AABB)
+        tl_x, tl_y = float(coords[:, 0].min()), float(coords[:, 1].min())
+
+        # Format label text (Name, Angle, Score)
+        # Get angle safely, defaulting to 0.0 if array size mismatch occurs
+        ang_deg = math.degrees(float(angs[i])) if angs.size > i else 0.0
+        name = labels_map.get(int(lbls[i]), str(int(lbls[i])))
+        txt = f"{name}: {ang_deg:.1f}° / {float(scrs[i]):.2f}"
+
+        # Draw text with a dark blue background box for improved legibility
+        ax.text(
+            tl_x,
+            tl_y,
+            txt,
+            color="white",
+            fontsize=6,
+            ha="left",
+            va="top",
+            bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
+        )
+
+    # 5. Render and Capture the Figure
+    # Force the canvas to render all drawing elements
+    canvas.draw()
+
+    # Get the actual dimensions rendered by Matplotlib
+    w, h = canvas.get_width_height()
+
+    # Capture the RGB buffer from the canvas and reshape it into a NumPy array (H, W, 3)
+    buf = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
+    img_annot = buf.reshape(h, w, 3).copy()
+
+    # Crucial step: close the figure to free up memory
+    plt.close(fig)
+
+    # 6. Robustness Check: Resize if Matplotlib's output size slightly differs from base_img size
+    if (h != H) or (w != W):
+        # Resize using PIL's bilinear sampling for better quality
+        img_annot = np.asarray(
+            Image.fromarray(img_annot).resize((W, H), resample=Image.BILINEAR)
+        )
+
+    return img_annot
+
+
+def write_predictions_txt(
+    out_labels_dir: Path,
+    stem: str,
+    boxes_xywhr: Optional[np.ndarray],  # (N,5) -> cx,cy,w,h,theta(rad)
+    polygons_42: Optional[np.ndarray],  # (N,4,2) vertices in final image coordinates
+    labels: Optional[np.ndarray],  # (N,)
+    scores: Optional[np.ndarray],  # (N,)
+) -> None:
+    """
+    Writes detection predictions to a text file in a standardized format.
+
+    The format written for each line is:
+    <class_id> x1 y1 x2 y2 x3 y3 x4 y4 angle_rad score
+
+    The function determines the geometry to use based on availability:
+    1. Prioritizes polygon vertices (N, 4, 2).
+    2. If polygons are missing, it attempts to reconstruct them from xywhr boxes (N, 5).
+    3. If no geometric data (neither polygons nor boxes) is available, it creates
+       an empty text file and returns.
+
+    Coordinates (x1..y4) are rounded to integers. Angle and score are written
+    with 6 decimal places.
+
+    Args:
+        out_labels_dir: The directory where the output file should be saved.
+        stem: The base name for the output file (e.g., 'image_001' for 'image_001.txt').
+        boxes_xywhr: Optional array of rotated box parameters (center, size, angle).
+        polygons_42: Optional array of polygon vertices.
+        labels: Optional array of integer class labels.
+        scores: Optional array of prediction confidence scores.
+
+    Raises:
+        AssertionError: If boxes are provided but are not in the expected (N, 5) shape
+                        when polygon reconstruction is attempted.
+    """
+    # 1. Setup the output directory and file path
+    out_labels_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = out_labels_dir / f"{stem}.txt"
+
+    # 2. Standardize and cast inputs (convert to NumPy arrays and enforce dtypes)
+    boxes_np = to_numpy(boxes_xywhr) if boxes_xywhr is not None else None
+    labels_np = to_numpy(labels).astype(np.int64) if labels is not None else None
+    scores_np = to_numpy(scores).astype(np.float32) if scores is not None else None
+
+    # Ensure polygons are in the standardized (N, 4, 2) format
+    polys_42 = (
+        ensure_polygons_42_shape(polygons_42) if polygons_42 is not None else None
+    )
+
+    # 3. Check for absence of geometric data
+    no_polys = (polys_42 is None) or (polys_42.size == 0)
+    no_boxes = (boxes_np is None) or (boxes_np.size == 0)
+
+    if no_polys and no_boxes:
+        # Write an empty file and exit if no geometry is present
+        with open(txt_path, "w") as f:
+            pass
+        return
+
+    # 4. Determine provisional N (number of predictions) based on available data
+    Ns = []
+    if polys_42 is not None and polys_42.size > 0:
+        Ns.append(polys_42.shape[0])
+    if boxes_np is not None and boxes_np.size > 0:
+        Ns.append(boxes_np.shape[0])
+    if labels_np is not None:
+        Ns.append(labels_np.shape[0])
+    if scores_np is not None:
+        Ns.append(scores_np.shape[0])
+    N = min(Ns) if Ns else 0
+
+    # 5. Reconstruct polygons if necessary (Polygons missing AND Boxes available AND N > 0)
+    is_polys_missing = polys_42 is None or polys_42.size == 0
+    is_boxes_available = boxes_np is not None and boxes_np.size > 0
+
+    if N > 0 and is_polys_missing and is_boxes_available:
+        assert (
+            boxes_np.shape[1] == 5
+        ), "Boxes must be in (N, 5) format (cx, cy, w, h, theta) for reconstruction."
+        polys_42 = np.zeros((N, 4, 2), dtype=np.float32)
+
+        # Iterate through boxes and convert each (cx, cy, w, h, theta) to (4, 2) vertices
+        for i in range(N):
+            cx, cy, w, h, th = boxes_np[i].tolist()
+            polys_42[i] = xywhr_to_poly42_shape(
+                cx, cy, w, h, th
+            )  # Utility function call
+
+    # 6. Final check for empty output after reconstruction
+    if polys_42 is None or polys_42.size == 0 or N == 0:
+        with open(txt_path, "w") as f:
+            pass
+        return
+
+    # 7. Final data preparation: Recalculate N safely and trim all arrays
+    # Recalculate N one last time to ensure full consistency across all arrays
+    Ns = [polys_42.shape[0]]
+    if boxes_np is not None and boxes_np.size > 0:
+        Ns.append(boxes_np.shape[0])
+    if labels_np is not None:
+        Ns.append(labels_np.shape[0])
+    if scores_np is not None:
+        Ns.append(scores_np.shape[0])
+    N = min(Ns)
+    polys_42 = polys_42[:N]
+
+    # Handle missing labels/scores by slicing or padding with zeros
+    labels_np = (
+        labels_np[:N]
+        if labels_np is not None and labels_np.size > 0
+        else np.zeros((N,), dtype=np.int64)
+    )
+    scores_np = (
+        scores_np[:N]
+        if scores_np is not None and scores_np.size > 0
+        else np.zeros((N,), dtype=np.float32)
+    )
+
+    # Extract angles from boxes or default to zero
+    if boxes_np is not None and boxes_np.size > 0:
+        angles_rad = boxes_np[:N, 4]
+    else:
+        angles_rad = np.zeros((N,), dtype=np.float32)
+
+    # 8. Write to the text file
+    with open(txt_path, "w") as f:
+        for i in range(N):
+            # Extract the 4 polygon vertices (x1, y1, x2, y2, x3, y3, x4, y4)
+            x1, y1 = polys_42[i, 0]
+            x2, y2 = polys_42[i, 1]
+            x3, y3 = polys_42[i, 2]
+            x4, y4 = polys_42[i, 3]
+
+            # Write data: ID, 8 coordinates (rounded int), angle, score (6 decimals)
+            f.write(
+                f"{int(labels_np[i])} "
+                f"{int(round(x1))} {int(round(y1))} "
+                f"{int(round(x2))} {int(round(y2))} "
+                f"{int(round(x3))} {int(round(y3))} "
+                f"{int(round(x4))} {int(round(y4))} "
+                f"{float(angles_rad[i]):.6f} {float(scores_np[i]):.6f}\n"
+            )

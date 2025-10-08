@@ -7,10 +7,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from PIL import Image, ImageDraw
-
+from PIL import Image, ImageDraw, ImageFont
 import torch
 from torch.utils.data import DataLoader
+
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
 from models.retinababyface import RetinaBabyFace
@@ -19,176 +19,21 @@ from engine.inference import (
     load_original_and_scale,
     denormalize_image,
 )
-from utils.helpers import get_default_device, seed_worker, set_seed
+from utils.helpers import (
+    get_default_device,
+    seed_worker,
+    set_seed,
+    to_numpy,
+    ensure_polygons_42_shape,
+)
+from utils.visualize import (
+    draw_predictions_on_image,
+    write_predictions_txt,
+    xywhr_to_poly42_shape,
+)
 import config
 
 
-import math
-from pathlib import Path
-from typing import Dict, Tuple, Optional
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-import torch
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-
-
-# ---------------------- helpers de forma ------------------------------------
-def _as_np(x):
-    if x is None:
-        return None
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
-
-
-def _ensure_polygons_42(polys_np: Optional[np.ndarray]) -> Optional[np.ndarray]:
-    """
-    Acepta polígonos en (N,8) o (N,4,2) y devuelve (N,4,2) float32. Si está vacío, None.
-    """
-    if polys_np is None:
-        return None
-    polys_np = _as_np(polys_np)
-    if polys_np.size == 0:
-        return None
-    if polys_np.ndim == 2 and polys_np.shape[1] == 8:
-        return polys_np.reshape(-1, 4, 2).astype(np.float32)
-    if polys_np.ndim == 3 and polys_np.shape[1:] == (4, 2):
-        return polys_np.astype(np.float32)
-    raise ValueError(f"Polygons shape no soportado: {polys_np.shape}")
-
-
-def _xywhr_to_poly42(cx, cy, w, h, theta):
-    dx, dy = w / 2.0, h / 2.0
-    c, s = math.cos(theta), math.sin(theta)
-    base = [(-dx, -dy), (dx, -dy), (dx, dy), (-dx, dy)]  # v0..v3 (frente v0->v1)
-    pts = []
-    for x, y in base:
-        px = cx + x * c - y * s
-        py = cy + x * s + y * c
-        pts.append((px, py))
-    return np.asarray(pts, dtype=np.float32)  # (4,2)
-
-
-# ---------------------- dibujo ------------------------------------------------
-def draw_predictions_on_image(
-    base_img: np.ndarray,  # np.uint8 (H,W,3) en la resolución que elegiste
-    polygons_xy: np.ndarray,  # (N,4,2) en coords de base_img
-    labels: np.ndarray,  # (N,)
-    scores: np.ndarray,  # (N,)
-    angles_rad: np.ndarray,  # (N,) ángulos en radianes (AngleHead)
-    labels_map: Dict[int, str],
-) -> np.ndarray:
-    img = Image.fromarray(base_img.copy())
-    draw = ImageDraw.Draw(img)
-    try:
-        font = ImageFont.load_default()
-    except Exception:
-        font = None
-
-    N = polygons_xy.shape[0]
-    for i in range(N):
-        poly = polygons_xy[i]
-        # asegurar ints
-        poly_pts = [
-            (int(round(float(x))), int(round(float(y)))) for x, y in poly.tolist()
-        ]
-        # contorno azul
-        draw.line(poly_pts + [poly_pts[0]], width=2, fill=(0, 64, 160))
-        # arista frontal roja (v0->v1)
-        draw.line([poly_pts[0], poly_pts[1]], width=2, fill=(160, 0, 0))
-
-        # texto en top-left del OBB
-        tl_x = min(p[0] for p in poly_pts)
-        tl_y = min(p[1] for p in poly_pts)
-        ang_deg = math.degrees(float(angles_rad[i]))
-        lbl_name = labels_map.get(int(labels[i]), str(int(labels[i])))
-        txt = f"{lbl_name}: {ang_deg:.1f}° / {float(scores[i]):.2f}"
-        # texto con trazo para legibilidad
-        draw.text(
-            (tl_x, tl_y),
-            txt,
-            fill=(255, 255, 255),
-            font=font,
-            stroke_width=2,
-            stroke_fill=(0, 64, 160),
-        )
-    return np.asarray(img)
-
-
-# ---------------------- escritura TXT ---------------------------------------
-def write_predictions_txt(
-    out_labels_dir: Path,
-    stem: str,
-    boxes_xywhr: Optional[np.ndarray],  # (N,5) -> cx,cy,w,h,theta (rad)
-    polygons_42: Optional[np.ndarray],  # (N,4,2) en coords de la imagen final
-    labels: np.ndarray,  # (N,)
-    scores: np.ndarray,  # (N,)
-) -> None:
-    out_labels_dir.mkdir(parents=True, exist_ok=True)
-
-    boxes_np = _as_np(boxes_xywhr) if boxes_xywhr is not None else None
-    labels_np = (
-        _as_np(labels).astype(np.int64)
-        if labels is not None
-        else np.zeros((0,), dtype=np.int64)
-    )
-    scores_np = (
-        _as_np(scores).astype(np.float32)
-        if scores is not None
-        else np.zeros((0,), dtype=np.float32)
-    )
-    polys_42 = _ensure_polygons_42(polygons_42)
-
-    # N consistente
-    Ns = []
-    if boxes_np is not None:
-        Ns.append(boxes_np.shape[0])
-    if polys_42 is not None:
-        Ns.append(polys_42.shape[0])
-    if labels_np is not None:
-        Ns.append(labels_np.shape[0])
-    if scores_np is not None:
-        Ns.append(scores_np.shape[0])
-    N = min(Ns) if Ns else 0
-
-    # reconstruir polígonos si no vinieron
-    if N > 0 and polys_42 is None:
-        assert (
-            boxes_np is not None and boxes_np.shape[1] == 5
-        ), "Necesito boxes (N,5) para reconstruir polígonos."
-        polys_42 = np.zeros((N, 4, 2), dtype=np.float32)
-        for i in range(N):
-            cx, cy, w, h, th = boxes_np[i].tolist()
-            polys_42[i] = _xywhr_to_poly42(cx, cy, w, h, th)
-
-    angles_rad = (
-        boxes_np[:N, 4]
-        if boxes_np is not None and boxes_np.size
-        else np.zeros((N,), dtype=np.float32)
-    )
-    labels_np = labels_np[:N]
-    scores_np = scores_np[:N]
-
-    # escribir
-    txt_path = out_labels_dir / f"{stem}.txt"
-    with open(txt_path, "w") as f:
-        for i in range(N):
-            x1, y1 = polys_42[i, 0]
-            x2, y2 = polys_42[i, 1]
-            x3, y3 = polys_42[i, 2]
-            x4, y4 = polys_42[i, 3]
-            f.write(
-                f"{int(labels_np[i])} "
-                f"{int(round(x1))} {int(round(y1))} "
-                f"{int(round(x2))} {int(round(y2))} "
-                f"{int(round(x3))} {int(round(y3))} "
-                f"{int(round(x4))} {int(round(y4))} "
-                f"{float(angles_rad[i]):.6f} {float(scores_np[i]):.6f}\n"
-            )
-
-
-# ---------------------- export main -----------------------------------------
 @torch.inference_mode()
 def export_predictions(
     model: torch.nn.Module,
@@ -205,26 +50,45 @@ def export_predictions(
     render_original: bool = True,
 ) -> None:
     """
-    Recorre el loader y, por imagen:
-      - guarda la imagen pintada en out_dir/images/
-      - guarda el .txt en out_dir/labels/
-    Si render_original=True, pinta/guarda con coords y tamaño de la imagen original.
-    Si False, pinta/guarda en 640x640 (o el resize_size que uses).
+    Export predictions from the RetinaBabyFace model for a given dataset.
+
+    This function processes a DataLoader, performs inference on each batch, and saves:
+    - Annotated images with predictions drawn on them.
+    - Text files containing the predictions in a standardized format.
+
+    Args:
+        model: The RetinaBabyFace model used for inference.
+        loader: DataLoader providing the dataset to process.
+        anchors_xy: Precomputed anchor boxes in (x, y) format.
+        resize_size: Tuple (width, height) specifying the resized image dimensions.
+        face_thres: Confidence threshold for face detection.
+        iou_thres: IoU threshold for non-maximum suppression.
+        class_thres: Confidence threshold for class predictions.
+        baby_thres: Confidence threshold for baby face detection.
+        device: The device (CPU/GPU) to run inference on.
+        labels_map: Dictionary mapping class IDs to human-readable labels.
+        out_dir: Directory where the output images and text files will be saved.
+        render_original: If True, predictions are drawn on the original image resolution.
+                         If False, predictions are drawn on the resized image.
+
+    Returns:
+        None. Outputs are saved to the specified directory.
     """
+    # Create output directories for images and labels
     out_imgs = out_dir / "images"
     out_lbls = out_dir / "labels"
     out_imgs.mkdir(parents=True, exist_ok=True)
     out_lbls.mkdir(parents=True, exist_ok=True)
 
     dataset = loader.dataset
-    Wr, Hr = resize_size  # (W,H)
-    model.eval()
+    Wr, Hr = resize_size  # Resized image dimensions (width, height)
+    model.eval()  # Set the model to evaluation mode
 
-    global_idx = 0
+    global_idx = 0  # Global index to track dataset samples
     for batch in tqdm(loader, desc="Export"):
-        imgs = batch["image"].to(device)
+        imgs = batch["image"].to(device)  # Move images to the specified device
 
-        # inferencia + NMS
+        # Perform inference and apply rotated NMS
         outputs = infer_with_rotated_nms(
             model_or_preds=model,
             images=imgs,
@@ -236,20 +100,20 @@ def export_predictions(
             class_thres=class_thres,
         )
 
-        B = imgs.size(0)
+        B = imgs.size(0)  # Batch size
         for b in range(B):
-            # nombre/paths
-            full_fname = dataset.file_list[
-                global_idx
-            ]  # suele ser ruta absoluta o relativa
+            # Get the file name and paths for the current image
+            full_fname = dataset.file_list[global_idx]
             global_idx += 1
             p = Path(full_fname)
-            stem = p.stem
-            ext = p.suffix if p.suffix else ".jpg"
+            stem = p.stem  # Base name without extension
+            ext = (
+                p.suffix if p.suffix else ".jpg"
+            )  # Use original extension or default to .jpg
 
-            # elegir base_img y escalas
+            # Determine the base image and scaling factors
             if render_original:
-                # usa tu helper si lo tienes disponible:
+                # Load the original image and calculate scaling factors
                 try:
                     orig_img_np, (sx, sy) = load_original_and_scale(
                         dataset, str(p), resize_size
@@ -257,7 +121,7 @@ def export_predictions(
                 except Exception:
                     orig_img_np, (sx, sy) = None, (1.0, 1.0)
                 if orig_img_np is None:
-                    # fallback: abrir desde disco
+                    # Fallback: Open the image directly from disk
                     with Image.open(p) as im:
                         im = im.convert("RGB")
                         W0, H0 = im.size
@@ -266,22 +130,25 @@ def export_predictions(
                 else:
                     base_img = orig_img_np
             else:
-                # pintar en 640x640 (o resize_size): desnormalizar
+                # Use the resized image and no scaling
                 base_img = denormalize_image(
                     imgs[b].cpu(), mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD
                 )
                 sx, sy = 1.0, 1.0
 
-            # recoger salidas
+            # Extract predictions for the current image
             out_b = outputs[b]
-            boxes_np = _as_np(out_b["boxes"])  # (N,5) -> θ(rad) en [:,4]
-            labels_np = _as_np(out_b["labels"])  # (N,)
-            scores_np = _as_np(out_b["scores"])  # (N,)
-            polys_np = _as_np(out_b["polygons"])  # (N,8) o (N,4,2) en coords de RESIZE
+            boxes_np = to_numpy(out_b["boxes"])  # (N, 5) -> θ(rad) in [:, 4]
+            labels_np = to_numpy(out_b["labels"])  # (N,)
+            scores_np = to_numpy(out_b["scores"])  # (N,)
+            polys_np = to_numpy(
+                out_b["polygons"]
+            )  # (N, 8) or (N, 4, 2) in resized coords
 
-            polys_42 = _ensure_polygons_42(polys_np)
+            # Ensure polygons are in the correct (N, 4, 2) format
+            polys_42 = ensure_polygons_42_shape(polys_np)
 
-            # reconstruir si falta
+            # Reconstruct polygons if missing
             if (
                 (polys_42 is None or polys_42.size == 0)
                 and boxes_np is not None
@@ -291,9 +158,9 @@ def export_predictions(
                 polys_42 = np.zeros((N, 4, 2), dtype=np.float32)
                 for i in range(N):
                     cx, cy, w, h, th = boxes_np[i].tolist()
-                    polys_42[i] = _xywhr_to_poly42(cx, cy, w, h, th)
+                    polys_42[i] = xywhr_to_poly42_shape(cx, cy, w, h, th)
 
-            # escalar a original si corresponde
+            # Scale polygons to the original image resolution if needed
             if (
                 render_original
                 and polys_42 is not None
@@ -306,7 +173,7 @@ def export_predictions(
             else:
                 polys_for_image = polys_42
 
-            # pintar
+            # Draw predictions on the image
             if polys_for_image is not None and polys_for_image.size > 0:
                 angles = (
                     boxes_np[:, 4]
@@ -324,23 +191,24 @@ def export_predictions(
             else:
                 painted = base_img
 
-            # guardar imagen (conservar extensión si la tenemos; si no, .jpg)
+            # Save the annotated image
             Image.fromarray(painted).save(out_imgs / f"{stem}{ext}")
 
-            # guardar TXT (usar polígonos en el MISMO sistema en el que pintaste)
+            # Save the predictions to a text file
             write_predictions_txt(
                 out_labels_dir=out_lbls,
                 stem=stem,
                 boxes_xywhr=boxes_np,
-                polygons_42=polys_for_image,  # ya en sistema de coords de la imagen guardada
+                polygons_42=polys_for_image,  # Polygons in the same coordinate system as the image
                 labels=labels_np,
                 scores=scores_np,
             )
 
+        # Free memory after processing the batch
         del imgs, outputs
         torch.cuda.empty_cache()
 
-    print(f"[INFO] Export completo.\n  Imágenes: {out_imgs}\n  Labels:   {out_lbls}")
+    print(f"[INFO] Export complete.\n  Images: {out_imgs}\n  Labels: {out_lbls}")
 
 
 def parse_args():
@@ -435,6 +303,7 @@ def main():
     print(f"[INFO] Loaded {anchors_xy.size(0)} anchors from: {anchors_cache_path}")
 
     # Export
+
     export_predictions(
         model=model,
         loader=test_loader,

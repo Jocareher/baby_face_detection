@@ -791,3 +791,9 @@ def write_predictions_txt(
                 f"{int(round(x4))} {int(round(y4))} "
                 f"{float(angles_rad[i]):.6f} {float(scores_np[i]):.6f}\n"
             )
+
+
+# Function to get image size
+def img_size(p: Path) -> Tuple[int, int]:
+    with Image.open(p) as im:
+        return im.size

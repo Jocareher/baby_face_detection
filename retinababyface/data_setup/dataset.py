@@ -669,43 +669,43 @@ def remap_labels_obbabyface(
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
-class ImageFolderDataset(Dataset):
-    """
-    Minimal images-only dataset that mimics the subset of BabyFacesDataset
-    API needed by export_predictions:
-      - .file_list : List[str] with image file paths
-    __getitem__ returns a dict with 'image' (tensor) to match batch["image"] usage.
-    """
+# class ImageFolderDataset(Dataset):
+#     """
+#     Minimal images-only dataset that mimics the subset of BabyFacesDataset
+#     API needed by export_predictions:
+#       - .file_list : List[str] with image file paths
+#     __getitem__ returns a dict with 'image' (tensor) to match batch["image"] usage.
+#     """
 
-    def __init__(self, images_dir: str | Path, transform=None):
-        self.images_dir = Path(images_dir)
-        self.transform = transform
-        # Build file_list exactly like BabyFacesDataset (list[str])
-        self.file_list: List[str] = sorted(
-            str(p) for p in self.images_dir.rglob("*") if p.suffix.lower() in IMG_EXTS
-        )
-        if not self.file_list:
-            raise FileNotFoundError(f"No images found under: {self.images_dir}")
+#     def __init__(self, images_dir: str | Path, transform=None):
+#         self.images_dir = Path(images_dir)
+#         self.transform = transform
+#         # Build file_list exactly like BabyFacesDataset (list[str])
+#         self.file_list: List[str] = sorted(
+#             str(p) for p in self.images_dir.rglob("*") if p.suffix.lower() in IMG_EXTS
+#         )
+#         if not self.file_list:
+#             raise FileNotFoundError(f"No images found under: {self.images_dir}")
 
-    def __len__(self) -> int:
-        return len(self.file_list)
+#     def __len__(self) -> int:
+#         return len(self.file_list)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        path = self.file_list[idx]
-        img = Image.open(path).convert("RGB")
-        if self.transform is None:
-            x = img
-        else:
-            # Try Albumentations-style first (expects dict), then fall back to TorchVision-style (expects PIL)
-            try:
-                import numpy as np
+#     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+#         path = self.file_list[idx]
+#         img = Image.open(path).convert("RGB")
+#         if self.transform is None:
+#             x = img
+#         else:
+#             # Try Albumentations-style first (expects dict), then fall back to TorchVision-style (expects PIL)
+#             try:
+#                 import numpy as np
 
-                out = self.transform(image=np.array(img))
-                x = out["image"]
-            except Exception:
-                x = self.transform(img)
-        # IMPORTANT: export_predictions expects batch["image"]
-        # So we return a dict with "image" only.
-        if not isinstance(x, torch.Tensor):
-            x = torch.as_tensor(x)
-        return {"image": x}
+#                 out = self.transform(image=np.array(img))
+#                 x = out["image"]
+#             except Exception:
+#                 x = self.transform(img)
+#         # IMPORTANT: export_predictions expects batch["image"]
+#         # So we return a dict with "image" only.
+#         if not isinstance(x, torch.Tensor):
+#             x = torch.as_tensor(x)
+#         return {"image": x}

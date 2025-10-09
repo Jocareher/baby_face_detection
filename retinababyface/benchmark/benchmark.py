@@ -9,6 +9,55 @@ from matplotlib import pyplot as plt
 from loss.utils import verts_to_xywhr_with_theta, batch_probiou
 
 
+def read_infantface_gt_xywhr(
+    gt_txt_path: Path,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Lee GT del InfantFace (formato por línea: x1 y1 x2 y2 en PIXELES).
+    Devuelve:
+      - xywhr_gt: (N,5) en pixeles (cx,cy,w,h,theta) con theta=0.0
+      - cls_gt:  (N,) dummy con todo a 0 (no se usa en loc-only)
+    Si el archivo no existe o está vacío, retorna tensores vacíos.
+    """
+    if not gt_txt_path.exists():
+        return torch.empty((0, 5), dtype=torch.float32), torch.empty(
+            (0,), dtype=torch.long
+        )
+
+    xywhr_list = []
+    with open(gt_txt_path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            toks = line.split()
+            if len(toks) < 4:
+                continue
+            x1 = float(toks[0])
+            y1 = float(toks[1])
+            x2 = float(toks[2])
+            y2 = float(toks[3])
+            x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
+            y_min, y_max = (y1, y2) if y1 <= y2 else (y2, y1)
+            w = max(0.0, x_max - x_min)
+            h = max(0.0, y_max - y_min)
+            if w <= 0.0 or h <= 0.0:
+                continue
+            cx = x_min + w * 0.5
+            cy = y_min + h * 0.5
+            theta = 0.0  # AABB
+            xywhr_list.append([cx, cy, w, h, theta])
+
+    if len(xywhr_list) == 0:
+        return torch.empty((0, 5), dtype=torch.float32), torch.empty(
+            (0,), dtype=torch.long
+        )
+
+    xywhr = torch.tensor(xywhr_list, dtype=torch.float32)
+    cls_dummy = torch.zeros((xywhr.size(0),), dtype=torch.long)  # no se usa en loc-only
+    return xywhr, cls_dummy
+
+
 def read_gt_baby_xywhr(
     gt_txt_path: Path, img_wh: Tuple[int, int]
 ) -> Tuple[torch.Tensor, torch.Tensor]:

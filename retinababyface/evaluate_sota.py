@@ -33,6 +33,7 @@ from engine.inference import (
     plot_f1_vs_threshold,
 )
 from data_setup.augmentations import wrap_to_pi
+from utils.visualize import img_size
 
 LABELS_MAP: Dict[int, str] = {
     0: "Leftside",
@@ -41,12 +42,6 @@ LABELS_MAP: Dict[int, str] = {
     3: "3/4 Rightside",
     4: "Rightside",
 }
-
-
-# Function to get image size
-def img_size(p: Path) -> Tuple[int, int]:
-    with Image.open(p) as im:
-        return im.size
 
 
 def evaluate_sota(
@@ -323,7 +318,7 @@ def evaluate_sota(
         y_is_tp=per_true_face[0],
         y_scores=per_score_face[0],
         n_gt=n_gt_total,
-        n_steps=200,
+        # n_steps=200,
     )
     # Best threshold and corresponding metrics
     best_th, best_P, best_R, best_F1 = (

@@ -24,6 +24,7 @@ from benchmark.benchmark import (
     count_adults_in_gt,
     compute_loc_curves_from_predictions,
     plot_precision_recall_vs_threshold,
+    classify_image_gt,
 )
 from engine.inference import (
     plot_precision_recall,
@@ -32,6 +33,7 @@ from engine.inference import (
     plot_confusion_matrix,
     plot_f1_vs_threshold,
 )
+from loss.utils import batch_probiou
 from data_setup.augmentations import wrap_to_pi
 from utils.visualize import img_size
 
@@ -54,246 +56,259 @@ def evaluate_sota(
     aabb_mode: bool = False,
 ) -> Dict[str, Any]:
     """
-    Evaluate the performance of a state-of-the-art (SOTA) face detection model on a dataset.
-    This function computes various metrics to evaluate the performance of a face detection model,
-    including precision, recall, F1-score, IoU statistics, and per-class metrics. It also generates
-    visualizations such as precision-recall curves, IoU histograms, and boxplots for IoU and angle errors.
-    Args:
-        data_root (Path): Root directory of the dataset.
-        split (str): Dataset split to evaluate (e.g., "train", "val", "test").
-        sota_dir (Path): Directory containing the SOTA model predictions.
-        out_dir (Path): Directory to save evaluation results and visualizations.
-        iou_th (float, optional): IoU threshold for matching predictions to ground truth. Defaults to 0.5.
-        min_score (float, optional): Minimum confidence score for predictions to be considered. Defaults to 0.0.
-        aabb_mode (bool, optional): If True, evaluate using axis-aligned bounding boxes (AABB).
-            Otherwise, evaluate using oriented bounding boxes. Defaults to False.
-    Returns:
-        Dict[str, Any]: A dictionary containing the following evaluation results:
-            - "AP_face" (float): Average precision for face/no-face classification.
-            - "mAP_face" (float): Mean average precision for face/no-face classification.
-            - "per_true_face" (Dict[int, List[int]]): True positive indicators for face/no-face classification.
-            - "per_score_face" (Dict[int, List[float]]): Confidence scores for face/no-face classification.
-            - "gt_per_cls" (Dict[int, int]): Ground truth counts per class (orientation).
-            - "tp_per_cls" (Dict[int, int]): True positive counts per class (orientation).
-            - "fn_per_cls" (Dict[int, int]): False negative counts per class (orientation).
-            - "recalls" (Dict[int, float]): Recall values per class (orientation).
-            - "fp_per_cls_loc" (Dict[int, float]): Fractional false positives per class (localization-only).
-            - "prec_loc_per_cls" (Dict[int, float]): Precision values per class (localization-only).
-            - "f1_loc_per_cls" (Dict[int, float]): F1-scores per class (localization-only).
-            - "fp_global" (int): Total false positives across all images.
-            - "iou_stats" (Dict[str, float]): IoU statistics (mean, median, percentiles, etc.).
-            - "angle_errs_per_cls" (Dict[int, List[float]] or None): Angle errors per class (if not in AABB mode).
-            - "n_gt_total" (int): Total number of ground truth instances.
-            - "best_conf_th_loc" (float): Best confidence threshold for localization-only metrics.
-            - "best_precision_loc" (float): Best precision for localization-only metrics.
-            - "best_recall_loc" (float): Best recall for localization-only metrics.
-            - "best_f1_loc" (float): Best F1-score for localization-only metrics.
-            - "precision_loc_at_min" (float): Precision at the minimum confidence score.
-            - "recall_loc_at_min" (float): Recall at the minimum confidence score.
-            - "f1_loc_at_min" (float): F1-score at the minimum confidence score.
-    Notes:
-        - The function assumes that the dataset is organized with "images" and "labels" subdirectories
-          under the specified `data_root` and `split`.
-        - Ground truth labels and predictions are expected to be in specific formats, and helper functions
-          like `read_gt_baby_xywhr`, `read_sota_preds_xywhr_xyxy`, and `read_pcn_preds_xywhr` are used
-          to parse them.
-        - The function generates various plots and saves them to the specified `out_dir`.
-    Raises:
-        FileNotFoundError: If the required directories or files are not found.
-        ValueError: If there are inconsistencies in the input data or parameters.
+    Evaluate detection performance of a SOTA model on a baby-face dataset with:
+      • Face/no-face Average Precision (AP) and PR curve.
+      • Per-orientation recall (based on GT classes in LABELS_MAP).
+      • FP buckets: predictions on (i) baby images, (ii) adult-only images, (iii) background-only images.
+      • Localization-only summary for Scenario-1 (S1): Precision considers only FPs in baby images; Recall is micro over babies.
+      • IoU computed over ALL ground truths (each GT contributes its best IoU; unmatched GT → 0.0).
+      • Angle error computed over ALL ground truths (matched GT → |Δθ| deg; unmatched GT → 180°).
+        - Angle is reported only when evaluating oriented predictions (i.e., aabb_mode=False).
+
+    Parameters
+    ----------
+    data_root : Path
+        Root directory of the dataset (contains e.g. `split/images`, `split/labels`).
+    split : str
+        Dataset split (e.g., "train", "val", "test").
+    sota_dir : Path
+        Directory that contains the model's predictions (.txt per image).
+    out_dir : Path
+        Directory where figures and CSV summaries will be written.
+    iou_th : float, default=0.5
+        IoU threshold used by the greedy matcher to declare TP matches.
+    min_score : float, default=0.0
+        Minimum confidence score to keep predictions.
+    aabb_mode : bool, default=False
+        If True, evaluate AABB predictions (θ assumed 0 on preds); if False, evaluate oriented boxes.
+
+    Returns
+    -------
+    Dict[str, Any]
+        A dictionary with the main aggregates, including:
+          - 'AP_face': float
+          - 'recalls': Dict[int,float] (per-class recall)
+          - 'recall_micro': float (TP_total / GT_total over baby classes)
+          - 'recall_macro': float (mean of per-class recalls)
+          - 'precision_s1': float (TP / (TP + FP_in_baby_imgs))
+          - 'f1_s1': float (F1 using precision_s1 and recall_micro)
+          - 'fp_global', 'fp_in_baby_imgs', 'fp_in_adult_imgs', 'fp_in_bg_imgs': ints
+          - 'iou_stats_all_gt': Dict[str,float] (IoU stats over all GTs)
+          - 'angle_stats_all_gt': Dict[str,float] (Angle stats over all GTs; only if aabb_mode=False)
+          - and raw per-class counts (gt_per_cls, tp_per_cls, fn_per_cls)
     """
 
-    # Create necessary directories
-    images_dir = data_root / split / "images"
-    labels_dir = data_root / split / "labels"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # ----------------------------- I/O setup -----------------------------
+    images_dir = data_root / split / "images"  # path to images
+    labels_dir = data_root / split / "labels"  # path to GT labels
+    out_dir.mkdir(parents=True, exist_ok=True)  # ensure output dir
+    figs_dir = out_dir / "figures"  # figures subdir
+    figs_dir.mkdir(parents=True, exist_ok=True)  # ensure figures dir
 
-    # Prepare accumulators for metrics (face/no-face)
-    per_true_face: Dict[int, List[int]] = {0: []}
-    per_score_face: Dict[int, List[float]] = {0: []}
+    # -------------------- Accumulators: binary face/no-face --------------------
+    per_true_face: Dict[int, List[int]] = {
+        0: []
+    }  # 1 if pred matched any baby GT, else 0
+    per_score_face: Dict[int, List[float]] = {0: []}  # scores for the binary PR
 
-    # TP/FP/FN per class (orientations)
-    gt_per_cls = {c: 0 for c in LABELS_MAP}
-    tp_per_cls = {c: 0 for c in LABELS_MAP}
-    fn_per_cls = {c: 0 for c in LABELS_MAP}
+    # --------------------------- Per-class counters ---------------------------
+    gt_per_cls = {c: 0 for c in LABELS_MAP}  # GT count per baby class
+    tp_per_cls = {c: 0 for c in LABELS_MAP}  # TP per baby class
+    fn_per_cls = {c: 0 for c in LABELS_MAP}  # FN per baby class
 
-    # FP per class (for loc-only precision)
-    fp_per_cls = {c: 0.0 for c in LABELS_MAP}
+    # ------------------------------ FP buckets -------------------------------
+    fp_global = 0  # total FPs across all images
+    fp_in_baby_imgs = 0  # FPs on images with baby GT
+    fp_in_adult_imgs = 0  # FPs on images with only adult GT (-1)
+    fp_in_bg_imgs = 0  # FPs on background-only images (no GT)
 
-    # Global FP (all images)
-    fp_global = 0
+    # --------- IoU/Angle over ALL GTs (global + per-class lists) -------------
+    iou_all_gts: List[float] = []  # best IoU per GT
+    iou_all_gts_per_cls: Dict[int, List[float]] = {
+        c: [] for c in LABELS_MAP
+    }  # per-class IoUs
 
-    # IoU and angle errors (for TPs)
-    all_iou: List[float] = []
-    all_scores_matched: List[float] = []
-    iou_per_cls: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}
-    iou_data_for_boxplot: List[Dict[str, Any]] = []
-    angle_errs_per_cls: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}
-    angle_data_for_boxplot: List[Dict[str, Any]] = []
+    angle_all_gts: List[float] = []  # |Δθ| per GT (deg), or 180 for unmatched
+    angle_all_gts_per_cls: Dict[int, List[float]] = {
+        c: [] for c in LABELS_MAP
+    }  # per-class angles
 
-    # List all image files
-    exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
+    # --------------------------- Enumerate images ----------------------------
+    exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")  # supported extensions
     jpgs: List[Path] = []
-
-    # Accumulate all image paths
     for pat in exts:
-        jpgs += list(images_dir.glob(pat))
-    jpgs = sorted(jpgs)
+        jpgs += list(images_dir.glob(pat))  # gather images
+    jpgs = sorted(jpgs)  # deterministic order
 
-    # Process each image
+    # ====================== Main evaluation loop per image =====================
     for img_p in jpgs:
-        # Corresponding GT and prediction files
-        stem = img_p.stem
-        # Read GT and prediction paths
-        gt_p = labels_dir / f"{stem}.txt"
-        pr_p = sota_dir / f"{stem}.txt"
+        stem = img_p.stem  # file stem
+        gt_p = labels_dir / f"{stem}.txt"  # GT path
+        pr_p = sota_dir / f"{stem}.txt"  # prediction path
+        W, H = img_size(img_p)  # image size
 
-        # Get image dimensions
-        W, H = img_size(img_p)
+        # Read GT boxes and classes (adults = -1)
+        gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))  # tensors (N,5) and (N,)
 
-        # GT baby faces
-        gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))
-        # Filter only baby faces
+        # Keep only baby GT for recall/PR
         if gt_cls.numel() > 0:
-            # Exclude non-baby faces (cls == -1)
-            keep_baby = gt_cls != -1
-            # Keep only baby faces
-            gt_xywhr_baby = gt_xywhr[keep_baby]
-            # Get corresponding classes
-            gt_cls_baby = gt_cls[keep_baby]
+            keep_baby = gt_cls != -1  # mask non-adult
+            gt_xywhr_baby = gt_xywhr[keep_baby]  # (Gb,5)
+            gt_cls_baby = gt_cls[keep_baby]  # (Gb,)
         else:
-            # No GT baby faces
-            gt_xywhr_baby = gt_xywhr
+            gt_xywhr_baby = gt_xywhr  # empty tensors
             gt_cls_baby = gt_cls
 
-        # Count GT per class
-        cls_counts_img = Counter(gt_cls_baby.tolist())
+        # Update per-class GT counts
         for c in gt_cls_baby.tolist():
             gt_per_cls[int(c)] += 1
 
-        # AABB mode when evaluating AABB predictions
+        # Read predictions depending on mode (AABB vs oriented)
         if aabb_mode:
             pr_xywhr, pr_scores = read_sota_preds_xywhr_xyxy(
                 pred_txt_path=pr_p, img_wh=(W, H), min_score=min_score
             )
         else:
-            # Read PCN predictions (oriented boxes)
             pr_xywhr, pr_scores = read_pcn_preds_xywhr(
                 pred_txt_path=pr_p, img_wh=(W, H), min_score=min_score
             )
+        P = int(pr_xywhr.shape[0])  # number of predictions
 
-        # No baby GT case (only adults or empty)
-        if gt_xywhr_baby.numel() == 0:
-            # Count adults in GT for TN
-            nfp = int(pr_xywhr.shape[0])
-            # If no predictions, count TNs
-            fp_global += nfp
-            for s in pr_scores.tolist():
-                # All predictions are FPs
-                per_true_face[0].append(0)
-                # Record their scores
-                per_score_face[0].append(float(s))
+        # Classify this image by its GT content (for FP buckets)
+        img_kind = classify_image_gt(gt_p)
+
+        # --------- Adult-only / BG images: all predictions are FP for binary PR ---------
+        if img_kind != "BABY":
+            if P > 0:  # each pred is FP
+                if img_kind == "ADULT_ONLY":
+                    fp_in_adult_imgs += P
+                else:
+                    fp_in_bg_imgs += P
+                fp_global += P
+                for s in pr_scores.tolist():
+                    per_true_face[0].append(0)  # FP for face/no-face
+                    per_score_face[0].append(float(s))
+            # No IoU/angle contribution from these images (no baby GT)
             continue
 
-        # Match predictions to GT baby faces
+        # ------------------------ Baby images: do matching ------------------------
+        G = int(gt_xywhr_baby.shape[0])  # number of baby GT
+
+        # Greedy IoU matching (TP/FP/FN on baby GT)
         matches, unmatched_gt, unmatched_pr = greedy_match(
             gt_xywhr_baby, pr_xywhr, pr_scores, iou_th=iou_th
         )
 
-        # Matched predictions indices
-        matched_pr_idx = set([m for (_, m, _) in matches])
+        # Binary PR: mark predictions as TP if matched, else FP
+        matched_pr_idx = set(
+            [pj for (gi, pj, _) in matches]
+        )  # pred indices that matched
         for j, s in enumerate(pr_scores.tolist()):
-            # TP if matched, else FP
             per_true_face[0].append(1 if j in matched_pr_idx else 0)
-            # Record their scores
             per_score_face[0].append(float(s))
 
-        # TPs per class and IoU/angle errors
-        for gi, pj, iou in matches:
-            # Class of the matched GT
-            c = int(gt_cls_baby[gi].item())
-            # Label name
-            class_name = LABELS_MAP[c]
-            # Record IoU and score
-            iou_val = float(iou)
-            score_val = float(pr_scores[pj].item())
-            # Accumulate IoU and scores
-            all_iou.append(iou_val)
-            all_scores_matched.append(score_val)
-            iou_per_cls[c].append(iou_val)
-            # Data for boxplot
-            iou_data_for_boxplot.append({"class": class_name, "IoU": iou_val})
-
-            # Angle error if not in AABB mode
-            if not aabb_mode:
-                # Calculate angle difference
-                dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr_baby[gi, 4])
-                # Convert to degrees
-                err_deg = float(torch.abs(dtheta) * 180.0 / math.pi)
-                # Accumulate angle errors
-                angle_errs_per_cls[c].append(err_deg)
-                # Data for boxplot
-                angle_data_for_boxplot.append({"class": class_name, "error°": err_deg})
-            tp_per_cls[c] += 1
-
-        # FNs per class
+        # Per-class TP/FN accounting for recall
+        for gi, pj, iou_val in matches:
+            c = int(gt_cls_baby[gi].item())  # GT class
+            tp_per_cls[c] += 1  # TP for that class
         for gi in unmatched_gt:
-            # Class of the unmatched GT
-            c = int(gt_cls_baby[gi].item())
-            fn_per_cls[c] += 1
+            c = int(gt_cls_baby[gi].item())  # GT class
+            fn_per_cls[c] += 1  # FN for that class
 
-        # Global FP counting (unmatched predictions)
-        n_unmatched = len(unmatched_pr)
-        if n_unmatched > 0:
-            # All unmatched are FPs
-            fp_global += n_unmatched
-            # Distribute FPs proportionally to GT class distribution
-            total_babies_img = sum(cls_counts_img.values())
-            # If there are baby faces in GT
-            if total_babies_img > 0:
-                # Distribute FPs proportionally
-                for c, cnt in cls_counts_img.items():
-                    fp_per_cls[int(c)] += n_unmatched * (cnt / total_babies_img)
+        # Bucket FPs in baby images (unmatched predictions)
+        n_unmatched_pr = len(unmatched_pr)
+        if n_unmatched_pr > 0:
+            fp_in_baby_imgs += n_unmatched_pr
+            fp_global += n_unmatched_pr
 
-    #  Metrics computation
+        # ---------------- IoU over ALL GTs (best-over-preds; unmatched→0) ----------------
+        if G > 0:
+            if P > 0:
+                iou_mat = batch_probiou(gt_xywhr_baby, pr_xywhr)  # (G,P) IoU matrix
+                best_iou_per_gt = (
+                    iou_mat.max(dim=1).values.cpu().numpy()
+                )  # best IoU for each GT
+            else:
+                best_iou_per_gt = np.zeros((G,), dtype=np.float32)  # no preds → zeros
+
+            # Force exact zero at unmatched GT indices
+            if len(unmatched_gt) > 0 and P > 0:
+                best_iou_per_gt = best_iou_per_gt.copy()
+                best_iou_per_gt[np.asarray(unmatched_gt, dtype=int)] = 0.0
+
+            # Append globally and per class
+            iou_all_gts.extend(best_iou_per_gt.tolist())
+            for gi in range(G):
+                c = int(gt_cls_baby[gi].item())
+                iou_all_gts_per_cls[c].append(float(best_iou_per_gt[gi]))
+
+        # -------- Angle over ALL GTs (matched→|Δθ| deg; unmatched→180) --------
+        if not aabb_mode and G > 0:  # only when oriented
+            gi_to_pj = {gi: pj for (gi, pj, _) in matches}  # map GT → pred when matched
+            for gi in range(G):
+                c = int(gt_cls_baby[gi].item())  # GT class
+                if gi in gi_to_pj:
+                    pj = gi_to_pj[gi]  # matched pred index
+                    dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr_baby[gi, 4])
+                    err_deg = float(torch.abs(dtheta) * 180.0 / math.pi)
+                else:
+                    err_deg = 0.0  # unmatched GT → worst-case angle error
+                angle_all_gts.append(err_deg)  # global list
+                angle_all_gts_per_cls[c].append(err_deg)  # per-class list
+
+    # ========================== Global metrics/curves ==========================
+    # Face/no-face AP
     mAP, APs = compute_map_and_pr(per_true_face, per_score_face)
     ap_face = APs[0]
 
-    # Precision-recall curve for face/no-face
-    pr_fig = plot_precision_recall(
-        per_true_face, per_score_face, labels_map={0: "Face"}, mAP=mAP
-    )
-    pr_fig.savefig(out_dir / "precision_recall_face.png", dpi=150, bbox_inches="tight")
-    plt.close(pr_fig)
-
-    # Recall per class (orientation)
+    # Per-class recall and micro/macro recalls
     recalls = {
         c: (tp_per_cls[c] / gt_per_cls[c]) if gt_per_cls[c] > 0 else 0.0
         for c in LABELS_MAP
     }
+    TP_baby_total = int(sum(tp_per_cls.values()))
+    GT_baby_total = int(sum(gt_per_cls.values()))
+    recall_micro = (TP_baby_total / GT_baby_total) if GT_baby_total > 0 else 0.0
+    recalls_present = [recalls[c] for c in LABELS_MAP if gt_per_cls[c] > 0]
+    recall_macro = float(np.mean(recalls_present)) if len(recalls_present) > 0 else 0.0
 
-    # Bar plot for recall per orientation
-    fig, ax = plt.subplots(figsize=(8, 4))
-    xs = list(LABELS_MAP.keys())
-    ax.bar([LABELS_MAP[x] for x in xs], [recalls[x] for x in xs])
-    ax.set_ylim(0, 1)
-    ax.set_ylabel("Recall")
-    ax.set_title("Recall per Orientation (SOTA vs. GT Baby)")
-    for i, c in enumerate(xs):
-        ax.text(
-            i,
-            min(0.98, recalls[c] + 0.02),
-            f"{recalls[c]:.2f}",
-            ha="center",
-            fontsize=10,
-        )
-    fig.tight_layout()
-    fig.savefig(out_dir / "recall_per_orientation.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    # Scenario-1 summary (precision uses only FP in baby images)
+    precision_s1 = (
+        TP_baby_total / (TP_baby_total + fp_in_baby_imgs)
+        if (TP_baby_total + fp_in_baby_imgs) > 0
+        else 0.0
+    )
+    f1_s1 = (
+        (2 * precision_s1 * recall_micro / (precision_s1 + recall_micro))
+        if (precision_s1 + recall_micro) > 0
+        else 0.0
+    )
 
-    # IoU stats
-    if len(all_iou) > 0:
-        iou_arr = np.asarray(all_iou, dtype=np.float32)
+    # PR vs threshold (visual)
+    n_gt_total = GT_baby_total
+    loc_curves = compute_loc_curves_from_predictions(
+        y_is_tp=per_true_face[0],
+        y_scores=per_score_face[0],
+        n_gt=n_gt_total,
+        n_steps=200,
+    )
+    best_th, best_P, best_R, best_F1 = (
+        loc_curves["best_th"],
+        loc_curves["best_P"],
+        loc_curves["best_R"],
+        loc_curves["best_F1"],
+    )
+    plot_precision_recall_vs_threshold(
+        th=loc_curves["thresholds"],
+        prec=loc_curves["precision"],
+        rec=loc_curves["recall"],
+        best_th=best_th,
+        out_path=(figs_dir / "precision_recall_vs_threshold_loc.png"),
+    )
+
+    # ============================= IoU stats/plots =============================
+    if len(iou_all_gts) > 0:
+        iou_arr = np.asarray(iou_all_gts, dtype=np.float32)
         iou_stats = {
             "count": int(iou_arr.size),
             "mean": float(iou_arr.mean()),
@@ -302,6 +317,38 @@ def evaluate_sota(
             "p75": float(np.percentile(iou_arr, 75)),
             "std": float(iou_arr.std(ddof=0)),
         }
+        # Histogram (global, per GT)
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.hist(iou_arr, bins=20, range=(0, 1), edgecolor="black")
+        ax.set_xlabel("IoU")
+        ax.set_ylabel("Count")
+        ax.set_title("IoU over all ground truths")
+        fig.tight_layout()
+        fig.savefig(figs_dir / "iou_hist_all_gt.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        # Boxplot per class (GT-anchored IoU)
+        iou_data = [
+            {"class": LABELS_MAP[c], "IoU": v}
+            for c, vs in iou_all_gts_per_cls.items()
+            for v in vs
+        ]
+        if iou_data:
+            fig_bp = plot_boxplots(
+                data=iou_data,
+                x_field="class",
+                y_field="IoU",
+                title="IoU per Class",
+                labels_map=LABELS_MAP,
+                y_lim=(0.0, 1.0),
+                cmap_name="tab10",
+            )
+            fig_bp.savefig(
+                figs_dir / "iou_boxplot_per_class_all_gt.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig_bp)
     else:
         iou_stats = {
             "count": 0,
@@ -312,146 +359,136 @@ def evaluate_sota(
             "std": 0.0,
         }
 
-    # Localization-only metrics (agnostic to class)
-    n_gt_total = sum(gt_per_cls.values())
-    loc_curves = compute_loc_curves_from_predictions(
-        y_is_tp=per_true_face[0],
-        y_scores=per_score_face[0],
-        n_gt=n_gt_total,
-        # n_steps=200,
+    # =========================== Angle stats/plots ============================
+    if not aabb_mode:
+        if len(angle_all_gts) > 0:
+            ang_arr = np.asarray(angle_all_gts, dtype=np.float32)
+            angle_stats = {
+                "count": int(ang_arr.size),
+                "mean_deg": float(ang_arr.mean()),
+                "median_deg": float(np.median(ang_arr)),
+                "p25_deg": float(np.percentile(ang_arr, 25)),
+                "p75_deg": float(np.percentile(ang_arr, 75)),
+                "std_deg": float(ang_arr.std(ddof=0)),
+            }
+            # Histogram (global, per GT)
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.hist(ang_arr, bins=20, range=(0, 180), edgecolor="black")
+            ax.set_xlabel("Angle error")
+            ax.set_ylabel("Count")
+            ax.set_title("Angle error over all ground truths")
+            fig.tight_layout()
+            fig.savefig(
+                figs_dir / "angle_hist_all_gt.png", dpi=150, bbox_inches="tight"
+            )
+            plt.close(fig)
+
+            # Boxplot per class (GT-anchored |Δθ|)
+            angle_data = [
+                {"class": LABELS_MAP[c], "error°": v}
+                for c, vs in angle_all_gts_per_cls.items()
+                for v in vs
+            ]
+            if angle_data:
+                ang_fig = plot_boxplots(
+                    data=angle_data,
+                    x_field="class",
+                    y_field="error°",
+                    title="Angle error per Class",
+                    labels_map=LABELS_MAP,
+                    y_lim=(0, 180),
+                )
+                ang_fig.savefig(
+                    figs_dir / "angle_boxplot_per_class_all_gt.png",
+                    dpi=150,
+                    bbox_inches="tight",
+                )
+                plt.close(ang_fig)
+        else:
+            angle_stats = {
+                "count": 0,
+                "mean_deg": 0.0,
+                "median_deg": 0.0,
+                "p25_deg": 0.0,
+                "p75_deg": 0.0,
+                "std_deg": 0.0,
+            }
+    else:
+        angle_stats = None  # not applicable for AABB mode
+
+    # ============================== Extra visuals =============================
+    pr_fig = plot_precision_recall(
+        per_true_face, per_score_face, labels_map={0: "Face"}, mAP=mAP
     )
-    # Best threshold and corresponding metrics
-    best_th, best_P, best_R, best_F1 = (
-        loc_curves["best_th"],
-        loc_curves["best_P"],
-        loc_curves["best_R"],
-        loc_curves["best_F1"],
-    )
+    pr_fig.savefig(figs_dir / "precision_recall_face.png", dpi=150, bbox_inches="tight")
+    plt.close(pr_fig)
 
-    # Plot F1 vs threshold
-    plot_precision_recall_vs_threshold(
-        th=loc_curves["thresholds"],
-        prec=loc_curves["precision"],
-        rec=loc_curves["recall"],
-        best_th=best_th,
-        out_path=(out_dir / "precision_recall_vs_threshold_loc.png"),
-    )
-
-    # Metrics at min_score threshold
-    scores_np = np.asarray(per_score_face[0], dtype=np.float32)
-    is_tp_np = np.asarray(per_true_face[0], dtype=np.int32)
-    keep_min = scores_np >= float(min_score)
-    tp_min = int((is_tp_np[keep_min] == 1).sum())
-    fp_min = int((is_tp_np[keep_min] == 0).sum())
-    P_min = (tp_min / (tp_min + fp_min)) if (tp_min + fp_min) > 0 else 0.0
-    R_min = (tp_min / n_gt_total) if n_gt_total > 0 else 0.0
-    F1_min = (2 * P_min * R_min / (P_min + R_min)) if (P_min + R_min) > 0 else 0.0
-
-    # Precision and F1 for localization-only per class (orientation)
-    prec_loc_per_cls = {}
-    f1_loc_per_cls = {}
-    for c in LABELS_MAP:
-        tp = tp_per_cls[c]
-        fp = fp_per_cls[c]  # fractional FP
-        prec = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
-        rec = recalls[c]
-        f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
-        prec_loc_per_cls[c] = float(prec)
-        f1_loc_per_cls[c] = float(f1)
-
-    # Save IoU stats to JSON
-    with open(out_dir / "iou_stats.json", "w") as jf:
-        json.dump(iou_stats, jf, indent=2)
-
-    # IoU histogram and boxplots
-    if len(all_iou) > 0:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.hist(all_iou, bins=20, range=(0, 1), edgecolor="black")
-        ax.set_xlabel("IoU (TP)")
-        ax.set_ylabel("Count")
-        ax.set_title("IoU Distribution (TP)")
-        fig.tight_layout()
-        fig.savefig(out_dir / "iou_hist.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
-
-    # Boxplots for IoU and angle errors per class
-    if len(iou_data_for_boxplot) > 0:
-        fig_bp = plot_boxplots(
-            data=iou_data_for_boxplot,
-            x_field="class",
-            y_field="IoU",
-            title="IoU per Orientation (TP)",
-            labels_map=LABELS_MAP,
-            y_lim=(0.0, 1.0),
-            cmap_name="tab10",
+    fig, ax = plt.subplots(figsize=(8, 4))
+    xs = list(LABELS_MAP.keys())
+    ax.bar([LABELS_MAP[x] for x in xs], [recalls[x] for x in xs])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Recall")
+    ax.set_title("Recall per orientation")
+    for i, c in enumerate(xs):
+        ax.text(
+            i,
+            min(0.98, recalls[c] + 0.02),
+            f"{recalls[c]:.2f}",
+            ha="center",
+            fontsize=10,
         )
-        fig_bp.savefig(
-            out_dir / "iou_boxplot_per_class.png", dpi=150, bbox_inches="tight"
-        )
-        plt.close(fig_bp)
+    fig.tight_layout()
+    fig.savefig(figs_dir / "recall_per_orientation.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
-    # Angle error boxplots if not in AABB mode
-    if not aabb_mode and len(angle_data_for_boxplot) > 0:
-        ang_fig = plot_boxplots(
-            data=angle_data_for_boxplot,
-            x_field="class",
-            y_field="error°",
-            title="Angle-Error per Orientation (TP)",
-            labels_map=LABELS_MAP,
-            y_lim=(0, 180),
-        )
-        ang_fig.savefig(
-            out_dir / "angle_boxplot_per_class.png", dpi=150, bbox_inches="tight"
-        )
-        plt.close(ang_fig)
-
-    # CSV output
-    with open(out_dir / "sota_metrics.csv", "w", newline="") as f:
+    # ================================ CSV dump ================================
+    csv_path = out_dir / "sota_metrics.csv"
+    with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value"])
         w.writerow(["AP_face", f"{ap_face:.4f}"])
-        w.writerow(["mAP_face", f"{mAP:.4f}"])
-
-        # Localization-only best threshold
         w.writerow([])
-        w.writerow(["# localization-only over thresholds"])
-        w.writerow(["GT_total", n_gt_total])
+        w.writerow(["# Face/no-face PR vs threshold"])
+        w.writerow(["GT_total_babies", GT_baby_total])
         w.writerow(["best_conf_threshold", f"{best_th:.4f}"])
-        w.writerow(["best_precision_loc", f"{best_P:.4f}"])
-        w.writerow(["best_recall_loc", f"{best_R:.4f}"])
-        w.writerow(["best_f1_loc", f"{best_F1:.4f}"])
-
-        # Localization-only at min_score
+        w.writerow(["best_precision", f"{best_P:.4f}"])
+        w.writerow(["best_recall", f"{best_R:.4f}"])
+        w.writerow(["best_f1", f"{best_F1:.4f}"])
         w.writerow([])
-        w.writerow(["# localization-only at min_score"])
-        w.writerow(["min_score", f"{float(min_score):.4f}"])
-        w.writerow(["precision_loc_at_min", f"{P_min:.4f}"])
-        w.writerow(["recall_loc_at_min", f"{R_min:.4f}"])
-        w.writerow(["f1_loc_at_min", f"{F1_min:.4f}"])
-
-        # IoU stats
+        w.writerow(["# Global recall"])
+        w.writerow(["recall_micro", f"{recall_micro:.4f}"])
+        w.writerow(["recall_macro", f"{recall_macro:.4f}"])
         w.writerow([])
-        w.writerow(["IoU_count_TP", iou_stats["count"]])
+        w.writerow(["# Scenario-1 (FP only from baby images)"])
+        w.writerow(["precision_s1", f"{precision_s1:.4f}"])
+        w.writerow(["recall_s1(micro)", f"{recall_micro:.4f}"])
+        w.writerow(["f1_s1", f"{f1_s1:.4f}"])
+        w.writerow([])
+        w.writerow(["# FP buckets"])
+        w.writerow(["fp_in_baby_imgs", fp_in_baby_imgs])
+        w.writerow(["fp_in_adult_imgs", fp_in_adult_imgs])
+        w.writerow(["fp_in_bg_imgs", fp_in_bg_imgs])
+        w.writerow(["fp_global", fp_global])
+        w.writerow([])
+        w.writerow(["# IoU over ALL GTs"])
+        w.writerow(["IoU_count_GT", iou_stats["count"]])
         w.writerow(["IoU_mean", f"{iou_stats['mean']:.4f}"])
         w.writerow(["IoU_median", f"{iou_stats['median']:.4f}"])
         w.writerow(["IoU_p25", f"{iou_stats['p25']:.4f}"])
         w.writerow(["IoU_p75", f"{iou_stats['p75']:.4f}"])
         w.writerow(["IoU_std", f"{iou_stats['std']:.4f}"])
-
-        # Angle error stats if available
-        if not aabb_mode and any(angle_errs_per_cls[c] for c in LABELS_MAP):
-            all_angles = [v for c in LABELS_MAP for v in angle_errs_per_cls[c]]
-            if len(all_angles) > 0:
-                w.writerow([])
-                w.writerow(["Angle_count_TP", len(all_angles)])
-                w.writerow(["Angle_mean_deg", f"{np.mean(all_angles):.2f}"])
-                w.writerow(["Angle_std_deg", f"{np.std(all_angles):.2f}"])
-
-        # Per-class metrics (orientation)
         w.writerow([])
-        w.writerow(
-            ["class", "GT", "TP", "FN", "Recall", "FP_loc", "Precision_loc", "F1_loc"]
-        )
+        if angle_stats is not None:
+            w.writerow(["# Angle over ALL GTs (deg)"])
+            w.writerow(["Angle_count_GT", angle_stats["count"]])
+            w.writerow(["Angle_mean_deg", f"{angle_stats['mean_deg']:.2f}"])
+            w.writerow(["Angle_median_deg", f"{angle_stats['median_deg']:.2f}"])
+            w.writerow(["Angle_p25_deg", f"{angle_stats['p25_deg']:.2f}"])
+            w.writerow(["Angle_p75_deg", f"{angle_stats['p75_deg']:.2f}"])
+            w.writerow(["Angle_std_deg", f"{angle_stats['std_deg']:.2f}"])
+            w.writerow([])
+        w.writerow(["# Recall per class"])
+        w.writerow(["class", "GT", "TP", "FN", "Recall"])
         for c in LABELS_MAP:
             w.writerow(
                 [
@@ -460,67 +497,63 @@ def evaluate_sota(
                     tp_per_cls[c],
                     fn_per_cls[c],
                     f"{recalls[c]:.4f}",
-                    f"{fp_per_cls[c]:.2f}",
-                    f"{prec_loc_per_cls[c]:.4f}",
-                    f"{f1_loc_per_cls[c]:.4f}",
                 ]
             )
 
-        w.writerow([])
-        w.writerow(["FP_global", fp_global])
-
-    # Print summary to console
-    print("\n[RESULTS]")
+    # ============================== Console log ===============================
+    print("\n[RESULTS — SOTA vs Baby]")
     print(f"  AP (face/no-face): {ap_face:.4f}")
     print(
-        f"  [loc-only] best threshold = {best_th:.3f} | "
-        f"P={best_P:.3f}, R={best_R:.3f}, F1={best_F1:.3f} (GT={n_gt_total})"
+        f"  PR(best) face/no-face: th={best_th:.3f}  P={best_P:.3f}  R={best_R:.3f}  F1={best_F1:.3f}  (GT={GT_baby_total})"
     )
+    print(f"  Recall (global): micro={recall_micro:.3f}  |  macro={recall_macro:.3f}")
     print(
-        f"  [loc-only @min={min_score:.3f}] "
-        f"P={P_min:.3f}, R={R_min:.3f}, F1={F1_min:.3f} "
-        f"(TP={tp_min}, FP={fp_min}, GT={n_gt_total})"
+        f"  [S1] Precision={precision_s1:.3f}  Recall={recall_micro:.3f}  F1={f1_s1:.3f}"
     )
     for c in LABELS_MAP:
         print(
-            f"  {LABELS_MAP[c]:<15s}  GT:{gt_per_cls[c]:4d}  TP:{tp_per_cls[c]:4d}  "
-            f"FN:{fn_per_cls[c]:4d}  Recall:{recalls[c]:.3f}  |  "
-            f"Precision:{prec_loc_per_cls[c]:.3f}  F1_loc:{f1_loc_per_cls[c]:.3f}"
+            f"  {LABELS_MAP[c]:<15s}  GT:{gt_per_cls[c]:4d}  TP:{tp_per_cls[c]:4d}  FN:{fn_per_cls[c]:4d}  Recall:{recalls[c]:.3f}"
         )
-    print(f"  FP global (all images): {fp_global}")
-    if len(all_iou) > 0:
+    print(
+        f"  FP buckets -> baby:{fp_in_baby_imgs}  adult_only:{fp_in_adult_imgs}  bg:{fp_in_bg_imgs}  |  FP_global:{fp_global}"
+    )
+    print(
+        f"  IoU(all GT): mean={iou_stats['mean']:.3f}  median={iou_stats['median']:.3f}  p25={iou_stats['p25']:.3f}  p75={iou_stats['p75']:.3f}  std={iou_stats['std']:.3f}"
+    )
+    if angle_stats is not None:
         print(
-            f"  IoU(TP): mean={iou_stats['mean']:.3f}, median={iou_stats['median']:.3f}, "
-            f"p25={iou_stats['p25']:.3f}, p75={iou_stats['p75']:.3f}, std={iou_stats['std']:.3f}"
+            f"  Angle(all GT) [deg]: mean={angle_stats['mean_deg']:.2f}  median={angle_stats['median_deg']:.2f}  "
+            f"p25={angle_stats['p25_deg']:.2f}  p75={angle_stats['p75_deg']:.2f}  std={angle_stats['std_deg']:.2f}"
         )
-    if not aabb_mode and any(angle_errs_per_cls[c] for c in LABELS_MAP):
-        mu = np.mean([v for c in LABELS_MAP for v in angle_errs_per_cls[c]])
-        sd = np.std([v for c in LABELS_MAP for v in angle_errs_per_cls[c]])
-        print(f"  Angle-Error(TP) [deg]: mean={mu:.2f}, std={sd:.2f}")
 
+    # =============================== Return dict =============================
     return {
         "AP_face": ap_face,
-        "mAP_face": mAP,
         "per_true_face": per_true_face,
         "per_score_face": per_score_face,
         "gt_per_cls": gt_per_cls,
         "tp_per_cls": tp_per_cls,
         "fn_per_cls": fn_per_cls,
         "recalls": recalls,
-        "fp_per_cls_loc": fp_per_cls,
-        "prec_loc_per_cls": prec_loc_per_cls,
-        "f1_loc_per_cls": f1_loc_per_cls,
+        "recall_micro": recall_micro,
+        "recall_macro": recall_macro,
         "fp_global": fp_global,
-        "iou_stats": iou_stats,
-        "angle_errs_per_cls": angle_errs_per_cls if not aabb_mode else None,
-        "n_gt_total": n_gt_total,
+        "fp_in_baby_imgs": fp_in_baby_imgs,
+        "fp_in_adult_imgs": fp_in_adult_imgs,
+        "fp_in_bg_imgs": fp_in_bg_imgs,
+        "precision_s1": precision_s1,
+        "f1_s1": f1_s1,
+        "n_gt_total": GT_baby_total,
         "best_conf_th_loc": best_th,
         "best_precision_loc": best_P,
         "best_recall_loc": best_R,
         "best_f1_loc": best_F1,
-        "precision_loc_at_min": P_min,
-        "recall_loc_at_min": R_min,
-        "f1_loc_at_min": F1_min,
+        "iou_stats_all_gt": iou_stats,
+        "angle_stats_all_gt": angle_stats,
+        "iou_all_gts_per_cls": iou_all_gts_per_cls,
+        "angle_all_gts_per_cls": angle_all_gts_per_cls
+        if angle_stats is not None
+        else None,
     }
 
 
@@ -582,65 +615,83 @@ def evaluate_obb(
         - Metrics are written to a CSV file for further analysis.
     """
 
-    # Create necessary directories
+    # ---------- I/O ----------
     images_dir = data_root / split / "images"
     labels_dir = data_root / split / "labels"
-    # Output directories
     out_dir = Path(out_dir)
     figs_dir = out_dir / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
     figs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Accumulators for metrics (strict per class)
-    per_true = {c: [] for c in LABELS_MAP}
-    per_score = {c: [] for c in LABELS_MAP}
+    # ---------- Accumulators for strict multi-class PR/AP ----------
+    per_true = {
+        c: [] for c in LABELS_MAP
+    }  # TP(1)/FP(0) flags per predicted score for PR per class
+    per_score = {c: [] for c in LABELS_MAP}  # scores aligned with per_true
     stats = {c: {"tp": 0, "fp": 0, "fn": 0} for c in LABELS_MAP}
-    iou_errs = {c: [] for c in LABELS_MAP}
-    angle_errs = {c: [] for c in LABELS_MAP}
+
+    # ---------- Quality (TP-only) ----------
+    iou_errs = {
+        c: [] for c in LABELS_MAP
+    }  # IoU for matched (TP) pairs -> TP quality by class
+    angle_errs = {c: [] for c in LABELS_MAP}  # Angle error for TPs (UNCHANGED)
+
+    # ---------- GT-anchored IoU (FN -> 0) ----------
+    iou_all_gt_per_cls: Dict[int, List[float]] = {
+        c: [] for c in LABELS_MAP
+    }  # per class
+    iou_all_gt_global: List[float] = []  # global across all classes
+
+    # ---------- For face/no-face (adult-SOTA comparable) ----------
+    per_true_face = {0: []}  # TP/FP flags class-agnostic
+    per_score_face = {0: []}  # scores class-agnostic
+    fp_in_baby_imgs = 0
+    fp_in_adult_imgs = 0
+    fp_in_bg_imgs = 0
+    fp_global_loc = 0  # class-agnostic FP for localization summary
+    bg_instances_adult_total = 0
+    bg_instances_pure_total = 0
+
+    # ---------- Collections for CM and F1-threshold plots ----------
     y_true: List[int] = []
     y_pred: List[int] = []
     all_gts: List[int] = []
     all_preds: List[int] = []
     all_scores: List[float] = []
 
-    # Localization-only metrics (agnostic to class)
+    # ---------- Loc-only counters (class-agnostic, GT-anchored) ----------
     loc_tp_global = 0
     loc_fn_global = 0
     loc_tp_per_cls = {c: 0 for c in LABELS_MAP}
     loc_fn_per_cls = {c: 0 for c in LABELS_MAP}
-
-    # Localization-only FP (ignore class of prediction)
-    loc_fp_global = 0
     loc_tp_pred_cls = {c: 0 for c in LABELS_MAP}
     loc_fp_pred_cls = {c: 0 for c in LABELS_MAP}
 
-    # Ensure at least one entry for each class
+    # Helper: ensure PR vectors are not empty so AP is defined
     def ensure_present_for_all_classes():
         for cls in LABELS_MAP:
             if not per_true[cls]:
                 per_true[cls].append(0)
                 per_score[cls].append(0.0)
 
-    # List all image files
+    # ---------- Enumerate images ----------
     jpgs = sorted(list(images_dir.glob("*.jpg"))) + sorted(
         list(images_dir.glob("*.png"))
     )
-    # Process each image
+
     for img_p in jpgs:
-        # Corresponding GT and prediction files
         stem = img_p.stem
-        # Read GT and prediction paths
         gt_p = labels_dir / f"{stem}.txt"
         pr_p = pred_dir / f"{stem}.txt"
 
-        # Get image dimensions
+        # Image size
         W, H = img_size(img_p)
 
-        # GT baby faces
+        # Read GT (AABB/OBB in xywhr) with cls=-1 for adults
         gt_xywhr, gt_cls = read_gt_baby_xywhr(gt_p, (W, H))
         G = int(gt_xywhr.shape[0])
 
-        # If yolo, read YOLO-oriented preds; else, read RetinaBabyFace preds
+        # Read predictions (YOLO oriented or RetinaBabyFace)
         if model_version == "yolo":
             pr_xywhr, pr_cls, pr_scores = read_yolo_oriented_preds_xywhr(
                 pr_p, min_score=min_score
@@ -649,110 +700,124 @@ def evaluate_obb(
             pr_xywhr, pr_cls, pr_scores = read_retinababyface_preds_xywhr(
                 pr_p, min_score=min_score
             )
-        # Number of predictions
         P = int(pr_xywhr.shape[0])
 
-        # No GT baby case (only adults or empty)
-        if G == 0:
-            # Count adults in GT for TN
-            n_adults = count_adults_in_gt(gt_p)
-            # All predictions are FPs
-            if P == 0:
-                # Count TNs as one per adult (at least one if none)
-                tn_count = n_adults if n_adults > 0 else 1
-                for _ in range(tn_count):
-                    y_true.append(-1)
-                    y_pred.append(-1)
-                    all_gts.append(-1)
-                    all_preds.append(-1)
-                    all_scores.append(0.0)
-            else:
-                # All predictions are FPs
+        # Classify image kind for FP bucketing
+        img_kind = classify_image_gt(gt_p)
+
+        # --------- No baby GTs (ADULT_ONLY or BG) ---------
+        if img_kind != "BABY":
+            # 1) ¿Cuántas instancias BG hay?
+            #    - ADULT_ONLY: una instancia por adulto anotado
+            #    - BG puro (sin .txt o .txt vacío): contamos 1 instancia BG
+            if img_kind == "ADULT_ONLY":
+                n_bg_instances = count_adults_in_gt(gt_p)  # <-- usa tu helper existente
+                bg_instances_adult_total += n_bg_instances
+                fp_in_adult_imgs += P
+            else:  # "BG" puro
+                n_bg_instances = 1
+                bg_instances_pure_total += 1
+                fp_in_bg_imgs += P
+
+            # 2) Sumar TNs por INSTANCIA BG para llenar la diagonal BG/BG
+            for _ in range(max(1, n_bg_instances)):
+                y_true.append(-1)
+                y_pred.append(-1)
+                all_gts.append(-1)
+                all_preds.append(-1)
+                all_scores.append(0.0)
+
+            # 3) Registrar FPs (si hubo predicciones en imágenes sin bebés)
+            if P > 0:
+                fp_global_loc += P
                 for j in range(P):
-                    # Count FP (strict per class)
                     c_det = int(pr_cls[j])
                     s_det = float(pr_scores[j])
+
+                    # Face/no-face PR: todos estos son FP
+                    per_true_face[0].append(0)
+                    per_score_face[0].append(s_det)
+
+                    # Multi-clase estricto: FP para la clase predicha
                     if c_det in stats:
                         stats[c_det]["fp"] += 1
                         per_true[c_det].append(0)
                         per_score[c_det].append(s_det)
-                    # Localization-only FP (ignoring predicted class)
-                    if c_det in loc_fp_pred_cls:
-                        loc_fp_pred_cls[c_det] += 1
-                    loc_fp_global += 1
 
+                    # CM: fila BG (true=-1) contra la clase predicha
                     y_true.append(-1)
                     y_pred.append(c_det)
                     all_gts.append(-1)
                     all_preds.append(c_det)
                     all_scores.append(s_det)
+
+            # No hay IoU/ángulo porque no hay bebés GT
             continue
 
-        # IoU-based greedy matching
+        # --------- Images WITH baby GTs ---------
+        # Match predictions to GTs by IoU and score
         matches, unmatched_gt, unmatched_pr = greedy_match(
             gt_xywhr, pr_xywhr, pr_scores, iou_th=iou_th
         )
 
-        # Localization-only TP/FP/FN counting (ignore class of prediction)
+        # Class-agnostic PR flags for adult-SOTA comparable summary
+        matched_pr_idx = set(pj for (_, pj, _) in matches)
+        for j, s in enumerate(pr_scores.tolist()):
+            per_true_face[0].append(1 if j in matched_pr_idx else 0)
+            per_score_face[0].append(float(s))
+
+        # Localization-only (class-agnostic) counts
         loc_tp_global += len(matches)
         loc_fn_global += len(unmatched_gt)
+        fp_global_loc += len(unmatched_pr)
 
-        # Localization-only TP/FP/FN per class (based on GT class)
+        # Per-class loc-only GT-anchored (for recall by class)
         for gi, _, _ in matches:
             c = int(gt_cls[gi])
-            # Count TP for the GT class
             if c in loc_tp_per_cls:
                 loc_tp_per_cls[c] += 1
-        # Count FN for unmatched GT classes
         for gi in unmatched_gt:
             c = int(gt_cls[gi])
-            # Count FN for the GT class
             if c in loc_fn_per_cls:
                 loc_fn_per_cls[c] += 1
 
-        # Localization-only FP per predicted class
+        # Per-class loc-only predicted (for precision by predicted class)
         for _, pj, _ in matches:
             c_pred = int(pr_cls[pj])
-            # Count TP for the predicted class
             if c_pred in loc_tp_pred_cls:
                 loc_tp_pred_cls[c_pred] += 1
-
-        # Count FP for unmatched predictions
         for pj in unmatched_pr:
-            c_det = int(pr_cls[pj])
-            if c_det in loc_fp_pred_cls:
-                # Count FP for the predicted class
-                loc_fp_pred_cls[c_det] += 1
-            loc_fp_global += 1
+            c_pred = int(pr_cls[pj])
+            if c_pred in loc_fp_pred_cls:
+                loc_fp_pred_cls[c_pred] += 1
 
-        # Process matched predictions
+        # --------- STRICT multi-class stats + quality metrics (TP-only) ---------
         for gi, pj, iou_val in matches:
             true_cls = int(gt_cls[gi])
             pred_cls = int(pr_cls[pj])
             score_det = float(pr_scores[pj])
-            # Strict TP/FP/FN counting per class
             if pred_cls == true_cls and true_cls in stats:
+                # TP strictly by class
                 stats[true_cls]["tp"] += 1
                 per_true[true_cls].append(1)
                 per_score[true_cls].append(score_det)
-                y_true.append(true_cls)
-                y_pred.append(true_cls)
-
-                # Accumulate IoU and angle errors
+                # TP-only IoU
                 iou_errs[true_cls].append(float(iou_val))
+                # Angle error (UNCHANGED)
                 dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr[gi, 4])
                 angle_errs[true_cls].append(float(torch.abs(dtheta) * 180.0 / np.pi))
+                # CM bookkeeping
+                y_true.append(true_cls)
+                y_pred.append(true_cls)
                 all_gts.append(true_cls)
                 all_preds.append(true_cls)
                 all_scores.append(score_det)
             else:
-                # Mismatch in class → FN for true class, FP for predicted class
+                # Class mismatch → FP for predicted, FN for true
                 if pred_cls in stats:
                     stats[pred_cls]["fp"] += 1
                     per_true[pred_cls].append(0)
                     per_score[pred_cls].append(score_det)
-
-                # Count FP for predicted class in loc-only
                 if true_cls in stats:
                     stats[true_cls]["fn"] += 1
                 y_true.append(true_cls)
@@ -761,7 +826,7 @@ def evaluate_obb(
                 all_preds.append(pred_cls)
                 all_scores.append(score_det)
 
-        # No matched predictions → FP (strict)
+        # Unmatched predictions → strict FP of their predicted class
         for pj in unmatched_pr:
             c_det = int(pr_cls[pj])
             s_det = float(pr_scores[pj])
@@ -775,11 +840,12 @@ def evaluate_obb(
             all_preds.append(c_det)
             all_scores.append(s_det)
 
-        # No matched GT → FN (strict)
+        # Unmatched GT → strict FN of its true class
         for gi in unmatched_gt:
             c_gt = int(gt_cls[gi])
             if c_gt in stats:
                 stats[c_gt]["fn"] += 1
+                # keep your previous convention to stabilize PR
                 per_true[c_gt].append(1)
                 per_score[c_gt].append(0.0)
             y_true.append(c_gt)
@@ -788,16 +854,37 @@ def evaluate_obb(
             all_preds.append(-1)
             all_scores.append(0.0)
 
-    # Finalize metrics
+        # --------- IoU over ALL GT (GT-anchored; FN -> 0) ---------
+        if G > 0:
+            if P > 0:
+                iou_mat = batch_probiou(gt_xywhr, pr_xywhr)  # (G,P)
+                best_per_gt = iou_mat.max(dim=1).values.cpu().numpy()
+            else:
+                best_per_gt = np.zeros((G,), dtype=np.float32)
+            if len(unmatched_gt) > 0 and P > 0:
+                best_per_gt = best_per_gt.copy()
+                best_per_gt[np.asarray(unmatched_gt, dtype=int)] = 0.0
+            for gi in range(G):
+                c_gt = int(gt_cls[gi])
+                if c_gt in iou_all_gt_per_cls:
+                    iou_all_gt_per_cls[c_gt].append(float(best_per_gt[gi]))
+                iou_all_gt_global.append(float(best_per_gt[gi]))
+
+        # --------- Bucket FP in BABY images for S1 precision ---------
+        fp_in_baby_imgs += len(unmatched_pr)
+
+    # ---------- Close PR lists to avoid empty-class issues ----------
     ensure_present_for_all_classes()
+
+    # ---------- AP/mAP (strict per class) ----------
     mAP, APs = compute_map_and_pr(per_true, per_score)
 
-    # PR curve (strict per class)
+    # ---------- PR curves per class ----------
     pr_fig = plot_precision_recall(per_true, per_score, LABELS_MAP, mAP=mAP)
     pr_fig.savefig(figs_dir / "precision_recall.png", dpi=150, bbox_inches="tight")
     plt.close(pr_fig)
 
-    # CM raw / normalized
+    # ---------- Confusion Matrices (with BG) ----------
     cm_figs = plot_confusion_matrix(y_true=y_true, y_pred=y_pred, labels_map=LABELS_MAP)
     cm_figs["raw"].savefig(figs_dir / "class_cm_raw.png", dpi=150, bbox_inches="tight")
     plt.close(cm_figs["raw"])
@@ -806,152 +893,271 @@ def evaluate_obb(
     )
     plt.close(cm_figs["normalized"])
 
-    # Boxplots
-    iou_data = [
+    # ---------- Boxplots (TP-only) ----------
+    iou_data_tp = [
         {"class": LABELS_MAP[c], "iou": v} for c, vs in iou_errs.items() for v in vs
     ]
-    if iou_data:
+    if iou_data_tp:
         fig = plot_boxplots(
-            iou_data,
-            "class",
-            "iou",
-            "IoU Distribution per Class",
-            LABELS_MAP,
-            y_lim=(0, 1),
+            iou_data_tp, "class", "iou", "IoU per Class", LABELS_MAP, y_lim=(0, 1)
         )
-        fig.savefig(figs_dir / "iou_boxplot.png", dpi=150, bbox_inches="tight")
+        fig.savefig(figs_dir / "iou_boxplot_tp.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
-    ang_data = [
+    ang_data_tp = [
         {"class": LABELS_MAP[c], "error°": v}
         for c, vs in angle_errs.items()
         for v in vs
     ]
-    if ang_data:
+    if ang_data_tp:
         fig = plot_boxplots(
-            ang_data,
+            ang_data_tp,
             "class",
             "error°",
-            "Angle-Error Distribution per Class ",
+            "Angle error per Class",
             LABELS_MAP,
             y_lim=(0, 180),
         )
-        fig.savefig(figs_dir / "angle_boxplot.png", dpi=150, bbox_inches="tight")
+        fig.savefig(figs_dir / "angle_boxplot_tp.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-    # F1 vs threshold
+    # ---------- IoU histogram & boxplot (ALL GT) ----------
+    if len(iou_all_gt_global) > 0:
+        arr = np.asarray(iou_all_gt_global, dtype=np.float32)
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.hist(arr, bins=20, range=(0, 1), edgecolor="black")
+        ax.set_xlabel("IoU")
+        ax.set_ylabel("Count")
+        ax.set_title("IoU over ALL GT")
+        fig.tight_layout()
+        fig.savefig(figs_dir / "iou_hist_all_gt.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        iou_all_stats = {
+            "count": int(arr.size),
+            "mean": float(arr.mean()),
+            "median": float(np.median(arr)),
+            "p25": float(np.percentile(arr, 25)),
+            "p75": float(np.percentile(arr, 75)),
+            "std": float(arr.std(ddof=0)),
+        }
+        # Class boxplots of IoU vs GT (anchored)
+        iou_gt_data = [
+            {"class": LABELS_MAP[c], "iou": v}
+            for c, vs in iou_all_gt_per_cls.items()
+            for v in vs
+        ]
+        if iou_gt_data:
+            fig = plot_boxplots(
+                iou_gt_data, "class", "iou", "IoU per Class", LABELS_MAP, y_lim=(0, 1)
+            )
+            fig.savefig(
+                figs_dir / "iou_boxplot_all_gt.png", dpi=150, bbox_inches="tight"
+            )
+            plt.close(fig)
+    else:
+        iou_all_stats = {
+            "count": 0,
+            "mean": 0.0,
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "std": 0.0,
+        }
+
+    # ---------- F1 vs threshold (strict multi-class) ----------
     f1_fig = plot_f1_vs_threshold(all_gts, all_scores, all_preds, LABELS_MAP)
     f1_fig.savefig(figs_dir / "f1_threshold.png", dpi=150, bbox_inches="tight")
     plt.close(f1_fig)
 
-    # CSV output
-    labels_full = list(LABELS_MAP.keys()) + [-1]
-    names_full = [LABELS_MAP.get(l, "BG") for l in labels_full]
-    cm_raw = confusion_matrix(y_true, y_pred, labels=labels_full)
-    cm_norm = cm_raw.astype(float)
-    row_sums = cm_norm.sum(axis=1, keepdims=True)
-    cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
-
-    # Helper for safe division
-    def safe_div(a, b):
-        return (a / b) if b > 0 else 0.0
-
-    # Global localization-only metrics (agnostic to class)
-    # Recall
-    loc_den_rec = loc_tp_global + loc_fn_global
-    recall_face_localization = (loc_tp_global / loc_den_rec) if loc_den_rec > 0 else 0.0
-
-    # Precision
-    loc_den_prec = loc_tp_global + loc_fp_global
-    precision_face_localization = (
-        (loc_tp_global / loc_den_prec) if loc_den_prec > 0 else 0.0
+    # ---------- Adult-SOTA comparable summary (face/no-face) ----------
+    # AP face/no-face and PR(best)
+    ap_face_map, ap_face_per = compute_map_and_pr(per_true_face, per_score_face)
+    ap_face = ap_face_per[0]
+    # Curva loc-only (umbral) en modo face/no-face (denominador = #GT bebé)
+    GT_baby_total = int(
+        sum((loc_tp_per_cls[c] + loc_fn_per_cls[c]) for c in LABELS_MAP)
     )
+    loc_curves = compute_loc_curves_from_predictions(
+        y_is_tp=per_true_face[0],
+        y_scores=per_score_face[0],
+        n_gt=GT_baby_total,
+        n_steps=200,
+    )
+    best_th = loc_curves["best_th"]
+    best_P = loc_curves["best_P"]
+    best_R = loc_curves["best_R"]
+    best_F1 = loc_curves["best_F1"]
 
-    # Per class localization-only metrics (agnostic to predicted class)
-    recall_loc_per_cls = {
+    # Global recall micro/macro (GT-anchored per class)
+    TP_baby_total = int(sum(loc_tp_per_cls.values()))
+    recall_micro_baby = (TP_baby_total / GT_baby_total) if GT_baby_total > 0 else 0.0
+    recalls_per_cls = {
         c: (loc_tp_per_cls[c] / (loc_tp_per_cls[c] + loc_fn_per_cls[c]))
         if (loc_tp_per_cls[c] + loc_fn_per_cls[c]) > 0
         else 0.0
         for c in LABELS_MAP
     }
-    # Precision per class (agnostic to GT class, based on predicted class)
-    precision_loc_pred_per_cls = {
-        c: (loc_tp_pred_cls[c] / (loc_tp_pred_cls[c] + loc_fp_pred_cls[c]))
-        if (loc_tp_pred_cls[c] + loc_fp_pred_cls[c]) > 0
-        else 0.0
+    recalls_present = [
+        recalls_per_cls[c]
         for c in LABELS_MAP
-    }
+        if (loc_tp_per_cls[c] + loc_fn_per_cls[c]) > 0
+    ]
+    recall_macro_baby = (
+        float(np.mean(recalls_present)) if len(recalls_present) > 0 else 0.0
+    )
+    # --- Summary A rows (GT/TP/FN/Recall) por clase ---
+    summary_sota_rows = []
+    for c in LABELS_MAP:
+        GT_c = int(loc_tp_per_cls[c] + loc_fn_per_cls[c])
+        TP_c = int(loc_tp_per_cls[c])
+        FN_c = int(loc_fn_per_cls[c])
+        rec_c = (TP_c / GT_c) if GT_c > 0 else 0.0
+        summary_sota_rows.append([LABELS_MAP[c], GT_c, TP_c, FN_c, f"{rec_c:.4f}"])
 
-    # IoU and angle error means and stds
-    iou_mean = {c: (float(np.mean(v)) if len(v) else 0.0) for c, v in iou_errs.items()}
-    iou_std = {c: (float(np.std(v)) if len(v) else 0.0) for c, v in iou_errs.items()}
-    ang_mean = {
-        c: (float(np.mean(v)) if len(v) else 0.0) for c, v in angle_errs.items()
-    }
-    ang_std = {c: (float(np.std(v)) if len(v) else 0.0) for c, v in angle_errs.items()}
+    # Localization precision (class-agnostic) and S1 precision
+    recall_face_localization = (
+        (loc_tp_global / (loc_tp_global + loc_fn_global))
+        if (loc_tp_global + loc_fn_global) > 0
+        else 0.0
+    )
+    precision_face_localization = (
+        (loc_tp_global / (loc_tp_global + fp_global_loc))
+        if (loc_tp_global + fp_global_loc) > 0
+        else 0.0
+    )
+    precision_s1 = (
+        (TP_baby_total / (TP_baby_total + fp_in_baby_imgs))
+        if (TP_baby_total + fp_in_baby_imgs) > 0
+        else 0.0
+    )
+    f1_s1 = (
+        (2 * precision_s1 * recall_micro_baby / (precision_s1 + recall_micro_baby))
+        if (precision_s1 + recall_micro_baby) > 0
+        else 0.0
+    )
 
-    # Prepare per-class rows for CSV
-    per_class_rows = []
-    for idx_i, cls in enumerate(labels_full):
-        name = LABELS_MAP.get(cls, "BG")
-        TP = int(cm_raw[idx_i, idx_i])
-        FP = int(cm_raw[:, idx_i].sum() - TP)
-        FN = int(cm_raw[idx_i, :].sum() - TP)
-        prec = safe_div(TP, TP + FP)
-        rec = safe_div(TP, TP + FN)
-        f1 = safe_div(2 * prec * rec, (prec + rec)) if (prec + rec) > 0 else 0.0
-        ap_pr = float(APs.get(cls, 0.0)) if cls in APs else 0.0
+    # ---------- Multi-class strict P/R/F1 ----------
+    per_class_metrics = {}
+    sum_tp = sum(stats[c]["tp"] for c in LABELS_MAP)
+    sum_fp = sum(stats[c]["fp"] for c in LABELS_MAP)
+    sum_fn = sum(stats[c]["fn"] for c in LABELS_MAP)
+    micro_prec = (sum_tp / (sum_tp + sum_fp)) if (sum_tp + sum_fp) > 0 else 0.0
+    micro_rec = (sum_tp / (sum_tp + sum_fn)) if (sum_tp + sum_fn) > 0 else 0.0
+    micro_f1 = (
+        (2 * micro_prec * micro_rec / (micro_prec + micro_rec))
+        if (micro_prec + micro_rec) > 0
+        else 0.0
+    )
 
-        # BG class has no loc metrics
-        rloc = recall_loc_per_cls.get(cls, 0.0)
-        ltp = loc_tp_per_cls.get(cls, 0)
-        lfn = loc_fn_per_cls.get(cls, 0)
-        ploc = precision_loc_pred_per_cls.get(cls, 0.0)
-        ltp_p = loc_tp_pred_cls.get(cls, 0)
-        lfp_p = loc_fp_pred_cls.get(cls, 0)
+    macro_prec, macro_rec, macro_f1 = 0.0, 0.0, 0.0
+    valid_classes = 0
+    for c in LABELS_MAP:
+        tp, fp, fn = stats[c]["tp"], stats[c]["fp"], stats[c]["fn"]
+        prec_c = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+        rec_c = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+        f1_c = (2 * prec_c * rec_c / (prec_c + rec_c)) if (prec_c + rec_c) > 0 else 0.0
+        per_class_metrics[c] = {
+            "precision": prec_c,
+            "recall": rec_c,
+            "f1": f1_c,
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+        }
+        if (tp + fp) > 0 or (tp + fn) > 0:
+            macro_prec += prec_c
+            macro_rec += rec_c
+            macro_f1 += f1_c
+            valid_classes += 1
+    if valid_classes > 0:
+        macro_prec /= valid_classes
+        macro_rec /= valid_classes
+        macro_f1 /= valid_classes
 
-        per_class_rows.append(
-            [
-                name,
-                TP,
-                FP,
-                FN,
-                f"{prec:.4f}",
-                f"{rec:.4f}",
-                f"{f1:.4f}",
-                f"{ap_pr:.4f}",
-                f"{iou_mean.get(cls,0.0):.4f}",
-                f"{iou_std.get(cls,0.0):.4f}",
-                f"{ang_mean.get(cls,0.0):.4f}",
-                f"{ang_std.get(cls,0.0):.4f}",
-                f"{rloc:.4f}",
-                ltp,
-                lfn,
-                f"{ploc:.4f}",
-                ltp_p,
-                lfp_p,
-            ]
+    # ---------- Console summaries ----------
+    # Summary A — format like SOTA
+    print("\n[RESULTS — SOTA vs Baby]")
+    print(f"  AP (face/no-face): {ap_face:.4f}")
+    print(
+        f"  PR(best) face/no-face: th={best_th:.3f}  P={best_P:.3f}  R={best_R:.3f}  F1={best_F1:.3f}  (GT={GT_baby_total})"
+    )
+    print(
+        f"  Recall (global): micro={recall_micro_baby:.3f}  |  macro={recall_macro_baby:.3f}"
+    )
+    print(
+        f"  [S1] Precision={precision_s1:.3f}  Recall={recall_micro_baby:.3f}  F1={f1_s1:.3f}"
+    )
+    for c in LABELS_MAP:
+        GT_c = loc_tp_per_cls[c] + loc_fn_per_cls[c]
+        TP_c = loc_tp_per_cls[c]
+        FN_c = loc_fn_per_cls[c]
+        print(
+            f"  {LABELS_MAP[c]:<15s}  GT:{GT_c:4d}  TP:{TP_c:4d}  FN:{FN_c:4d}  Recall:{recalls_per_cls[c]:.3f}"
         )
-    # Write consolidated CSV
-    csv_path = out_dir / "metrics.csv"
+    print(
+        f"  FP buckets -> baby:{fp_in_baby_imgs}  adult_only:{fp_in_adult_imgs}  bg:{fp_in_bg_imgs}  |  FP_global:{fp_global_loc}"
+    )
+    if iou_all_stats["count"] > 0:
+        print(
+            f"  IoU(all GT): mean={iou_all_stats['mean']:.3f}  median={iou_all_stats['median']:.3f}  "
+            f"p25={iou_all_stats['p25']:.3f}  p75={iou_all_stats['p75']:.3f}  std={iou_all_stats['std']:.3f}"
+        )
+    # Angle global stats (TP-only, unchanged behavior)
+    all_angles = [a for cls in LABELS_MAP for a in angle_errs[cls]]
+    angle_global_stats = {}
+    if len(all_angles) > 0:
+        all_angles_np = np.asarray(all_angles, dtype=np.float32)
+        angle_global_stats = {
+            "mean": float(all_angles_np.mean()),
+            "median": float(np.median(all_angles_np)),
+            "p25": float(np.percentile(all_angles_np, 25)),
+            "p75": float(np.percentile(all_angles_np, 75)),
+            "std": float(all_angles_np.std(ddof=0)),
+            "count": int(all_angles_np.size),
+        }
+    else:
+        angle_global_stats = {
+            "mean": 0.0,
+            "median": 0.0,
+            "p25": 0.0,
+            "p75": 0.0,
+            "std": 0.0,
+            "count": 0,
+        }
+
+    # Summary B — multi-class strict
+    print("\n[SUMMARY B — OBB multi-class strict (YOLO-OBB vs RetinaBabyFace)]")
+    print(f"  mAP: {mAP:.4f}")
+    print(f"  Micro: P={micro_prec:.3f}  R={micro_rec:.3f}  F1={micro_f1:.3f}")
+    print(f"  Macro: P={macro_prec:.3f}  R={macro_rec:.3f}  F1={macro_f1:.3f}")
+    for c in LABELS_MAP:
+        m = per_class_metrics[c]
+        ap_c = APs.get(c, 0.0)
+        ang_mu = np.mean(angle_errs[c]) if angle_errs[c] else 0.0
+        ang_sd = np.std(angle_errs[c]) if angle_errs[c] else 0.0
+        print(
+            f"  {LABELS_MAP[c]:<15s}  TP:{m['tp']:4d}  FP:{m['fp']:4d}  FN:{m['fn']:4d}  "
+            f"P:{m['precision']:.3f}  R:{m['recall']:.3f}  F1:{m['f1']:.3f}  AP:{ap_c:.3f}  "
+            f"Angleμ±σ:{ang_mu:.2f}±{ang_sd:.2f}"
+        )
+    # One extra line with angle global already printed above.
+
+    # ---------- CSV consolidated ----------
+    csv_path = out_dir / "metrics_obb.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
-        # Global metrics
-        w.writerow(["metric", "value"])
+        # Multi-class (strict)
+        w.writerow(["# --- MULTI-CLASS (strict) ---"])
         w.writerow(["mAP", f"{mAP:.4f}"])
-        w.writerow(["Recall_face_localization", f"{recall_face_localization:.4f}"])
-        w.writerow(
-            ["Precision_face_localization", f"{precision_face_localization:.4f}"]
-        )
-        w.writerow(["Loc_TP_global", loc_tp_global])
-        w.writerow(["Loc_FN_global", loc_fn_global])
-        w.writerow(["Loc_FP_global", loc_fp_global])
+        w.writerow(["micro_P", f"{micro_prec:.4f}"])
+        w.writerow(["micro_R", f"{micro_rec:.4f}"])
+        w.writerow(["micro_F1", f"{micro_f1:.4f}"])
+        w.writerow(["macro_P", f"{macro_prec:.4f}"])
+        w.writerow(["macro_R", f"{macro_rec:.4f}"])
+        w.writerow(["macro_F1", f"{macro_f1:.4f}"])
         w.writerow([])
-
-        # Per class metrics
-        w.writerow(["# --- METRICS PER CLASS ---"])
         w.writerow(
             [
-                "Class",
+                "class",
                 "TP",
                 "FP",
                 "FN",
@@ -959,100 +1165,113 @@ def evaluate_obb(
                 "Recall",
                 "F1",
                 "AP_PR",
-                "IoU_mean",
-                "IoU_std",
                 "Angle_mean_deg",
                 "Angle_std_deg",
-                "Recall_loc",
-                "LocTP_GT",
-                "LocFN_GT",
-                "Precision_loc_pred",
-                "LocTP_pred",
-                "LocFP_pred",
             ]
         )
-        w.writerows(per_class_rows)
+        for c in LABELS_MAP:
+            ap_c = APs.get(c, 0.0)
+            m = per_class_metrics[c]
+            w.writerow(
+                [
+                    LABELS_MAP[c],
+                    m["tp"],
+                    m["fp"],
+                    m["fn"],
+                    f"{m['precision']:.4f}",
+                    f"{m['recall']:.4f}",
+                    f"{m['f1']:.4f}",
+                    f"{ap_c:.4f}",
+                    f"{(np.mean(angle_errs[c]) if angle_errs[c] else 0.0):.2f}",
+                    f"{(np.std(angle_errs[c])  if angle_errs[c] else 0.0):.2f}",
+                ]
+            )
         w.writerow([])
 
-        # CM RAW
-        w.writerow(["# --- CONFUSION MATRIX RAW ---"])
-        w.writerow([""] + names_full)
-        for i, rname in enumerate(names_full):
-            w.writerow([rname] + [int(v) for v in cm_raw[i].tolist()])
+        # Adult-SOTA comparable (face/no-face)
+        w.writerow(["# --- ADULT-SOTA COMPARABLE (face/no-face) ---"])
+        w.writerow(["AP_face", f"{ap_face:.4f}"])
+        w.writerow(["PR_best_th", f"{best_th:.4f}"])
+        w.writerow(["PR_best_P", f"{best_P:.4f}"])
+        w.writerow(["PR_best_R", f"{best_R:.4f}"])
+        w.writerow(["PR_best_F1", f"{best_F1:.4f}"])
+        w.writerow(["GT_total_babies", GT_baby_total])
+        w.writerow(["recall_micro", f"{recall_micro_baby:.4f}"])
+        w.writerow(["recall_macro", f"{recall_macro_baby:.4f}"])
+        w.writerow(["precision_S1", f"{precision_s1:.4f}"])
+        w.writerow(["f1_S1", f"{f1_s1:.4f}"])
+        w.writerow(["FP_in_baby_imgs", fp_in_baby_imgs])
+        w.writerow(["FP_in_adult_imgs", fp_in_adult_imgs])
+        w.writerow(["FP_in_bg_imgs", fp_in_bg_imgs])
+        w.writerow(["FP_global", fp_global_loc])
+        w.writerow(["BG_instances_adult_total", bg_instances_adult_total])
+        w.writerow(["BG_instances_pure_total", bg_instances_pure_total])
+        w.writerow(
+            ["BG_instances_total", bg_instances_adult_total + bg_instances_pure_total]
+        )
         w.writerow([])
-
-        # CM NORMALIZED
-        w.writerow(["# --- CONFUSION MATRIX NORMALIZED ---"])
-        w.writerow([""] + names_full)
-        for i, rname in enumerate(names_full):
-            w.writerow([rname] + [f"{float(v):.4f}" for v in cm_norm[i].tolist()])
+        # Per-class (Summary A style): GT / TP / FN / Recall
+        w.writerow(["# --- SUMMARY A per-class (GT/TP/FN/Recall) ---"])
+        w.writerow(["Class", "GT", "TP", "FN", "Recall"])
+        w.writerows(summary_sota_rows)
+        w.writerow([])
+        # IoU over ALL GT
+        w.writerow(["# --- IoU over ALL GT (GT-anchored) ---"])
+        w.writerow(["IoU_count", iou_all_stats["count"]])
+        w.writerow(["IoU_mean", f"{iou_all_stats['mean']:.4f}"])
+        w.writerow(["IoU_median", f"{iou_all_stats['median']:.4f}"])
+        w.writerow(["IoU_p25", f"{iou_all_stats['p25']:.4f}"])
+        w.writerow(["IoU_p75", f"{iou_all_stats['p75']:.4f}"])
+        w.writerow(["IoU_std", f"{iou_all_stats['std']:.4f}"])
+        w.writerow([])
+        # Angle global (TP-only)
+        w.writerow(["# --- Angle (TP-only) global stats [deg] ---"])
+        w.writerow(["Angle_count", angle_global_stats["count"]])
+        w.writerow(["Angle_mean", f"{angle_global_stats['mean']:.4f}"])
+        w.writerow(["Angle_median", f"{angle_global_stats['median']:.4f}"])
+        w.writerow(["Angle_p25", f"{angle_global_stats['p25']:.4f}"])
+        w.writerow(["Angle_p75", f"{angle_global_stats['p75']:.4f}"])
+        w.writerow(["Angle_std", f"{angle_global_stats['std']:.4f}"])
 
     print(f"[INFO] Wrote consolidated metrics to {csv_path}")
 
-    # Print summary to console
-    print("\n[RESULTS - YOLO Oriented]")
-    print(f"  mAP: {mAP:.4f}")
-
-    # Global (just localization)
-    print(
-        f"  Recall(face, localization-only): {recall_face_localization:.4f} "
-        f"({loc_tp_global}/{loc_tp_global+loc_fn_global})"
-    )
-    print(
-        f"  Precision(face, localization-only): {precision_face_localization:.4f} "
-        f"({loc_tp_global}/{loc_tp_global+loc_fp_global})"
-    )
-
-    for c in LABELS_MAP:
-        name = f"{LABELS_MAP[c]:<15s}"
-        ap_c = APs.get(c, 0.0)
-        # LocRecall per class (anched to GT)
-        loc_tp_gt = loc_tp_per_cls.get(c, 0)
-        loc_fn_gt = loc_fn_per_cls.get(c, 0)
-        loc_rec = (
-            (loc_tp_gt / (loc_tp_gt + loc_fn_gt))
-            if (loc_tp_gt + loc_fn_gt) > 0
-            else 0.0
-        )
-        # LocPrecision per class (anched to predicted)
-        loc_tp_p = loc_tp_pred_cls.get(c, 0)
-        loc_fp_p = loc_fp_pred_cls.get(c, 0)
-        loc_prec = (
-            (loc_tp_p / (loc_tp_p + loc_fp_p)) if (loc_tp_p + loc_fp_p) > 0 else 0.0
-        )
-
-        # IoU and angle means
-        iou_mu = np.mean(iou_errs[c]) if iou_errs[c] else 0.0
-        ang_mu = np.mean(angle_errs[c]) if angle_errs[c] else 0.0
-
-        print(
-            f"  {name} AP: {ap_c:5.3f}  TP:{stats[c]['tp']:4d}  FP:{stats[c]['fp']:4d}  FN:{stats[c]['fn']:4d}  "
-            f"LocRecall:{loc_rec:0.3f} ({loc_tp_gt}/{loc_tp_gt+loc_fn_gt})  "
-            f"LocPrecision:{loc_prec:0.3f} ({loc_tp_p}/{loc_tp_p+loc_fp_p})  "
-            f"IoUμ:{iou_mu:.3f}  Δθμ°:{ang_mu:.1f}"
-        )
-
+    # ---------- Return everything useful ----------
     return {
+        # Multi-class strict
         "mAP": mAP,
         "APs": APs,
         "stats": stats,
-        "iou_errs": iou_errs,
-        "angle_errs": angle_errs,
-        "y_true": y_true,
-        "y_pred": y_pred,
-        "all_gts": all_gts,
-        "all_preds": all_preds,
-        "all_scores": all_scores,
-        "loc_tp_global": loc_tp_global,
-        "loc_fn_global": loc_fn_global,
+        "per_class_metrics": per_class_metrics,
+        "micro_P": micro_prec,
+        "micro_R": micro_rec,
+        "micro_F1": micro_f1,
+        "macro_P": macro_prec,
+        "macro_R": macro_rec,
+        "macro_F1": macro_f1,
+        # Adult-SOTA comparable
+        "AP_face": ap_face,
+        "best_th_face": best_th,
+        "best_P_face": best_P,
+        "best_R_face": best_R,
+        "best_F1_face": best_F1,
         "recall_face_localization": recall_face_localization,
-        "loc_tp_per_cls": loc_tp_per_cls,
-        "loc_fn_per_cls": loc_fn_per_cls,
         "precision_face_localization": precision_face_localization,
-        "loc_fp_global": loc_fp_global,
-        "loc_tp_pred_cls": loc_tp_pred_cls,
-        "loc_fp_pred_cls": loc_fp_pred_cls,
-        "precision_loc_pred_per_cls": precision_loc_pred_per_cls,
+        "precision_S1": precision_s1,
+        "recall_S1": recall_micro_baby,
+        "f1_S1": f1_s1,
+        "fp_in_baby_imgs": fp_in_baby_imgs,
+        "fp_in_adult_imgs": fp_in_adult_imgs,
+        "fp_in_bg_imgs": fp_in_bg_imgs,
+        "fp_global_loc": fp_global_loc,
+        "recalls_per_cls": recalls_per_cls,
+        # IoU / Angle
+        "iou_tp_only": iou_errs,
+        "angle_tp_only": angle_errs,
+        "iou_all_gt_per_cls": iou_all_gt_per_cls,
+        "iou_all_gt_global_stats": iou_all_stats,
+        "bg_instances_adult_total": bg_instances_adult_total,
+        "bg_instances_pure_total": bg_instances_pure_total,
+        "bg_instances_total": bg_instances_adult_total + bg_instances_pure_total,
     }
 
 

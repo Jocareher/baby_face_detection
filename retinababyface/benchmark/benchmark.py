@@ -783,3 +783,48 @@ def plot_precision_recall_vs_threshold(th, prec, rec, best_th=None, out_path=Non
         plt.close(fig)  # Close the figure to free memory
     else:
         return fig  # Return the figure object
+
+
+def read_raw_gt_lines(path: Path) -> List[str]:
+    if not path.exists():
+        return []
+    with open(path, "r") as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def classify_image_gt(gt_path: Path) -> str:
+    """
+    Devuelve 'BABY' si hay al menos una anotación de bebé (cls 0-4),
+            'ADULT_ONLY' si hay anotaciones y todas son -1,
+            'BG' si no hay anotaciones (no existe .txt o vacío).
+    """
+    lines = read_raw_gt_lines(gt_path)
+    if not lines:
+        return "BG"
+    has_baby = False
+    only_adult = True
+    for ln in lines:
+        toks = ln.split()
+        if not toks:
+            continue
+        try:
+            cls_idx = int(float(toks[0]))
+        except Exception:
+            continue
+        if cls_idx != -1:  # 0..4 = bebés
+            has_baby = True
+            only_adult = False
+            break
+    if has_baby:
+        return "BABY"
+    # si no hubo bebés, chequeamos si hay al menos un adulto (-1)
+    for ln in lines:
+        toks = ln.split()
+        try:
+            cls_idx = int(float(toks[0]))
+        except Exception:
+            continue
+        if cls_idx == -1:
+            return "ADULT_ONLY"
+    # si llegamos aquí, el txt tenía líneas pero ninguna válida → tratamos como BG
+    return "BG"

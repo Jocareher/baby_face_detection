@@ -9,52 +9,162 @@ from matplotlib import pyplot as plt
 from loss.utils import verts_to_xywhr_with_theta, batch_probiou
 
 
+def read_preds_switch(
+    model_type: str,
+    pred_txt_path: Path,
+    img_wh: tuple,
+    min_score: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Reads predictions from a file and converts them to a consistent format based on the model type.
+
+    This function acts as a switch to handle predictions from different model types.
+    It uses the appropriate reader function for each model type to parse the predictions
+    and returns bounding boxes in (cx, cy, w, h, θ) format along with their confidence scores.
+
+    Args:
+        model_type (str): The type of model that generated the predictions. Supported values:
+                          - "retina": RetinaBabyFace model.
+                          - "yolo": YOLO-oriented model.
+                          - "pcn": Progressive Calibration Networks (PCN) model.
+                          - "sota": State-of-the-art (SOTA) model with AABB variants.
+        pred_txt_path (Path): Path to the predictions file.
+        img_wh (tuple): Tuple (width, height) representing the image dimensions in pixels.
+                        Required for some model types (e.g., "pcn", "sota").
+        min_score (float): Minimum confidence score threshold for filtering predictions.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]:
+            - pred_xywhr: Tensor of shape (P, 5) containing bounding boxes in pixel coordinates
+                          as (cx, cy, w, h, θ).
+            - pred_scores: Tensor of shape (P,) containing confidence scores for each prediction.
+
+    If the model type is unknown or the file contains no valid predictions, returns empty tensors.
+    """
+    if model_type == "retina":
+        # RetinaBabyFace predictions format:
+        # class x1 y1 x2 y2 x3 y3 x4 y4 angle score
+        xywhr, _cls, scores = read_retinababyface_preds_xywhr(
+            pred_txt_path, min_score=min_score
+        )
+        return xywhr, scores
+
+    elif model_type == "yolo":
+        # YOLO-oriented predictions format:
+        # class x1 y1 x2 y2 angle score
+        xywhr, _cls, scores = read_yolo_oriented_preds_xywhr(
+            pred_txt_path, min_score=min_score
+        )
+        return xywhr, scores
+
+    elif model_type == "pcn":
+        # PCN predictions format:
+        # x1 y1 x2 y2 angle_degrees score
+        xywhr, scores = read_pcn_preds_xywhr(
+            pred_txt_path, img_wh=img_wh, min_score=min_score
+        )
+        return xywhr, scores
+
+    elif model_type == "sota":
+        # SOTA predictions format:
+        # AABB variants (x1 y1 x2 y2) or with score
+        xywhr, scores = read_sota_preds_xywhr_xyxy(
+            pred_txt_path, img_wh=img_wh, min_score=min_score
+        )
+        return xywhr, scores
+
+    else:
+        # Unknown model type → return empty tensors
+        return (
+            torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.float32),
+        )
+
+
 def read_infantface_gt_xywhr(
     gt_txt_path: Path,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Lee GT del InfantFace (formato por línea: x1 y1 x2 y2 en PIXELES).
-    Devuelve:
-      - xywhr_gt: (N,5) en pixeles (cx,cy,w,h,theta) con theta=0.0
-      - cls_gt:  (N,) dummy con todo a 0 (no se usa en loc-only)
-    Si el archivo no existe o está vacío, retorna tensores vacíos.
+    Reads ground truth (GT) annotations for InfantFace detections from a text file.
+
+    The input file is expected to have lines formatted as:
+        x1 y1 x2 y2
+    where:
+        - x1, y1: Top-left corner of the bounding box (in pixels).
+        - x2, y2: Bottom-right corner of the bounding box (in pixels).
+
+    This function converts the bounding box coordinates to the (cx, cy, w, h, θ) format,
+    where:
+        - cx, cy: Center of the bounding box (in pixels).
+        - w, h: Width and height of the bounding box (in pixels).
+        - θ: Rotation angle of the bounding box, which is always 0.0 (AABB).
+
+    Args:
+        gt_txt_path (Path): Path to the ground truth annotation file.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]:
+            - xywhr_gt: Tensor of shape (N, 5) containing bounding boxes in pixel coordinates
+                        as (cx, cy, w, h, θ=0.0).
+            - cls_gt: Tensor of shape (N,) containing dummy class indices (all set to 0),
+                      which are not used in localization-only tasks.
+
+    If the file does not exist or contains no valid annotations, returns empty tensors.
     """
     if not gt_txt_path.exists():
+        # Return empty tensors if the file does not exist
         return torch.empty((0, 5), dtype=torch.float32), torch.empty(
             (0,), dtype=torch.long
         )
 
-    xywhr_list = []
+    xywhr_list = []  # List to store bounding boxes in (cx, cy, w, h, θ) format
+
+    # Read the file line by line
     with open(gt_txt_path, "r") as f:
         for raw in f:
-            line = raw.strip()
+            line = raw.strip()  # Remove leading/trailing whitespace
             if not line:
-                continue
-            toks = line.split()
+                continue  # Skip empty lines
+
+            toks = line.split()  # Split the line into tokens
             if len(toks) < 4:
-                continue
-            x1 = float(toks[0])
-            y1 = float(toks[1])
-            x2 = float(toks[2])
-            y2 = float(toks[3])
+                continue  # Skip lines with insufficient tokens
+
+            # Parse bounding box coordinates
+            x1 = float(toks[0])  # Top-left x-coordinate
+            y1 = float(toks[1])  # Top-left y-coordinate
+            x2 = float(toks[2])  # Bottom-right x-coordinate
+            y2 = float(toks[3])  # Bottom-right y-coordinate
+
+            # Ensure proper ordering of corners
             x_min, x_max = (x1, x2) if x1 <= x2 else (x2, x1)
             y_min, y_max = (y1, y2) if y1 <= y2 else (y2, y1)
+
+            # Compute width and height of the bounding box
             w = max(0.0, x_max - x_min)
             h = max(0.0, y_max - y_min)
             if w <= 0.0 or h <= 0.0:
-                continue
+                continue  # Skip invalid bounding boxes
+
+            # Compute the center of the bounding box
             cx = x_min + w * 0.5
             cy = y_min + h * 0.5
-            theta = 0.0  # AABB
-            xywhr_list.append([cx, cy, w, h, theta])
+
+            # Append the bounding box in (cx, cy, w, h, θ) format
+            xywhr_list.append([cx, cy, w, h, 0.0])  # θ is always 0.0 for AABB
 
     if len(xywhr_list) == 0:
+        # Return empty tensors if no valid bounding boxes were found
         return torch.empty((0, 5), dtype=torch.float32), torch.empty(
             (0,), dtype=torch.long
         )
 
+    # Convert the list of bounding boxes to a tensor
     xywhr = torch.tensor(xywhr_list, dtype=torch.float32)
-    cls_dummy = torch.zeros((xywhr.size(0),), dtype=torch.long)  # no se usa en loc-only
+
+    # Create a dummy class tensor (all zeros) for compatibility
+    cls_dummy = torch.zeros((xywhr.size(0),), dtype=torch.long)
+
     return xywhr, cls_dummy
 
 

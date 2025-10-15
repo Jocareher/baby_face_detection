@@ -1,20 +1,14 @@
-import argparse, csv, math, json
-from collections import defaultdict
+import argparse, csv
 from typing import Dict, Any, List
 import numpy as np
-from PIL import Image
 from pathlib import Path
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import torch
 
 from benchmark.benchmark import (
     read_infantface_gt_xywhr,
-    read_sota_preds_xywhr_xyxy,
+    read_preds_switch,
     greedy_match,
-    read_yolo_oriented_preds_xywhr,
-    read_retinababyface_preds_xywhr,
-    read_pcn_preds_xywhr,
     compute_loc_curves_from_predictions,
     plot_precision_recall_vs_threshold,
 )
@@ -23,53 +17,7 @@ from utils.visualize import img_size
 from loss.utils import batch_probiou
 
 
-def read_preds_switch(
-    model_type: str,
-    pred_txt_path: Path,
-    img_wh: tuple,
-    min_score: float,
-):
-    """
-    Devuelve (pred_xywhr:(P,5), pred_scores:(P,))
-    según el tipo de modelo y usando TUS lectores existentes.
-    """
-    if model_type == "retina":
-        # class x1 y1 x2 y2 x3 y3 x4 y4 angle score
-        xywhr, _cls, scores = read_retinababyface_preds_xywhr(
-            pred_txt_path, min_score=min_score
-        )
-        return xywhr, scores
-
-    elif model_type == "yolo":
-        # class x1 y1 x2 y2 angle score
-        xywhr, _cls, scores = read_yolo_oriented_preds_xywhr(
-            pred_txt_path, min_score=min_score
-        )
-        return xywhr, scores
-
-    elif model_type == "pcn":
-        # x1 y1 x2 y2 angle_degrees score
-        xywhr, scores = read_pcn_preds_xywhr(
-            pred_txt_path, img_wh=img_wh, min_score=min_score
-        )
-        return xywhr, scores
-
-    elif model_type == "sota":
-        # AABB variantes (x1 y1 x2 y2) o con score
-        xywhr, scores = read_sota_preds_xywhr_xyxy(
-            pred_txt_path, img_wh=img_wh, min_score=min_score
-        )
-        return xywhr, scores
-
-    else:
-        # Tipo desconocido → vacío
-        return (
-            torch.empty((0, 5), dtype=torch.float32),
-            torch.empty((0,), dtype=torch.float32),
-        )
-
-
-def evaluate_infantface_loconly(
+def evaluate_infantface(
     data_root: Path,
     pred_dir: Path,
     out_dir: Path,
@@ -78,50 +26,74 @@ def evaluate_infantface_loconly(
     min_score: float = 0.0,
 ) -> Dict[str, Any]:
     """
-    Evaluación SOLO por localización en InfantFace (GT: AABB x1 y1 x2 y2).
-    - Sin clases.
-    - P/R/F1 vs score (mejor umbral y métricas al min_score).
-    - IoU global de TPs.
+    Evaluate localization performance on the InfantFace dataset.
+
+    This function evaluates object detection models based on localization metrics only.
+    It computes precision, recall, and F1-score at various confidence thresholds, as well as IoU statistics for true positives.
+
+    Args:
+        data_root (Path): Path to the dataset root directory containing "images" and "labels" subdirectories.
+        pred_dir (Path): Path to the directory containing model predictions in .txt format.
+        out_dir (Path): Path to the output directory where results and plots will be saved.
+        model_type (str): Type of model used for predictions. Options: "retina", "yolo", "sota", "pcn".
+        iou_th (float): IoU threshold for determining true positives. Default is 0.5.
+        min_score (float): Minimum confidence score for predictions to be considered. Default is 0.0.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing evaluation metrics, including:
+            - Total ground truth, true positives, false positives, and false negatives.
+            - Precision, recall, and F1-score at the best confidence threshold and at the minimum score.
+            - IoU statistics for true positives.
+            - Precision-recall curves and the best confidence threshold.
+
+    Outputs:
+        - A CSV file with evaluation metrics.
+        - Precision-recall curve plot.
+        - IoU distribution histogram.
+
+    Notes:
+        - This function assumes that ground truth and predictions are in the same format (AABB x1 y1 x2 y2).
+        - No class information is used; evaluation is localization-only.
     """
+    # Define paths for images, labels, and output directories
     images_dir = data_root / "images"
     labels_dir = data_root / "labels"
     out_dir.mkdir(parents=True, exist_ok=True)
     figs_dir = out_dir / "figures"
     figs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Curvas loc-only
-    y_is_tp: List[int] = []
-    y_scores: List[float] = []
+    # Initialize variables for localization curves and IoU statistics
+    y_is_tp: List[
+        int
+    ] = []  # True positives (1) or false positives (0) for each prediction
+    y_scores: List[float] = []  # Confidence scores for predictions
+    all_iou: List[float] = []  # IoU values for true positives
+    total_gt = 0  # Total ground truth boxes
+    total_tp = 0  # Total true positives
+    total_fp = 0  # Total false positives
+    total_fn = 0  # Total false negatives
 
-    # IoU
-    all_iou: List[float] = []
-
-    # Contadores globales
-    total_gt = 0
-    total_tp = 0
-    total_fp = 0
-    total_fn = 0
-
-    # Enumerar imágenes
+    # Enumerate all image files in the dataset
     exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
     jpgs: List[Path] = []
     for pat in exts:
         jpgs += list(images_dir.glob(pat))
     jpgs = sorted(jpgs)
 
+    # Process each image in the dataset
     for img_p in tqdm(jpgs, desc=f"Eval InfantFace ({model_type})"):
         stem = img_p.stem
-        gt_p = labels_dir / f"{stem}.txt"
-        pr_p = pred_dir / f"{stem}.txt"
+        gt_p = labels_dir / f"{stem}.txt"  # Ground truth file
+        pr_p = pred_dir / f"{stem}.txt"  # Prediction file
 
-        W, H = img_size(img_p)
+        W, H = img_size(img_p)  # Get image dimensions
 
-        # GT
-        gt_xywhr, _ = read_infantface_gt_xywhr(gt_p)  # (G,5), dummy cls
+        # Read ground truth boxes
+        gt_xywhr, _ = read_infantface_gt_xywhr(gt_p)  # (G,5), dummy class
         G = int(gt_xywhr.shape[0])
         total_gt += G
 
-        # Preds del modelo
+        # Read model predictions
         pr_xywhr, pr_scores = read_preds_switch(
             model_type=model_type,
             pred_txt_path=pr_p,
@@ -131,49 +103,49 @@ def evaluate_infantface_loconly(
         P = int(pr_xywhr.shape[0])
 
         if G == 0:
-            # Todo lo predicho es FP
+            # If no ground truth, all predictions are false positives
             total_fp += P
             for s in pr_scores.tolist():
                 y_is_tp.append(0)
                 y_scores.append(float(s))
             continue
 
-        # Match por IoU
+        # Match predictions to ground truth using IoU
         matches, unmatched_gt, unmatched_pr = greedy_match(
             gt_xywhr, pr_xywhr, pr_scores, iou_th=iou_th
         )
 
-        # 1) --- Marcar TP/FP para curvas (FALTABA) ---
+        # Mark true positives and false positives for precision-recall curves
         matched_pr_idx = set(pj for (_, pj, _) in matches)
         for j, s in enumerate(pr_scores.tolist()):
             y_is_tp.append(1 if j in matched_pr_idx else 0)
             y_scores.append(float(s))
 
-        # 2) --- IoU agregado: mejor IoU por GT + ceros por FP ---
+        # Compute IoU for true positives and add zeros for unmatched predictions
         if pr_xywhr.numel() > 0 and gt_xywhr.numel() > 0:
             iou_mat = batch_probiou(gt_xywhr, pr_xywhr)  # (G,P)
             best_iou_per_gt = iou_mat.max(dim=1).values.cpu().numpy()
         else:
             best_iou_per_gt = np.zeros((G,), dtype=np.float32)
 
-        # Forzar 0 en GT sin match (FNs)
+        # Set IoU to 0 for unmatched ground truth boxes (false negatives)
         if len(unmatched_gt) > 0:
             best_iou_per_gt = best_iou_per_gt.copy()
             best_iou_per_gt[np.array(unmatched_gt, dtype=int)] = 0.0
 
-        # 0s por FP (predicciones sin match)
+        # Add zeros for unmatched predictions (false positives)
         zeros_for_fp = [0.0] * len(unmatched_pr)
 
-        # Acumular al agregado
+        # Accumulate IoU values
         all_iou.extend(best_iou_per_gt.tolist())
         all_iou.extend(zeros_for_fp)
 
-        # 3) --- Contadores ---
+        # Update global counters
         total_tp += len(matches)
         total_fn += len(unmatched_gt)
         total_fp += len(unmatched_pr)
 
-    # ===== Curvas P/R vs threshold =====
+    # Compute precision-recall curves and best threshold
     loc_curves = compute_loc_curves_from_predictions(
         y_is_tp=y_is_tp,
         y_scores=y_scores,
@@ -185,7 +157,7 @@ def evaluate_infantface_loconly(
     best_R = loc_curves["best_R"]
     best_F1 = loc_curves["best_F1"]
 
-    # Plot
+    # Plot precision-recall curve
     plot_precision_recall_vs_threshold(
         th=loc_curves["thresholds"],
         prec=loc_curves["precision"],
@@ -194,7 +166,7 @@ def evaluate_infantface_loconly(
         out_path=(figs_dir / "precision_recall_vs_threshold_loc.png"),
     )
 
-    # Métricas al min_score
+    # Compute metrics at the minimum score threshold
     scores_np = np.asarray(y_scores, dtype=np.float32)
     is_tp_np = np.asarray(y_is_tp, dtype=np.int32)
     keep_min = scores_np >= float(min_score)
@@ -204,7 +176,7 @@ def evaluate_infantface_loconly(
     R_min = (tp_min / total_gt) if total_gt > 0 else 0.0
     F1_min = (2 * P_min * R_min / (P_min + R_min)) if (P_min + R_min) > 0 else 0.0
 
-    # ===== IoU stats (global) =====
+    # Compute IoU statistics for true positives
     if len(all_iou) > 0:
         iou_arr = np.asarray(all_iou, dtype=np.float32)
         iou_stats = {
@@ -215,6 +187,7 @@ def evaluate_infantface_loconly(
             "p75": float(np.percentile(iou_arr, 75)),
             "std": float(iou_arr.std(ddof=0)),
         }
+        # Plot IoU distribution histogram
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.hist(iou_arr, bins=20, range=(0, 1), edgecolor="black")
         ax.set_xlabel("IoU")
@@ -233,7 +206,7 @@ def evaluate_infantface_loconly(
             "std": 0.0,
         }
 
-    # ===== CSV =====
+    # Save metrics to a CSV file
     with open(out_dir / "metrics_loc_only.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value"])
@@ -264,7 +237,7 @@ def evaluate_infantface_loconly(
         w.writerow(["IoU_p75", f"{iou_stats['p75']:.4f}"])
         w.writerow(["IoU_std", f"{iou_stats['std']:.4f}"])
 
-    # ===== Consola =====
+    # Print results to the console
     print(f"\n[RESULTS - InfantFace LocOnly | {model_type}]")
     print(f"  GT: {total_gt}  TP:{total_tp}  FP:{total_fp}  FN:{total_fn}")
     print(
@@ -317,7 +290,7 @@ def main_infantface():
     ap.add_argument("--min_score", type=float, default=0.0)
     args = ap.parse_args()
 
-    evaluate_infantface_loconly(
+    evaluate_infantface(
         data_root=Path(args.data_root),
         pred_dir=Path(args.pred_dir),
         out_dir=Path(args.out_dir),

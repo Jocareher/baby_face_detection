@@ -786,45 +786,74 @@ def plot_precision_recall_vs_threshold(th, prec, rec, best_th=None, out_path=Non
 
 
 def read_raw_gt_lines(path: Path) -> List[str]:
+    """
+    Reads all non-empty lines from a ground truth (GT) file.
+
+    Args:
+        path (Path): Path to the ground truth file.
+
+    Returns:
+        List[str]: A list of non-empty, stripped lines from the file.
+                   Returns an empty list if the file does not exist.
+    """
     if not path.exists():
-        return []
+        return []  # Return an empty list if the file does not exist
     with open(path, "r") as f:
-        return [ln.strip() for ln in f if ln.strip()]
+        return [ln.strip() for ln in f if ln.strip()]  # Read and strip non-empty lines
 
 
 def classify_image_gt(gt_path: Path) -> str:
     """
-    Devuelve 'BABY' si hay al menos una anotación de bebé (cls 0-4),
-            'ADULT_ONLY' si hay anotaciones y todas son -1,
-            'BG' si no hay anotaciones (no existe .txt o vacío).
+    Classifies the type of annotations in a ground truth (GT) file.
+
+    The function determines whether the GT file corresponds to:
+        - "BABY": If there is at least one annotation for a baby (class indices 0-4).
+        - "ADULT_ONLY": If there are annotations, but all are for adults (class index -1).
+        - "BG": If the file does not exist, is empty, or contains no valid annotations.
+
+    Args:
+        gt_path (Path): Path to the ground truth annotation file.
+
+    Returns:
+        str: One of the following classification labels:
+             - "BABY": At least one baby annotation is present.
+             - "ADULT_ONLY": Only adult annotations are present.
+             - "BG": No annotations or invalid file.
     """
+    # Read all non-empty lines from the GT file
     lines = read_raw_gt_lines(gt_path)
     if not lines:
-        return "BG"
-    has_baby = False
-    only_adult = True
+        return "BG"  # Return "BG" if the file is empty or does not exist
+
+    has_baby = False  # Flag to check if there is at least one baby annotation
+    only_adult = True  # Flag to check if all annotations are for adults
+
+    # First pass: Check for baby annotations (class indices 0-4)
     for ln in lines:
         toks = ln.split()
         if not toks:
-            continue
+            continue  # Skip empty or malformed lines
         try:
-            cls_idx = int(float(toks[0]))
+            cls_idx = int(float(toks[0]))  # Parse the class index
         except Exception:
-            continue
-        if cls_idx != -1:  # 0..4 = bebés
+            continue  # Skip lines with invalid class indices
+        if cls_idx != -1:  # Class indices 0-4 correspond to babies
             has_baby = True
             only_adult = False
-            break
+            break  # Exit early if a baby annotation is found
+
     if has_baby:
-        return "BABY"
-    # si no hubo bebés, chequeamos si hay al menos un adulto (-1)
+        return "BABY"  # Return "BABY" if at least one baby annotation is found
+
+    # Second pass: Check for adult annotations (class index -1)
     for ln in lines:
         toks = ln.split()
         try:
-            cls_idx = int(float(toks[0]))
+            cls_idx = int(float(toks[0]))  # Parse the class index
         except Exception:
-            continue
-        if cls_idx == -1:
-            return "ADULT_ONLY"
-    # si llegamos aquí, el txt tenía líneas pero ninguna válida → tratamos como BG
+            continue  # Skip lines with invalid class indices
+        if cls_idx == -1:  # Class index -1 corresponds to adults
+            return "ADULT_ONLY"  # Return "ADULT_ONLY" if at least one adult annotation is found
+
+    # If no valid annotations are found, treat the file as background (BG)
     return "BG"

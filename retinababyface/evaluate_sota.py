@@ -251,8 +251,8 @@ def evaluate_sota(
                     pj = gi_to_pj[gi]  # matched pred index
                     dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr_baby[gi, 4])
                     err_deg = float(torch.abs(dtheta) * 180.0 / math.pi)
-                else:
-                    err_deg = 0.0  # unmatched GT → worst-case angle error
+                # else:
+                #     err_deg = 0.0  # unmatched GT → worst-case angle error
                 angle_all_gts.append(err_deg)  # global list
                 angle_all_gts_per_cls[c].append(err_deg)  # per-class list
 

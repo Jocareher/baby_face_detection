@@ -44,18 +44,18 @@ def read_preds_switch(
     if model_type == "retina":
         # RetinaBabyFace predictions format:
         # class x1 y1 x2 y2 x3 y3 x4 y4 angle score
-        xywhr, _cls, scores = read_retinababyface_preds_xywhr(
+        xywhr, cls, scores = read_retinababyface_preds_xywhr(
             pred_txt_path, min_score=min_score
         )
-        return xywhr, scores
+        return xywhr, cls, scores
 
     elif model_type == "yolo":
         # YOLO-oriented predictions format:
         # class x1 y1 x2 y2 angle score
-        xywhr, _cls, scores = read_yolo_oriented_preds_xywhr(
+        xywhr, cls, scores = read_yolo_oriented_preds_xywhr(
             pred_txt_path, min_score=min_score
         )
-        return xywhr, scores
+        return xywhr, cls, scores
 
     elif model_type == "pcn":
         # PCN predictions format:
@@ -63,7 +63,9 @@ def read_preds_switch(
         xywhr, scores = read_pcn_preds_xywhr(
             pred_txt_path, img_wh=img_wh, min_score=min_score
         )
-        return xywhr, scores
+        P = int(xywhr.shape[0])
+        dummy_cls = torch.zeros((P,), dtype=torch.long)  # Dummy class tensor
+        return xywhr, dummy_cls, scores
 
     elif model_type == "sota":
         # SOTA predictions format:
@@ -71,12 +73,15 @@ def read_preds_switch(
         xywhr, scores = read_sota_preds_xywhr_xyxy(
             pred_txt_path, img_wh=img_wh, min_score=min_score
         )
-        return xywhr, scores
+        P = int(xywhr.shape[0])
+        dummy_cls = torch.zeros((P,), dtype=torch.long)  # Dummy class tensor
+        return xywhr, dummy_cls, scores
 
     else:
         # Unknown model type → return empty tensors
         return (
             torch.empty((0, 5), dtype=torch.float32),
+            torch.empty((0,), dtype=torch.long),
             torch.empty((0,), dtype=torch.float32),
         )
 

@@ -2,25 +2,19 @@
 from __future__ import annotations
 import argparse
 import csv
-import json
 import math
-from collections import Counter
 from pathlib import Path
-from typing import Tuple, Dict, Any, List
+from typing import Dict, Any, List
 
 import numpy as np
 import torch
-from PIL import Image
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
+
 
 from benchmark.benchmark import (
-    read_sota_preds_xywhr_xyxy,
+    read_preds_switch,
     greedy_match,
     read_gt_baby_xywhr,
-    read_yolo_oriented_preds_xywhr,
-    read_retinababyface_preds_xywhr,
-    read_pcn_preds_xywhr,
     count_adults_in_gt,
     compute_loc_curves_from_predictions,
     plot_precision_recall_vs_threshold,
@@ -164,14 +158,14 @@ def evaluate_sota(
             gt_per_cls[int(c)] += 1
 
         # Read predictions depending on mode (AABB vs oriented)
-        if aabb_mode:
-            pr_xywhr, pr_scores = read_sota_preds_xywhr_xyxy(
-                pred_txt_path=pr_p, img_wh=(W, H), min_score=min_score
-            )
-        else:
-            pr_xywhr, pr_scores = read_pcn_preds_xywhr(
-                pred_txt_path=pr_p, img_wh=(W, H), min_score=min_score
-            )
+        model_type = "sota" if aabb_mode else "pcn"
+        pr_xywhr, _, pr_scores = read_preds_switch(
+            model_type=model_type,
+            pred_txt_path=pr_p,
+            img_wh=(W, H),
+            min_score=min_score,
+        )
+
         P = int(pr_xywhr.shape[0])  # number of predictions
 
         # Classify this image by its GT content (for FP buckets)
@@ -692,14 +686,14 @@ def evaluate_obb(
         G = int(gt_xywhr.shape[0])
 
         # Read predictions (YOLO oriented or RetinaBabyFace)
-        if model_version == "yolo":
-            pr_xywhr, pr_cls, pr_scores = read_yolo_oriented_preds_xywhr(
-                pr_p, min_score=min_score
-            )
-        else:
-            pr_xywhr, pr_cls, pr_scores = read_retinababyface_preds_xywhr(
-                pr_p, min_score=min_score
-            )
+        model_type = "yolo" if model_version == "yolo" else "retina"
+        pr_xywhr, pr_cls, pr_scores = read_preds_switch(
+            model_type=model_type,
+            pred_txt_path=pr_p,
+            img_wh=(W, H),
+            min_score=min_score,
+        )
+
         P = int(pr_xywhr.shape[0])
 
         # Classify image kind for FP bucketing
@@ -707,51 +701,51 @@ def evaluate_obb(
 
         # --------- No baby GTs (ADULT_ONLY or BG) ---------
         if img_kind != "BABY":
-            # 1) ¿Cuántas instancias BG hay?
-            #    - ADULT_ONLY: una instancia por adulto anotado
-            #    - BG puro (sin .txt o .txt vacío): contamos 1 instancia BG
+            # 1) Count background (BG) instances:
+            #    - ADULT_ONLY: count one instance per annotated adult
+            #    - Pure BG (no .txt or empty .txt): count 1 BG instance
             if img_kind == "ADULT_ONLY":
-                n_bg_instances = count_adults_in_gt(gt_p)  # <-- usa tu helper existente
+                n_bg_instances = count_adults_in_gt(gt_p)  # Use helper to count adults
                 bg_instances_adult_total += n_bg_instances
-                fp_in_adult_imgs += P
-            else:  # "BG" puro
+                fp_in_adult_imgs += P  # All predictions are false positives
+            else:  # Pure "BG" (no annotations)
                 n_bg_instances = 1
                 bg_instances_pure_total += 1
-                fp_in_bg_imgs += P
+                fp_in_bg_imgs += P  # All predictions are false positives
 
-            # 2) Sumar TNs por INSTANCIA BG para llenar la diagonal BG/BG
+            # 2) Add true negatives (TNs) for each BG instance to fill the BG/BG diagonal
             for _ in range(max(1, n_bg_instances)):
-                y_true.append(-1)
-                y_pred.append(-1)
-                all_gts.append(-1)
-                all_preds.append(-1)
-                all_scores.append(0.0)
+                y_true.append(-1)  # True label is background (-1)
+                y_pred.append(-1)  # Predicted label is also background (-1)
+                all_gts.append(-1)  # Ground truth is background
+                all_preds.append(-1)  # Prediction is background
+                all_scores.append(0.0)  # No confidence score for TNs
 
-            # 3) Registrar FPs (si hubo predicciones en imágenes sin bebés)
+            # 3) Register false positives (FPs) if there are predictions in non-baby images
             if P > 0:
-                fp_global_loc += P
+                fp_global_loc += P  # Increment global FP count
                 for j in range(P):
-                    c_det = int(pr_cls[j])
-                    s_det = float(pr_scores[j])
+                    c_det = int(pr_cls[j])  # Predicted class
+                    s_det = float(pr_scores[j])  # Confidence score
 
-                    # Face/no-face PR: todos estos son FP
-                    per_true_face[0].append(0)
-                    per_score_face[0].append(s_det)
+                    # Face/no-face PR: all predictions are false positives
+                    per_true_face[0].append(0)  # Mark as FP
+                    per_score_face[0].append(s_det)  # Record score
 
-                    # Multi-clase estricto: FP para la clase predicha
+                    # Strict multi-class: mark as FP for the predicted class
                     if c_det in stats:
                         stats[c_det]["fp"] += 1
-                        per_true[c_det].append(0)
-                        per_score[c_det].append(s_det)
+                        per_true[c_det].append(0)  # Mark as FP
+                        per_score[c_det].append(s_det)  # Record score
 
-                    # CM: fila BG (true=-1) contra la clase predicha
-                    y_true.append(-1)
-                    y_pred.append(c_det)
-                    all_gts.append(-1)
-                    all_preds.append(c_det)
-                    all_scores.append(s_det)
+                    # Confusion matrix: row for BG (true=-1) against predicted class
+                    y_true.append(-1)  # True label is background
+                    y_pred.append(c_det)  # Predicted class
+                    all_gts.append(-1)  # Ground truth is background
+                    all_preds.append(c_det)  # Prediction is the detected class
+                    all_scores.append(s_det)  # Confidence score
 
-            # No hay IoU/ángulo porque no hay bebés GT
+            # No IoU/angle calculations since there are no baby ground truths
             continue
 
         # --------- Images WITH baby GTs ---------
@@ -1295,19 +1289,19 @@ def main():
         help="Directory containing SOTA predictions in .txt format",
     )
     ap.add_argument(
-        "--yolo_obb",
+        "--obb",
         action="store_true",
         help="Whether to evaluate YOLO-based oriented model",
     )
     ap.add_argument(
-        "--model_variant",
+        "--model_version",
         type=str,
-        help="Model variant: 'yolo' or 'retina' (for --yolo_obb only)",
+        help="Model variant: 'yolo' or 'retina' (for --obb only)",
     )
     ap.add_argument(
         "--aabb_mode",
         action="store_true",
-        help="Whether to evaluate YOLO-based oriented model",
+        help="Whether to evaluate in AABB mode (for SOTA models only)",
     )
     ap.add_argument("--output_dir", type=str, required=True, help="Output directory")
     ap.add_argument("--iou", type=float, default=0.5, help="IoU threshold for matching")
@@ -1316,10 +1310,10 @@ def main():
     )
     args = ap.parse_args()
 
-    if args.yolo_obb:
+    if args.obb:
         if not args.sota_dir:
             raise ValueError(
-                "For --yolo_obb evaluation, --sota-dir (predictions) is required."
+                "For --obb evaluation, --sota-dir (predictions) is required."
             )
         evaluate_obb(
             data_root=Path(args.data_root),
@@ -1328,7 +1322,7 @@ def main():
             out_dir=Path(args.output_dir),
             iou_th=args.iou,
             min_score=args.min_score,
-            model_version=args.model_variant,
+            model_version=args.model_version,
         )
     else:
         evaluate_sota(

@@ -271,33 +271,55 @@ def export_predictions(
                     try:
                         if polys_for_img is not None and polys_for_img.size > 0:
                             N = polys_for_img.shape[0]
+                            pil_base = Image.fromarray(base_img)  # para transform QUAD
+
                             for j in range(N):
-                                poly = polys_for_img[j]  # (4,2) TL,TR,BR,BL in base_img coords
-                                # crop size
-                                wj, hj = polygon_to_size(polys_for_img, boxes_for_txt, j)
-                                if wj <= 2 or hj <= 2:
-                                    continue  # skip degenerate crops
+                                poly = polys_for_img[j].astype(np.float32)  # (4,2) en el MISMO orden predicho
+                                # longitudes de lados adyacentes según el orden original v0->v1, v1->v2
+                                len01 = float(np.linalg.norm(poly[1] - poly[0]))
+                                len12 = float(np.linalg.norm(poly[2] - poly[1]))
+                                # margen opcional para que haya contexto tras rotar (ajusta si quieres)
+                                scale_crop = 1.20
+                                wj = max(2, int(round(scale_crop * len01)))
+                                hj = max(2, int(round(scale_crop * len12)))
 
-                                # warp to rectangle (wj,hj)
-                                crop = crop_obb(base_img, poly, wj, hj)
+                                # QUAD de PIL mapea destino (0,0)-(w,0)-(w,h)-(0,h) a esta CUÁDRUPLA fuente
+                                quad = poly.reshape(-1).tolist()  # (x0,y0,x1,y1,x2,y2,x3,y3) en el orden original
+                                crop = pil_base.transform(
+                                    (wj, hj),
+                                    Image.QUAD,
+                                    data=quad,
+                                    resample=Image.BILINEAR,
+                                )
 
-                                # angle in degrees (PIL: + = CCW)
+                                # Ángulo (rad → deg). Signo: + antihorario, − horario (PIL ya sigue esto)
                                 if boxes_for_txt is not None and boxes_for_txt.size > 0:
                                     theta_deg = math.degrees(float(boxes_for_txt[j, 4]))
                                 else:
                                     theta_deg = 0.0
 
-                                # Requested rotation: negative = clockwise, positive = counterclockwise → PIL already handles this
+                                # Rotar alrededor del centro; expand=True para no recortar contenido
                                 crop_rot = crop.rotate(theta_deg, expand=True, resample=Image.BILINEAR)
 
-                                # folder by class_idx (numeric)
-                                cls = int(labels_np[j]) if labels_np is not None and labels_np.size > j else 0
-                                cls_dir = out_crops / f"{cls}"
+                                # ---- Resize "COVER" + center-crop a 640x640 (Wr,Hr) ----
+                                # Queremos llenar por completo 640x640 sin letterbox negro.
+                                Wr, Hr = resize_size  # p.ej., (640, 640)
+                                rw, rh = crop_rot.size
+                                ratio = max(Wr / float(rw), Hr / float(rh))  # COVER
+                                new_w = int(math.ceil(rw * ratio))
+                                new_h = int(math.ceil(rh * ratio))
+                                cover = crop_rot.resize((new_w, new_h), resample=Image.BILINEAR)
+                                left = max(0, (new_w - Wr) // 2)
+                                top  = max(0, (new_h - Hr) // 2)
+                                crop_final = cover.crop((left, top, left + Wr, top + Hr))  # 640x640 lleno
+
+                                # Carpeta por class_idx (o cambia a labels_map si prefieres nombre)
+                                cls = int(labels_np[j]) if (labels_np is not None and labels_np.size > j) else 0
+                                cls_dir = (Path(out_dir) / "crops" / f"{cls}")
                                 cls_dir.mkdir(parents=True, exist_ok=True)
 
-                                # filename: stem_idx.jpg
                                 crop_name = f"{stem}_{j:02d}.jpg"
-                                crop_rot.save(cls_dir / crop_name)
+                                crop_final.save(cls_dir / crop_name)
                     except Exception as e:
                         errors += 1
                         tqdm.write(f"❌  Crop error ({stem}): {e}")

@@ -270,60 +270,96 @@ def export_predictions(
                     
                     try:
                         if polys_for_img is not None and polys_for_img.size > 0:
+                            import cv2
+
                             N = polys_for_img.shape[0]
-                            pil_base = Image.fromarray(base_img)  # para transform QUAD
+                            Hsrc, Wsrc = base_img.shape[:2]  # RGB uint8
+
+                            # tamaño objetivo de los crops (p.ej. 640x640)
+                            Wr_target, Hr_target = resize_size  # típicamente (640,640)
 
                             for j in range(N):
-                                poly = polys_for_img[j].astype(np.float32)  # (4,2) en el MISMO orden predicho
-                                # longitudes de lados adyacentes según el orden original v0->v1, v1->v2
-                                len01 = float(np.linalg.norm(poly[1] - poly[0]))
-                                len12 = float(np.linalg.norm(poly[2] - poly[1]))
-                                # margen opcional para que haya contexto tras rotar (ajusta si quieres)
-                                scale_crop = 1.20
-                                wj = max(2, int(round(scale_crop * len01)))
-                                hj = max(2, int(round(scale_crop * len12)))
+                                poly = polys_for_img[j].astype(np.float32)  # (4,2) en el orden que venga
 
-                                # QUAD de PIL mapea destino (0,0)-(w,0)-(w,h)-(0,h) a esta CUÁDRUPLA fuente
-                                quad = poly.reshape(-1).tolist()  # (x0,y0,x1,y1,x2,y2,x3,y3) en el orden original
-                                crop = pil_base.transform(
-                                    (wj, hj),
-                                    Image.QUAD,
-                                    data=quad,
-                                    resample=Image.BILINEAR,
-                                )
+                                # --- 1) Ordenar a TL,TR,BR,BL (top-left first) ---
+                                # TL: min(x+y); BR: max(x+y); TR: min(x-y) entre los 2 restantes; BL: el último
+                                s = poly.sum(1)
+                                d = (poly[:, 0] - poly[:, 1])
+                                tl = poly[np.argmin(s)]
+                                br = poly[np.argmax(s)]
+                                remain_idx = [k for k in range(4) if not np.allclose(poly[k], tl) and not np.allclose(poly[k], br)]
+                                if len(remain_idx) != 2:
+                                    # fallback: usa el orden original si algo raro sucede
+                                    ordered = poly.copy()
+                                else:
+                                    r0, r1 = remain_idx
+                                    tr = poly[r0] if d[r0] > d[r1] else poly[r1]
+                                    bl = poly[r1] if d[r0] > d[r1] else poly[r0]
+                                    ordered = np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
 
-                                # Ángulo (rad → deg). Signo: + antihorario, − horario (PIL ya sigue esto)
+                                # --- 2) Ancho y alto a partir de lados adyacentes (con margen) ---
+                                scale_crop = 1.20  # añade contexto para que al rotar no “coma” contenido
+                                wj = max(2, int(round(scale_crop * np.linalg.norm(ordered[1] - ordered[0]))))
+                                hj = max(2, int(round(scale_crop * np.linalg.norm(ordered[3] - ordered[0]))))
+
+                                dst = np.array([[0, 0], [wj - 1, 0], [wj - 1, hj - 1], [0, hj - 1]], dtype=np.float32)
+
+                                # --- 3) Warp OBB -> rect eje-alineado (sin negro: replicar bordes) ---
+                                M = cv2.getPerspectiveTransform(ordered, dst)
+                                rect = cv2.warpPerspective(
+                                    base_img, M, (wj, hj),
+                                    flags=cv2.INTER_LINEAR,
+                                    borderMode=cv2.BORDER_REPLICATE
+                                )  # sigue en RGB
+
+                                # --- 4) Rotar ALREDEDOR de la esquina TL (0,0) con canvas expandido ---
+                                # signo: + = antihorario, − = horario (como pediste)
                                 if boxes_for_txt is not None and boxes_for_txt.size > 0:
-                                    theta_deg = math.degrees(float(boxes_for_txt[j, 4]))
+                                    theta_deg = float(math.degrees(float(boxes_for_txt[j, 4])))
                                 else:
                                     theta_deg = 0.0
 
-                                # Rotar alrededor del centro; expand=True para no recortar contenido
-                                crop_rot = crop.rotate(theta_deg, expand=True, resample=Image.BILINEAR)
+                                # Matriz de rotación alrededor de TL=(0,0)
+                                R = cv2.getRotationMatrix2D(center=(0, 0), angle=theta_deg, scale=1.0)  # 2x3
 
-                                # ---- Resize "COVER" + center-crop a 640x640 (Wr,Hr) ----
-                                # Queremos llenar por completo 640x640 sin letterbox negro.
-                                Wr, Hr = resize_size  # p.ej., (640, 640)
-                                rw, rh = crop_rot.size
-                                ratio = max(Wr / float(rw), Hr / float(rh))  # COVER
-                                new_w = int(math.ceil(rw * ratio))
-                                new_h = int(math.ceil(rh * ratio))
-                                cover = crop_rot.resize((new_w, new_h), resample=Image.BILINEAR)
-                                left = max(0, (new_w - Wr) // 2)
-                                top  = max(0, (new_h - Hr) // 2)
-                                crop_final = cover.crop((left, top, left + Wr, top + Hr))  # 640x640 lleno
+                                # Calcula bounding box de los 4 vértices tras la rotación para expandir canvas
+                                corners = np.array([[0, 0, 1], [wj, 0, 1], [wj, hj, 1], [0, hj, 1]], dtype=np.float32).T  # 3x4
+                                rot_corners = (R @ corners).T  # 4x2
+                                min_xy = rot_corners.min(axis=0)
+                                max_xy = rot_corners.max(axis=0)
 
-                                # Carpeta por class_idx (o cambia a labels_map si prefieres nombre)
+                                tx, ty = -min_xy[0], -min_xy[1]  # traslación para mover a coords positivas
+                                R[:, 2] += [tx, ty]
+                                new_w = int(math.ceil(max_xy[0] - min_xy[0]))
+                                new_h = int(math.ceil(max_xy[1] - min_xy[1]))
+
+                                rot = cv2.warpAffine(
+                                    rect, R, (new_w, new_h),
+                                    flags=cv2.INTER_LINEAR,
+                                    borderMode=cv2.BORDER_REPLICATE  # sin triángulos negros
+                                )
+
+                                # --- 5) Resize "COVER" + centro-crop a 640x640 (llena todo el canvas) ---
+                                rw, rh = rot.shape[1], rot.shape[0]
+                                scale_cover = max(Wr_target / float(rw), Hr_target / float(rh))
+                                newW = int(math.ceil(rw * scale_cover))
+                                newH = int(math.ceil(rh * scale_cover))
+                                cover = cv2.resize(rot, (newW, newH), interpolation=cv2.INTER_LINEAR)
+
+                                left = max(0, (newW - Wr_target) // 2)
+                                top  = max(0, (newH - Hr_target) // 2)
+                                crop_final = cover[top:top + Hr_target, left:left + Wr_target, :]  # 640x640, RGB
+
+                                # --- 6) Guardar en crops/<class_idx>/ ---
                                 cls = int(labels_np[j]) if (labels_np is not None and labels_np.size > j) else 0
-                                cls_dir = (Path(out_dir) / "crops" / f"{cls}")
+                                cls_dir = Path(out_dir) / "crops" / f"{cls}"
                                 cls_dir.mkdir(parents=True, exist_ok=True)
-
-                                crop_name = f"{stem}_{j:02d}.jpg"
-                                crop_final.save(cls_dir / crop_name)
+                                Image.fromarray(crop_final).save(cls_dir / f"{stem}_{j:02d}.jpg")
+                    
                     except Exception as e:
                         errors += 1
-                        tqdm.write(f"❌  Crop error ({stem}): {e}")
-                        
+                        tqdm.write(f"❌  Crop saving error for {p}: {e}")
+                                                
 
                     pbar_imgs.update(1)
                     global_idx += 1

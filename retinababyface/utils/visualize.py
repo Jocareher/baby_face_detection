@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
+import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -818,27 +819,178 @@ def img_size(p: Path) -> Tuple[int, int]:
     with Image.open(p) as im:
         return im.size
 
-def polygon_to_size(poly42: np.ndarray, boxes_np: Optional[np.ndarray], i: int) -> Tuple[int, int]:
-    """Obtiene (w,h) para el recorte. Prefiere boxes_np[i] si está, si no mide lados del polígono."""
-    if boxes_np is not None and boxes_np.size > 0:
-        w = float(boxes_np[i, 2])
-        h = float(boxes_np[i, 3])
-    else:
-        # ancho ≈ |v0-v1|, alto ≈ |v1-v2|
-        p0, p1, p2 = poly42[i, 0], poly42[i, 1], poly42[i, 2]
-        w = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
-        h = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
-    # evitar valores degenerados
-    w = max(1, int(round(w)))
-    h = max(1, int(round(h)))
-    return w, h
 
-def crop_obb(base_img: np.ndarray, quad_xy: np.ndarray, out_w: int, out_h: int) -> Image.Image:
+def order_polygon_vertices_tl_tr_br_bl(poly42: np.ndarray) -> np.ndarray:
     """
-    Recorta la OBB como warp perspectivo a un rectángulo (out_w, out_h) usando PIL.Image.transform (QUAD).
-    quad_xy: (4,2) en orden TL,TR,BR,BL (el orden que generas en xywhr_to_poly42_shape coincide).
+    Orders polygon vertices in clockwise direction starting from top-left.
+
+    Given a polygon with 4 vertices in arbitrary order, this function reorders them to:
+    - TL: Top-Left
+    - TR: Top-Right
+    - BR: Bottom-Right
+    - BL: Bottom-Left
+
+    The algorithm uses sum and difference of coordinates to robustly identify corners:
+    - TL has minimum sum of coordinates (x+y)
+    - BR has maximum sum of coordinates (x+y)
+    - TR has maximum difference of coordinates (x-y)
+    - BL has minimum difference of coordinates (x-y)
+
+    Args:
+        poly42: Input polygon vertices as (4,2) numpy array
+
+    Returns:
+        Reordered vertices as (4,2) float32 array in [TL,TR,BR,BL] order.
+        If ordering fails, returns input array unchanged.
     """
-    im = Image.fromarray(base_img)
-    # PIL espera la lista [x0,y0,x1,y1,x2,y2,x3,y3] en coordenadas fuente
-    quad = quad_xy.reshape(-1).tolist()
-    return im.transform((out_w, out_h), Image.QUAD, data=quad, resample=Image.BILINEAR)
+    # Convert to float32 for numerical stability
+    p = poly42.astype(np.float32)
+
+    # Calculate sum (x+y) and difference (x-y) for each vertex
+    coord_sums = p.sum(1)  # For finding TL (min) and BR (max)
+    coord_diffs = p[:, 0] - p[:, 1]  # For disambiguating TR/BL
+
+    # Find top-left and bottom-right vertices
+    tl = p[np.argmin(coord_sums)]
+    br = p[np.argmax(coord_sums)]
+
+    # Get indices of remaining two vertices (not TL or BR)
+    remaining_idx = [
+        i for i in range(4) if not np.allclose(p[i], tl) and not np.allclose(p[i], br)
+    ]
+
+    # Order remaining vertices as TR/BL based on x-y difference
+    if len(remaining_idx) == 2:
+        r0, r1 = remaining_idx
+        # Larger difference (x-y) is TR, smaller is BL
+        tr = p[r0] if coord_diffs[r0] > coord_diffs[r1] else p[r1]
+        bl = p[r1] if coord_diffs[r0] > coord_diffs[r1] else p[r0]
+        return np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
+
+    # Fallback: return original array if ordering fails
+    return p
+
+
+def get_oriented_face_crop(
+    base_img: np.ndarray,
+    poly42: np.ndarray,  # (4,2) coords in base_img space
+    angle_rad: float,  # face orientation angle in radians
+    pivot: str = "tl",  # "tl" (top-left) or "center"
+    crop_out_wh: tuple = (640, 640),  # output size (W,H)
+    border_mode: str = "replicate",  # "replicate" | "black" | "white"
+    scale_crop: float = 1.0,  # 1.0 = tight crop, >1.0 adds margin
+) -> np.ndarray:
+    """
+    Extracts an oriented face crop from an image by rotating and scaling.
+
+    The function performs these steps:
+    1. Chooses a pivot point (top-left corner or center of face)
+    2. Rotates the full image around pivot using warpAffine
+    3. Transforms face vertices using same rotation matrix
+    4. Crops the axis-aligned bounding box of rotated face
+    5. Scales crop to target size using "cover" mode (fills output)
+
+    Args:
+        base_img: Input RGB image as numpy array (H,W,3)
+        poly42: Face polygon vertices as (4,2) array
+        angle_rad: Face orientation angle in radians
+        pivot: Rotation pivot point ("tl" or "center")
+        crop_out_wh: Output dimensions as (width, height)
+        border_mode: Border handling ("replicate", "black", "white")
+        scale_crop: Crop margin factor (1.0 = tight, >1.0 adds context)
+
+    Returns:
+        RGB numpy array of size crop_out_wh containing rotated face,
+        or None if crop dimensions are invalid
+    """
+    assert poly42.shape == (4, 2)
+    H, W = base_img.shape[:2]
+    angle_deg = float(math.degrees(float(angle_rad)))
+
+    # 1. Choose rotation pivot point
+    ordered = order_polygon_vertices_tl_tr_br_bl(poly42)
+    if pivot == "tl":
+        cx, cy = ordered[0]  # top-left corner
+    else:
+        cx, cy = poly42.mean(axis=0)  # geometric center of face
+
+    # 2. Build rotation matrix around pivot + expand canvas
+    R = cv2.getRotationMatrix2D((float(cx), float(cy)), angle_deg, 1.0)  # 2x3
+
+    # Calculate required canvas size by rotating image corners
+    corners = np.array(
+        [[0, 0, 1], [W, 0, 1], [W, H, 1], [0, H, 1]], dtype=np.float32
+    ).T  # 3x4
+    rot_img_xy = (R @ corners).T  # 4x2
+    min_xy = rot_img_xy.min(axis=0)
+    max_xy = rot_img_xy.max(axis=0)
+    tx, ty = -min_xy[0], -min_xy[1]
+    R[:, 2] += [tx, ty]  # translate to ensure positive coordinates
+    newW = int(math.ceil(max_xy[0] - min_xy[0]))
+    newH = int(math.ceil(max_xy[1] - min_xy[1]))
+
+    # Configure border handling
+    if border_mode == "replicate":
+        bmode, bval = cv2.BORDER_REPLICATE, 0
+    elif border_mode == "white":
+        bmode, bval = cv2.BORDER_CONSTANT, (255, 255, 255)
+    else:
+        bmode, bval = cv2.BORDER_CONSTANT, (0, 0, 0)
+
+    # Apply rotation to full image
+    rot_img = cv2.warpAffine(
+        base_img,
+        R,
+        (newW, newH),
+        flags=cv2.INTER_LINEAR,
+        borderMode=bmode,
+        borderValue=bval,
+    )
+
+    # 3. Transform face polygon vertices using same matrix
+    poly_h = np.concatenate(
+        [poly42, np.ones((4, 1), dtype=np.float32)], axis=1
+    )  # (4,3)
+    rot_poly = (R @ poly_h.T).T[:, :2]  # (4,2)
+
+    # 4. Calculate crop region (with optional margin)
+    if scale_crop != 1.0:
+        # Scale based on original OBB axes (use TL-TR and TL-BL sides for W/H)
+        w_side = np.linalg.norm(ordered[1] - ordered[0])
+        h_side = np.linalg.norm(ordered[3] - ordered[0])
+        # Get rotated bbox
+        x_min, y_min = rot_poly.min(axis=0)
+        x_max, y_max = rot_poly.max(axis=0)
+        cx_bb = 0.5 * (x_min + x_max)
+        cy_bb = 0.5 * (y_min + y_max)
+        half_w = 0.5 * w_side * scale_crop
+        half_h = 0.5 * h_side * scale_crop
+        # Rebuild expanded axis-aligned box in rotated space
+        x_min, x_max = cx_bb - half_w, cx_bb + half_w
+        y_min, y_max = cy_bb - half_h, cy_bb + half_h
+    else:
+        x_min, y_min = rot_poly.min(axis=0)
+        x_max, y_max = rot_poly.max(axis=0)
+
+    # Ensure crop bounds are within image
+    x1 = max(int(math.floor(x_min)), 0)
+    y1 = max(int(math.floor(y_min)), 0)
+    x2 = min(int(math.ceil(x_max)), newW)
+    y2 = min(int(math.ceil(y_max)), newH)
+
+    if x2 <= x1 or y2 <= y1:
+        return None  # invalid crop dimensions
+
+    crop = rot_img[y1:y2, x1:x2]  # Extract axis-aligned ROI after rotation
+
+    # 5. Scale to target size using "cover" mode (fills output canvas)
+    Wt, Ht = crop_out_wh
+    ch, cw = crop.shape[:2]
+    s = max(Wt / float(cw), Ht / float(ch))
+    newW2, newH2 = int(round(cw * s)), int(round(ch * s))
+    cover = cv2.resize(crop, (newW2, newH2), interpolation=cv2.INTER_LINEAR)
+    left = max(0, (newW2 - Wt) // 2)
+    top = max(0, (newH2 - Ht) // 2)
+    out = cover[top : top + Ht, left : left + Wt, :]
+
+    return out  # RGB uint8 array of shape (Ht, Wt, 3)

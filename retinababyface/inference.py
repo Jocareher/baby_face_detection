@@ -30,128 +30,9 @@ from utils.visualize import (
     xywhr_to_poly42_shape,
     scale_polys,
     scale_xywhr_boxes,
-    crop_obb,
-    polygon_to_size
+    get_oriented_face_crop,
 )
 import config
-
-import cv2
-import numpy as np
-import math
-from pathlib import Path
-from PIL import Image
-
-def _order_tl_tr_br_bl(poly42: np.ndarray) -> np.ndarray:
-    """Devuelve vértices en orden TL,TR,BR,BL (robusto). poly42: (4,2)."""
-    p = poly42.astype(np.float32)
-    s = p.sum(1)
-    d = p[:, 0] - p[:, 1]
-    tl = p[np.argmin(s)]
-    br = p[np.argmax(s)]
-    idx_rem = [k for k in range(4) if not np.allclose(p[k], tl) and not np.allclose(p[k], br)]
-    if len(idx_rem) == 2:
-        r0, r1 = idx_rem
-        tr = p[r0] if d[r0] > d[r1] else p[r1]
-        bl = p[r1] if d[r0] > d[r1] else p[r0]
-        return np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
-    return p  # fallback: como venga
-
-def _rotate_like_A_with_poly(base_img: np.ndarray,
-                             poly42: np.ndarray,         # (4,2) en coords de base_img
-                             angle_rad: float,           # ángulo de tu head (radianes)
-                             pivot: str = "tl",          # "tl" (esquina superior izq) o "center"
-                             crop_out_wh: tuple = (640, 640),
-                             border_mode: str = "replicate",  # "replicate" | "black" | "white"
-                             scale_crop: float = 1.0):   # 1.0 = sin margen extra
-    """
-    1) Elegimos pivote (TL o centro de la OBB).
-    2) Rotamos la imagen completa con warpAffine (como A), expandiendo lienzo para no cortar.
-    3) Transformamos los 4 vértices con la MISMA matriz.
-    4) Recortamos el AABB del polígono rotado.
-    5) Escalamos con 'cover' a crop_out_wh para que LLENE toda la salida.
-    """
-    assert poly42.shape == (4, 2)
-    H, W = base_img.shape[:2]
-    angle_deg = float(math.degrees(float(angle_rad)))
-
-    # 1) Pivote
-    ordered = _order_tl_tr_br_bl(poly42)
-    if pivot == "tl":
-        cx, cy = ordered[0]  # esquina TL
-    else:
-        cx, cy = poly42.mean(axis=0)  # centro geométrico de la OBB
-
-    # 2) Matriz de rotación alrededor del pivote + expansión de lienzo
-    R = cv2.getRotationMatrix2D((float(cx), float(cy)), angle_deg, 1.0)  # 2x3
-
-    # Para expandir el canvas calculamos las esquinas de la IMAGEN rotadas
-    corners = np.array([[0, 0, 1],
-                        [W, 0, 1],
-                        [W, H, 1],
-                        [0, H, 1]], dtype=np.float32).T  # 3x4
-    rot_img_xy = (R @ corners).T  # 4x2
-    min_xy = rot_img_xy.min(axis=0)
-    max_xy = rot_img_xy.max(axis=0)
-    tx, ty = -min_xy[0], -min_xy[1]
-    R[:, 2] += [tx, ty]  # trasladamos para que todo quede en coords positivas
-    newW = int(math.ceil(max_xy[0] - min_xy[0]))
-    newH = int(math.ceil(max_xy[1] - min_xy[1]))
-
-    if border_mode == "replicate":
-        bmode, bval = cv2.BORDER_REPLICATE, 0
-    elif border_mode == "white":
-        bmode, bval = cv2.BORDER_CONSTANT, (255, 255, 255)
-    else:
-        bmode, bval = cv2.BORDER_CONSTANT, (0, 0, 0)
-
-    rot_img = cv2.warpAffine(base_img, R, (newW, newH),
-                             flags=cv2.INTER_LINEAR, borderMode=bmode, borderValue=bval)
-
-    # 3) Transformar también los 4 vértices de la OBB
-    poly_h = np.concatenate([poly42, np.ones((4, 1), dtype=np.float32)], axis=1)  # (4,3)
-    rot_poly = (R @ poly_h.T).T[:, :2]  # (4,2)
-
-    # 4) AABB del polígono rotado (opcional margen)
-    if scale_crop != 1.0:
-        # ampliar según ejes de la OBB original (usamos lados TL-TR y TL-BL para estimar ancho/alto)
-        w_side = np.linalg.norm(ordered[1] - ordered[0])
-        h_side = np.linalg.norm(ordered[3] - ordered[0])
-        # bbox rotada
-        x_min, y_min = rot_poly.min(axis=0)
-        x_max, y_max = rot_poly.max(axis=0)
-        cx_bb = 0.5 * (x_min + x_max)
-        cy_bb = 0.5 * (y_min + y_max)
-        half_w = 0.5 * w_side * scale_crop
-        half_h = 0.5 * h_side * scale_crop
-        # reconstruimos caja expandida alineada a ejes en el espacio rotado
-        x_min, x_max = cx_bb - half_w, cx_bb + half_w
-        y_min, y_max = cy_bb - half_h, cy_bb + half_h
-    else:
-        x_min, y_min = rot_poly.min(axis=0)
-        x_max, y_max = rot_poly.max(axis=0)
-
-    x1 = max(int(math.floor(x_min)), 0)
-    y1 = max(int(math.floor(y_min)), 0)
-    x2 = min(int(math.ceil(x_max)), newW)
-    y2 = min(int(math.ceil(y_max)), newH)
-
-    if x2 <= x1 or y2 <= y1:
-        return None  # nada que recortar
-
-    crop = rot_img[y1:y2, x1:x2]  # ROI eje-alineada tras rotación
-
-    # 5) COVER a salida fija (e.g., 640×640): llena el canvas sin letterbox
-    Wt, Ht = crop_out_wh
-    ch, cw = crop.shape[:2]
-    s = max(Wt / float(cw), Ht / float(ch))
-    newW2, newH2 = int(round(cw * s)), int(round(ch * s))
-    cover = cv2.resize(crop, (newW2, newH2), interpolation=cv2.INTER_LINEAR)
-    left = max(0, (newW2 - Wt) // 2)
-    top  = max(0, (newH2 - Ht) // 2)
-    out = cover[top:top + Ht, left:left + Wt, :]
-
-    return out  # RGB uint8 (Ht, Wt, 3)
-
 
 
 @torch.inference_mode()
@@ -175,6 +56,7 @@ def export_predictions(
     This function performs inference on a dataset and saves:
     1. Annotated images with detected faces and their orientations
     2. Text files with detection coordinates and metadata
+    3. Cropped face images per detection
 
     The output can be saved in two coordinate scales:
     - "original": Native resolution of input images
@@ -197,6 +79,7 @@ def export_predictions(
     Outputs:
         - out_dir/images/: Directory with annotated images
         - out_dir/labels/: Directory with text files containing detections
+        - out_dir/crops/: Directory with cropped face images per class
     """
 
     # Create output directories
@@ -385,38 +268,57 @@ def export_predictions(
                     except Exception as e:
                         errors += 1
                         tqdm.write(f"❌  Saving error for {p}: {e}")
-                    
 
-
-                    # --- CROPS 640x640: recorte OBB -> rotar desde TL -> cover 640x640 ---
-                    # --- CROPS 640×640 con “A sobre 8-puntos”: rotar imagen, transformar poly y recortar ---
                     if polys_for_img is not None and polys_for_img.size > 0:
-                        import cv2
-                        Wr_target, Hr_target = resize_size  # (640,640)
+                        # Model input size (width, height) used for the face crops (e.g., 640x640)
+                        Wr_target, Hr_target = resize_size
                         for j in range(polys_for_img.shape[0]):
-                            poly = polys_for_img[j].astype(np.float32)  # (4,2)
-                            # ángulo desde tus boxes (radianes). Si no lo tienes, usa 0.0
-                            theta = float(boxes_for_txt[j, 4]) if (boxes_for_txt is not None and boxes_for_txt.size > 0) else 0.0
+                            # polygon for this detection as (4,2) float32 array
+                            poly = polys_for_img[j].astype(np.float32)
 
-                            crop640 = _rotate_like_A_with_poly(
+                            # angle from the detected box in radians; fallback to 0.0 if not present
+                            theta = (
+                                float(boxes_for_txt[j, 4])
+                                if (
+                                    boxes_for_txt is not None and boxes_for_txt.size > 0
+                                )
+                                else 0.0
+                            )
+
+                            # Extract an oriented crop of the face using the polygon and rotation angle.
+                            # - base_img: source image (numpy array HxWxC)
+                            # - poly42: polygon in 4x2 format (corner coordinates)
+                            # - angle_rad: rotation to apply (radians)
+                            # - pivot: reference point for rotation ("tl" = top-left, or "center")
+                            # - crop_out_wh: output crop size (W,H)
+                            # - border_mode: how to fill borders when rotating ("replicate"/"black"/"white")
+                            # - scale_crop: scale factor to add context (>1.0 adds margin)
+                            crop640 = get_oriented_face_crop(
                                 base_img=base_img,
                                 poly42=poly,
                                 angle_rad=theta,
-                                pivot="tl",                      # o "center" si prefieres
+                                pivot="tl",  # or "center" if preferred
                                 crop_out_wh=(Wr_target, Hr_target),
-                                border_mode="replicate",         # "replicate" (sin negro) | "black" | "white"
-                                scale_crop=1.0                   # 1.0 sin margen; >1.0 añade contexto
+                                border_mode="replicate",  # "replicate" (no black borders) | "black" | "white"
+                                scale_crop=1.0,  # 1.0 = no margin; >1.0 adds context
                             )
+                            # Skip if crop extraction failed
                             if crop640 is None:
                                 continue
 
-                            cls = int(labels_np[j]) if (labels_np is not None and labels_np.size > j) else 0
+                            # Determine class index for this detection (fallback to 0)
+                            cls = (
+                                int(labels_np[j])
+                                if (labels_np is not None and labels_np.size > j)
+                                else 0
+                            )
+                            # Prepare class-specific output directory for crops
                             cls_dir = Path(out_dir) / "crops" / f"{cls}"
                             cls_dir.mkdir(parents=True, exist_ok=True)
-                            Image.fromarray(crop640).save(cls_dir / f"{stem}_{j:02d}.jpg")
-
-
-                                                
+                            # Save the crop as a JPEG with an index in the filename
+                            Image.fromarray(crop640).save(
+                                cls_dir / f"{stem}_{j:02d}.jpg"
+                            )
 
                     pbar_imgs.update(1)
                     global_idx += 1

@@ -159,7 +159,7 @@ def resolve_image_path(
                 try:
                     if isinstance(obj, (list, tuple)) and len(obj) > global_idx:
                         item = obj[global_idx]
-                        # Si es (path, label) u otra tupla, tomar el path en [0]
+                        # Si es (path, label) u otra tupla, tomar el path en [0]s
                         if isinstance(item, (list, tuple)) and item and isinstance(item[0], (str, Path)):
                             return Path(item[0])
                         if isinstance(item, (str, Path)):

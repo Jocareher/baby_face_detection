@@ -69,147 +69,168 @@ def export_predictions(
     Wr, Hr = resize_size
     nms_image_size = (Hr, Wr)  # la mayoría del post-proceso espera (H, W)
 
-    dataset = loader.dataset
-    processed = saved = empty_batches = no_dets = errors = 0
-    global_idx = 0
-    warned_fallback_resized = False  # avisar una sola vez si pediste "original" y no hay archivo
+    dataset = loader.dataset  # <- pásalo a resolve_image_path
 
-    tqdm.write(f"🧠  Device: {device}")
-    tqdm.write(f"📦  Dataloader: {len(loader)} batches | bs={getattr(loader,'batch_size','?')}")
-    tqdm.write(f"📐  Resize (W,H)={resize_size} | NMS(H,W)={nms_image_size}")
-    tqdm.write(f"🗃️  Output: {out_imgs} / {out_lbls}")
+    # --- contadores bonitos ---
+    processed = 0
+    saved = 0
+    empty_batches = 0
+    no_dets = 0
+    errors = 0
+
+    tqdm.write(f"🧠  Inference on device: {device}")
+    tqdm.write(f"📦  Dataloader: {len(loader)} batches | batch_size={getattr(loader, 'batch_size', '?')}")
+    tqdm.write(f"🗋  Output dir: {out_dir}  →  images/, labels/")
+    tqdm.write(f"📐  Resize size (W,H): {resize_size} | NMS uses (H,W)={nms_image_size}")
     tqdm.write(f"📏  Output scale: {output_scale}")
 
-    for batch in tqdm(loader, desc="⚙️  Batches", unit="batch"):
-        imgs = batch["image"].to(device, non_blocking=True)
-        if imgs.numel() == 0:
-            empty_batches += 1
-            continue
+    with tqdm(total=len(loader), desc="⚙️  Batches", unit="batch") as pbar_batches:
+        global_idx = 0
 
-        # Inference + postproc
-        try:
-            outputs = infer_with_rotated_nms(
-                model_or_preds=model,
-                images=imgs,
-                anchors_xy=anchors_xy,
-                image_size=nms_image_size,
-                face_thres=face_thres,
-                baby_thres=baby_thres,
-                iou_thres=iou_thres,
-                class_thres=class_thres,
-            )
-        except Exception as e:
-            errors += 1
-            tqdm.write(f"❌  Inference error: {e}")
-            global_idx += imgs.size(0)
-            continue
-
-        B = imgs.size(0)
-        for b in range(B):
-            processed += 1
-
-            # 1) Resolver path ABSOLUTO usando *tu* resolve_image_path (sin reconstrucciones)
-            p = resolve_image_path(batch, b, global_idx, dataset=dataset)  # <- TU función
-            # p puede ser un fallback tipo sample_XXXX.jpg (no existente en disco)
-
-            # 2) Base image + escala
-            try:
-                if output_scale == "original" and p.is_file():
-                    with Image.open(p) as im:
-                        im = im.convert("RGB")
-                        W0, H0 = im.size
-                        base_img = np.asarray(im)   # original
-                    sx, sy = float(W0) / float(Wr), float(H0) / float(Hr)
-                    stem, ext = p.stem, (p.suffix if p.suffix else ".jpg")
-                else:
-                    # 'resized' o pediste 'original' pero p no existe → caemos a resized y avisamos una vez
-                    if output_scale == "original" and not p.is_file() and not warned_fallback_resized:
-                        tqdm.write("⚠️  Requested 'original' scale but no absolute file on disk; drawing/saving in 'resized' scale.")
-                        warned_fallback_resized = True
-
-                    base_img = denormalize_image(imgs[b])  # tu función
-                    sx, sy = 1.0, 1.0
-                    stem, ext = (p.stem, (p.suffix if p.suffix else ".jpg")) if p is not None else (f"sample_{processed:06d}", ".jpg")
-            except Exception as e:
-                errors += 1
-                tqdm.write(f"❌  Base image error ({p}): {e}")
-                global_idx += 1
+        for batch in loader:
+            # imágenes a device
+            imgs = batch["image"].to(device, non_blocking=True)
+            if imgs.numel() == 0:
+                empty_batches += 1
+                pbar_batches.update(1)
                 continue
 
-            # 3) Predicciones de esta imagen
-            out_b = outputs[b]
-            boxes_np  = to_numpy(out_b.get("boxes"))     # (N,5) -> cx,cy,w,h,theta
-            labels_np = to_numpy(out_b.get("labels"))
-            scores_np = to_numpy(out_b.get("scores"))
-            polys_np  = to_numpy(out_b.get("polygons"))  # (N,8) o (N,4,2)
-
-            polys_42 = ensure_polygons_42_shape(polys_np)
-            if (polys_42 is None or polys_42.size == 0) and boxes_np is not None and boxes_np.size > 0:
-                N = boxes_np.shape[0]
-                polys_42 = np.stack([xywhr_to_poly42_shape(*boxes_np[i]) for i in range(N)], axis=0).astype(np.float32)
-
-            # 4) Escala de guardado
-            if output_scale == "original" and (sx != 1.0 or sy != 1.0):
-                polys_for_img = scale_polys(polys_42, sx, sy)
-                boxes_for_txt = scale_xywhr_boxes(boxes_np, sx, sy) if boxes_np is not None else None
-            else:
-                polys_for_img = polys_42
-                boxes_for_txt = boxes_np
-
-            # 5) Dibujar y guardar
+            # inferencia + NMS
             try:
-                if polys_for_img is not None and polys_for_img.size > 0:
-                    angles = boxes_np[:, 4] if (boxes_np is not None and boxes_np.size > 0) else np.zeros((0,), dtype=np.float32)
-                    lbls = labels_np if labels_np is not None else np.zeros((polys_for_img.shape[0],), dtype=np.int64)
-                    scrs = scores_np if scores_np is not None else np.zeros((polys_for_img.shape[0],), dtype=np.float32)
-                    painted = draw_predictions_on_image(
-                        base_img=base_img,
-                        polygons_xy=polys_for_img,
-                        labels=lbls,
-                        scores=scrs,
-                        angles_rad=angles,
-                        labels_map=labels_map,
-                    )
-                else:
-                    painted = base_img
-                    no_dets += 1
-
-                Image.fromarray(painted).save(out_imgs / f"{stem}{ext}")
-                write_predictions_txt(
-                    out_labels_dir=out_lbls,
-                    stem=stem,
-                    boxes_xywhr=boxes_for_txt,
-                    polygons_42=polys_for_img,
-                    labels=labels_np,
-                    scores=scores_np,
+                outputs = infer_with_rotated_nms(
+                    model_or_preds=model,
+                    images=imgs,
+                    anchors_xy=anchors_xy,
+                    image_size=nms_image_size,
+                    face_thres=face_thres,
+                    baby_thres=baby_thres,
+                    iou_thres=iou_thres,
+                    class_thres=class_thres,
                 )
-                saved += 1
             except Exception as e:
                 errors += 1
-                tqdm.write(f"❌  Save error ({stem}{ext}): {e}")
+                tqdm.write(f"❌  Inference error in batch: {e}")
+                pbar_batches.update(1)
+                continue
 
-            global_idx += 1
+            B = imgs.size(0)
+            with tqdm(total=B, desc="   🖼️  Images", leave=False, unit="img") as pbar_imgs:
+                for b in range(B):
+                    processed += 1
 
-    # resumen
+                    # 1) resolver path robusto
+                    p = resolve_image_path(batch, b, global_idx, dataset=dataset)
+                    stem, ext = p.stem, (p.suffix if p.suffix else ".jpg")
+
+                    # 2) base_img + escala
+                    try:
+                        if output_scale == "original" and p.exists():
+                            # leer original
+                            with Image.open(p) as im:
+                                im = im.convert("RGB")
+                                W0, H0 = im.size
+                                base_img = np.asarray(im)
+                            sx, sy = float(W0) / float(Wr), float(H0) / float(Hr)
+                        else:
+                            # resized o ruta no existente → desnormalizar tensor
+                            base_img = denormalize_image(imgs[b])
+                            sx, sy = 1.0, 1.0
+                            if not ext:
+                                ext = ".jpg"
+                    except Exception as e:
+                        errors += 1
+                        tqdm.write(f"❌  Could not prepare base image for {p}: {e}")
+                        pbar_imgs.update(1)
+                        global_idx += 1
+                        continue
+
+                    # 3) obtener preds
+                    try:
+                        out_b = outputs[b]
+                        boxes_np  = to_numpy(out_b.get("boxes"))     # (N,5) -> cx,cy,w,h,theta
+                        labels_np = to_numpy(out_b.get("labels"))
+                        scores_np = to_numpy(out_b.get("scores"))
+                        polys_np  = to_numpy(out_b.get("polygons"))  # (N,8) or (N,4,2)
+
+                        # normalizar/reconstruir polígonos
+                        polys_42 = ensure_polygons_42_shape(polys_np)
+                        if (polys_42 is None or polys_42.size == 0) and boxes_np is not None and boxes_np.size > 0:
+                            N = boxes_np.shape[0]
+                            polys_42 = np.stack(
+                                [xywhr_to_poly42_shape(*boxes_np[i]) for i in range(N)],
+                                axis=0, dtype=np.float32
+                            )
+                    except Exception as e:
+                        errors += 1
+                        tqdm.write(f"❌  Postprocess error for {p}: {e}")
+                        pbar_imgs.update(1)
+                        global_idx += 1
+                        continue
+
+                    # 4) escalar a la escala de guardado (original o resized)
+                    if output_scale == "original" and (sx != 1.0 or sy != 1.0):
+                        polys_for_img = scale_polys(polys_42, sx, sy)
+                        boxes_for_txt = scale_xywhr_boxes(boxes_np, sx, sy) if boxes_np is not None else None
+                    else:
+                        polys_for_img = polys_42
+                        boxes_for_txt = boxes_np
+
+                    # 5) dibujar y guardar
+                    try:
+                        if polys_for_img is not None and polys_for_img.size > 0:
+                            angles = boxes_np[:, 4] if (boxes_np is not None and boxes_np.size > 0) else np.zeros((0,), dtype=np.float32)
+                            lbls = labels_np if labels_np is not None else np.zeros((polys_for_img.shape[0],), dtype=np.int64)
+                            scrs = scores_np if scores_np is not None else np.zeros((polys_for_img.shape[0],), dtype=np.float32)
+                            painted = draw_predictions_on_image(
+                                base_img=base_img,
+                                polygons_xy=polys_for_img,
+                                labels=lbls,
+                                scores=scrs,
+                                angles_rad=angles,
+                                labels_map=labels_map,
+                            )
+                        else:
+                            painted = base_img
+                            no_dets += 1
+
+                        Image.fromarray(painted).save(out_imgs / f"{stem}{ext}")
+
+                        write_predictions_txt(
+                            out_labels_dir=out_lbls,
+                            stem=stem,
+                            boxes_xywhr=boxes_for_txt,
+                            polygons_42=polys_for_img,
+                            labels=labels_np,
+                            scores=scores_np,
+                        )
+                        saved += 1
+
+                    except Exception as e:
+                        errors += 1
+                        tqdm.write(f"❌  Saving error for {p}: {e}")
+
+                    pbar_imgs.update(1)
+                    global_idx += 1
+
+            pbar_batches.update(1)
+
     tqdm.write("✅  Export complete")
-    tqdm.write(f"   • Processed : {processed}")
-    tqdm.write(f"   • Saved     : {saved}")
-    tqdm.write(f"   • No dets   : {no_dets}")
-    tqdm.write(f"   • Empty bch : {empty_batches}")
-    tqdm.write(f"   • Errors    : {errors}")
-    tqdm.write(f"📂 Images: {out_imgs}")
-    tqdm.write(f"📝 Labels: {out_lbls}")
+    tqdm.write(f"   • Processed images : {processed}")
+    tqdm.write(f"   • Saved (img+txt)  : {saved}")
+    tqdm.write(f"   • No detections    : {no_dets}")
+    tqdm.write(f"   • Empty batches    : {empty_batches}")
+    tqdm.write(f"   • Errors           : {errors}")
+    tqdm.write(f"📂  Images: {out_imgs}")
+    tqdm.write(f"📝  Labels: {out_lbls}")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Export RetinaBabyFace predictions (images + txt).")
-    parser.add_argument("--root_dir",   type=str, help="Dataset root (for BabyFacesDataset mode).")
     parser.add_argument("--images_dir", type=str, help="Images-only mode: directory with images (recursively).")
     parser.add_argument("--output_dir", type=str, default="inference_export", help="Folder to save images and txt.")
     parser.add_argument("--backbone",   type=str, default="densenet121",
                         choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit", "vggface2"])
     parser.add_argument("--out_channel", type=int, default=128)  # replace with config.DEFAULT_OUT_CHANNELS if you have it
-    parser.add_argument("--split", type=str, default="test", choices={"train", "val", "test"},
-                        help="Split to load from BabyFacesDataset.")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE)
     parser.add_argument("--face_thres", type=float, default=config.FACE_THRESH)
@@ -242,28 +263,17 @@ def main():
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0] # replace with your config.PRECOMPUTED_OBB_STATS key if you have it
 
     # === Build dataset/loader in the selected mode ===
-    if args.images_dir is not None:
-        # Images-only (no labels)
-        safe_transform = T.Compose([T.Resize(resize_size), T.ToTensor(), T.Normalize(mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD)])
-        dataset = ImageFolderDataset(images_dir=args.images_dir, transform=safe_transform)
-        loader = DataLoader(dataset,
-                            batch_size=args.batch_size,
-                            shuffle=False,
-                            collate_fn=images_only_collate,
-                            num_workers=4,
-                            pin_memory=True)
-        print(f"[INFO] Loaded {len(dataset)} images from '{args.images_dir}' (images-only mode).")
-    else:
-        # BabyFacesDataset mode (uses your dataset + collate + transform)
-        val_transform = config.get_val_transform(img_size=resize_size)  # <-- your validated transform
-        dataset = BabyFacesDataset(root_dir=args.root_dir, split=args.split, transform=val_transform)
-        loader = DataLoader(dataset,
-                            batch_size=args.batch_size,
-                            shuffle=False,
-                            collate_fn=custom_collate,
-                            num_workers=4,
-                            pin_memory=True)
-        print(f"[INFO] Loaded {len(dataset)} samples from split '{args.split}'.")
+
+    # Images-only (no labels)
+    test_transform = T.Compose([T.Resize(resize_size), T.ToTensor(), T.Normalize(mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD)])
+    dataset = ImageFolderDataset(images_dir=args.images_dir, transform=test_transform)
+    loader = DataLoader(dataset,
+                        batch_size=args.batch_size,
+                        shuffle=False,
+                        collate_fn=images_only_collate,
+                        num_workers=4,
+                        pin_memory=True)
+    print(f"[INFO] Loaded {len(dataset)} images from '{args.images_dir}' (images-only mode).")
 
     # === Model ===place
     model = RetinaBabyFace(backbone_name=args.backbone, out_channel=args.out_channel, pretrained=False).to(device)

@@ -269,105 +269,88 @@ def export_predictions(
                         tqdm.write(f"❌  Saving error for {p}: {e}")
                     
 
-                    # (lo calculamos tras ordenar)
-                    pad_extra = None  # se fija más abajo
 
+                    # --- CROPS 640x640: recorte OBB -> rotar desde TL -> cover 640x640 ---
                     if polys_for_img is not None and polys_for_img.size > 0:
                         import cv2
 
                         N = polys_for_img.shape[0]
-                        Hsrc, Wsrc = base_img.shape[:2]  # RGB uint8
-                        Wr_target, Hr_target = resize_size  # p.ej. (640,640)
-
-                        # prepad la imagen una sola vez, usaremos el mismo para todos los crops
-                        # (tomamos un pad generoso y listo)
-                        PAD = 256  # puedes subir o bajar; 128–256 suele ir bien
-                        padded = cv2.copyMakeBorder(
-                            base_img, PAD, PAD, PAD, PAD,
-                            borderType=cv2.BORDER_REFLECT_101
-                        )
-                        Hpad, Wpad = padded.shape[:2]
+                        Wr_target, Hr_target = resize_size  # típicamente (640,640)
 
                         for j in range(N):
-                            poly = polys_for_img[j].astype(np.float32)  # (4,2) en el orden que venga
+                            poly = polys_for_img[j].astype(np.float32)  # (4,2) como venga
 
-                            # --- 1) Ordenar a TL,TR,BR,BL (TL primero) ---
+                            # 1) Ordenar a TL,TR,BR,BL solo para definir el warp (la rotación usará TL)
                             s = poly.sum(1)
                             d = (poly[:, 0] - poly[:, 1])
                             tl = poly[np.argmin(s)]
                             br = poly[np.argmax(s)]
                             remain_idx = [k for k in range(4) if not np.allclose(poly[k], tl) and not np.allclose(poly[k], br)]
-                            if len(remain_idx) != 2:
-                                ordered = poly.copy()
-                            else:
+                            if len(remain_idx) == 2:
                                 r0, r1 = remain_idx
                                 tr = poly[r0] if d[r0] > d[r1] else poly[r1]
                                 bl = poly[r1] if d[r0] > d[r1] else poly[r0]
                                 ordered = np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
+                            else:
+                                ordered = poly.copy()
 
-                            # --- 1b) sumamos PAD a las coords porque pre-padeamos la imagen ---
-                            ordered_pad = ordered + np.array([PAD, PAD], dtype=np.float32)
-
-                            # --- 2) tamaño de rect eje-alineado desde TL (con margen suave) ---
-                            scale_crop = 1.20  # contexto adicional
+                            # 2) Tamaño del rect eje-alineado (puedes quitar el margen si no quieres contexto extra)
+                            scale_crop = 1.0  # 1.0 = sin margen; 1.1 ~ 10% más contexto
                             wj = max(2, int(round(scale_crop * np.linalg.norm(ordered[1] - ordered[0]))))
                             hj = max(2, int(round(scale_crop * np.linalg.norm(ordered[3] - ordered[0]))))
 
-                            dst = np.array(
-                                [[0, 0], [wj - 1, 0], [wj - 1, hj - 1], [0, hj - 1]],
-                                dtype=np.float32
+                            dst = np.array([[0, 0], [wj - 1, 0], [wj - 1, hj - 1], [0, hj - 1]], dtype=np.float32)
+
+                            # 3) Warp OBB -> rect eje-alineado, sin rellenos raros (negro o blanco)
+                            rect = cv2.warpPerspective(
+                                base_img, cv2.getPerspectiveTransform(ordered, dst), (wj, hj),
+                                flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=(0, 0, 0)  # negro; usa (255,255,255) para blanco
                             )
 
-                            # --- 3) Homografía OBB→rect (sin barrido: REFLECT_101) ---
-                            M = cv2.getPerspectiveTransform(ordered_pad, dst)
-                            rect = cv2.warpPerspective(
-                                padded, M, (wj, hj),
-                                flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_REFLECT_101
-                            )  # RGB
-
-                            # --- 4) Rotar ALREDEDOR de TL=(0,0) con canvas expandido ---
+                            # 4) Rotar alrededor de la ESQUINA TL = (0,0) con lienzo expandido
                             if boxes_for_txt is not None and boxes_for_txt.size > 0:
                                 theta_deg = float(math.degrees(float(boxes_for_txt[j, 4])))
                             else:
                                 theta_deg = 0.0
 
-                            R = cv2.getRotationMatrix2D(center=(0, 0), angle=theta_deg, scale=1.0)
+                            R = cv2.getRotationMatrix2D(center=(0, 0), angle=theta_deg, scale=1.0)  # 2x3
 
+                            # calcular tamaño de canvas tras rotación y trasladar a coords positivas
                             corners = np.array([[0, 0, 1], [wj, 0, 1], [wj, hj, 1], [0, hj, 1]], dtype=np.float32).T  # 3x4
-                            rot_corners = (R @ corners).T  # 4x2
-                            min_xy = rot_corners.min(axis=0)
-                            max_xy = rot_corners.max(axis=0)
-
-                            tx, ty = -min_xy[0], -min_xy[1]
-                            R[:, 2] += [tx, ty]
+                            rot_xy = (R @ corners).T[:, :2]  # 4x2
+                            min_xy = rot_xy.min(axis=0)
+                            max_xy = rot_xy.max(axis=0)
+                            R[:, 2] += (-min_xy[0], -min_xy[1])
                             new_w = int(math.ceil(max_xy[0] - min_xy[0]))
                             new_h = int(math.ceil(max_xy[1] - min_xy[1]))
 
                             rot = cv2.warpAffine(
                                 rect, R, (new_w, new_h),
                                 flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_REFLECT_101  # ¡sin duplicados feos!
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=(0, 0, 0)  # negro o blanco
                             )
 
-                            # --- 5) Resize "COVER" + centro-crop a 640x640 (ocupa todo el canvas) ---
-                            H_canvas, W_canvas = 640, 640
+                            # 5) ESCALAR “COVER” a 640x640 y centro-crop (la ROI llena todo el canvas)
+                            Hc, Wc = 640, 640
                             h, w = rot.shape[:2]
-                            scale = max(W_canvas / float(w), H_canvas / float(h))
+                            scale = max(Wc / float(w), Hc / float(h))
                             newW = int(round(w * scale))
                             newH = int(round(h * scale))
-                            resized = cv2.resize(rot, (newW, newH), interpolation=cv2.INTER_LINEAR)
+                            cover = cv2.resize(rot, (newW, newH), interpolation=cv2.INTER_LINEAR)
 
-                            left = max(0, (newW - W_canvas) // 2)
-                            top  = max(0, (newH - H_canvas) // 2)
-                            crop_final = resized[top:top + H_canvas, left:left + W_canvas, :]
+                            left = max(0, (newW - Wc) // 2)
+                            top  = max(0, (newH - Hc) // 2)
+                            crop_final = cover[top:top + Hc, left:left + Wc, :]  # (640,640,3) RGB
 
-                            # --- 6) Guardar a crops/<class_idx>/ ---
+                            # 6) Guardar por class_idx en crops/<cls>/
                             cls = int(labels_np[j]) if (labels_np is not None and labels_np.size > j) else 0
                             cls_dir = Path(out_dir) / "crops" / f"{cls}"
                             cls_dir.mkdir(parents=True, exist_ok=True)
-                            # nombre único por imagen y obb
                             Image.fromarray(crop_final).save(cls_dir / f"{stem}_{j:02d}.jpg")
+
                                                 
 
                     pbar_imgs.update(1)

@@ -652,137 +652,63 @@ def draw_predictions_on_image(
 def write_predictions_txt(
     out_labels_dir: Path,
     stem: str,
-    boxes_xywhr: Optional[np.ndarray],  # (N,5) -> cx,cy,w,h,theta(rad)
-    polygons_42: Optional[np.ndarray],  # (N,4,2) vertices in final image coordinates
-    labels: Optional[np.ndarray],  # (N,)
-    scores: Optional[np.ndarray],  # (N,)
+    boxes_xywhr: Optional[np.ndarray],   # (N,5) -> cx,cy,w,h,theta(rad)
+    polygons_42: Optional[np.ndarray],   # (N,4,2) in the SAME scale as the saved image
+    labels: Optional[np.ndarray],        # (N,)
+    scores: Optional[np.ndarray],        # (N,)
 ) -> None:
     """
-    Writes detection predictions to a text file in a standardized format.
+    Writes predictions to <stem>.txt with format:
+      <class_id> x1 y1 x2 y2 x3 y3 x4 y4 angle_rad score
 
-    The format written for each line is:
-    <class_id> x1 y1 x2 y2 x3 y3 x4 y4 angle_rad score
-
-    The function determines the geometry to use based on availability:
-    1. Prioritizes polygon vertices (N, 4, 2).
-    2. If polygons are missing, it attempts to reconstruct them from xywhr boxes (N, 5).
-    3. If no geometric data (neither polygons nor boxes) is available, it creates
-       an empty text file and returns.
-
-    Coordinates (x1..y4) are rounded to integers. Angle and score are written
-    with 6 decimal places.
-
-    Args:
-        out_labels_dir: The directory where the output file should be saved.
-        stem: The base name for the output file (e.g., 'image_001' for 'image_001.txt').
-        boxes_xywhr: Optional array of rotated box parameters (center, size, angle).
-        polygons_42: Optional array of polygon vertices.
-        labels: Optional array of integer class labels.
-        scores: Optional array of prediction confidence scores.
-
-    Raises:
-        AssertionError: If boxes are provided but are not in the expected (N, 5) shape
-                        when polygon reconstruction is attempted.
+    If polygons are missing, they are reconstructed from boxes (if available).
+    Coordinates are saved exactly in the coordinate system of the passed arrays.
     """
-    # 1. Setup the output directory and file path
     out_labels_dir.mkdir(parents=True, exist_ok=True)
     txt_path = out_labels_dir / f"{stem}.txt"
 
-    # 2. Standardize and cast inputs (convert to NumPy arrays and enforce dtypes)
-    boxes_np = to_numpy(boxes_xywhr) if boxes_xywhr is not None else None
+    boxes_np  = to_numpy(boxes_xywhr) if boxes_xywhr is not None else None
     labels_np = to_numpy(labels).astype(np.int64) if labels is not None else None
     scores_np = to_numpy(scores).astype(np.float32) if scores is not None else None
+    polys_42  = ensure_polygons_42_shape(polygons_42) if polygons_42 is not None else None
 
-    # Ensure polygons are in the standardized (N, 4, 2) format
-    polys_42 = (
-        ensure_polygons_42_shape(polygons_42) if polygons_42 is not None else None
-    )
-
-    # 3. Check for absence of geometric data
-    no_polys = (polys_42 is None) or (polys_42.size == 0)
-    no_boxes = (boxes_np is None) or (boxes_np.size == 0)
-
-    if no_polys and no_boxes:
-        # Write an empty file and exit if no geometry is present
-        with open(txt_path, "w") as f:
-            pass
-        return
-
-    # 4. Determine provisional N (number of predictions) based on available data
-    Ns = []
-    if polys_42 is not None and polys_42.size > 0:
-        Ns.append(polys_42.shape[0])
-    if boxes_np is not None and boxes_np.size > 0:
-        Ns.append(boxes_np.shape[0])
-    if labels_np is not None:
-        Ns.append(labels_np.shape[0])
-    if scores_np is not None:
-        Ns.append(scores_np.shape[0])
-    N = min(Ns) if Ns else 0
-
-    # 5. Reconstruct polygons if necessary (Polygons missing AND Boxes available AND N > 0)
-    is_polys_missing = polys_42 is None or polys_42.size == 0
-    is_boxes_available = boxes_np is not None and boxes_np.size > 0
-
-    if N > 0 and is_polys_missing and is_boxes_available:
-        assert (
-            boxes_np.shape[1] == 5
-        ), "Boxes must be in (N, 5) format (cx, cy, w, h, theta) for reconstruction."
+    if (polys_42 is None or polys_42.size == 0) and (boxes_np is not None and boxes_np.size > 0):
+        # Reconstruct from boxes
+        N = boxes_np.shape[0]
         polys_42 = np.zeros((N, 4, 2), dtype=np.float32)
-
-        # Iterate through boxes and convert each (cx, cy, w, h, theta) to (4, 2) vertices
         for i in range(N):
             cx, cy, w, h, th = boxes_np[i].tolist()
-            polys_42[i] = xywhr_to_poly42_shape(
-                cx, cy, w, h, th
-            )  # Utility function call
+            polys_42[i] = xywhr_to_poly42_shape(cx, cy, w, h, th)
 
-    # 6. Final check for empty output after reconstruction
-    if polys_42 is None or polys_42.size == 0 or N == 0:
-        with open(txt_path, "w") as f:
+    # Nothing to write
+    if polys_42 is None or polys_42.size == 0:
+        with open(txt_path, "w"):
             pass
         return
 
-    # 7. Final data preparation: Recalculate N safely and trim all arrays
-    # Recalculate N one last time to ensure full consistency across all arrays
-    Ns = [polys_42.shape[0]]
-    if boxes_np is not None and boxes_np.size > 0:
-        Ns.append(boxes_np.shape[0])
-    if labels_np is not None:
-        Ns.append(labels_np.shape[0])
-    if scores_np is not None:
-        Ns.append(scores_np.shape[0])
-    N = min(Ns)
-    polys_42 = polys_42[:N]
+    # Trim everything to same N
+    N = polys_42.shape[0]
+    if boxes_np  is not None and boxes_np.size  > 0: boxes_np  = boxes_np[:N]
+    if labels_np is not None and labels_np.size > 0: labels_np = labels_np[:N]
+    if scores_np is not None and scores_np.size > 0: scores_np = scores_np[:N]
 
-    # Handle missing labels/scores by slicing or padding with zeros
-    labels_np = (
-        labels_np[:N]
-        if labels_np is not None and labels_np.size > 0
-        else np.zeros((N,), dtype=np.int64)
-    )
-    scores_np = (
-        scores_np[:N]
-        if scores_np is not None and scores_np.size > 0
-        else np.zeros((N,), dtype=np.float32)
-    )
+    if labels_np is None or labels_np.size == 0:
+        labels_np = np.zeros((N,), dtype=np.int64)
+    if scores_np is None or scores_np.size == 0:
+        scores_np = np.zeros((N,), dtype=np.float32)
 
-    # Extract angles from boxes or default to zero
+    # Angle from boxes if available, else 0
     if boxes_np is not None and boxes_np.size > 0:
-        angles_rad = boxes_np[:N, 4]
+        angles_rad = boxes_np[:, 4]
     else:
         angles_rad = np.zeros((N,), dtype=np.float32)
 
-    # 8. Write to the text file
     with open(txt_path, "w") as f:
         for i in range(N):
-            # Extract the 4 polygon vertices (x1, y1, x2, y2, x3, y3, x4, y4)
             x1, y1 = polys_42[i, 0]
             x2, y2 = polys_42[i, 1]
             x3, y3 = polys_42[i, 2]
             x4, y4 = polys_42[i, 3]
-
-            # Write data: ID, 8 coordinates (rounded int), angle, score (6 decimals)
             f.write(
                 f"{int(labels_np[i])} "
                 f"{int(round(x1))} {int(round(y1))} "
@@ -791,6 +717,27 @@ def write_predictions_txt(
                 f"{int(round(x4))} {int(round(y4))} "
                 f"{float(angles_rad[i]):.6f} {float(scores_np[i]):.6f}\n"
             )
+
+def scale_xywhr_boxes(boxes_np: np.ndarray, sx: float, sy: float) -> np.ndarray:
+    """Scale (cx,cy,w,h,theta) from resized scale to original scale."""
+    if boxes_np is None or boxes_np.size == 0:
+        return boxes_np
+    out = boxes_np.copy()
+    out[:, 0] *= sx  # cx
+    out[:, 1] *= sy  # cy
+    out[:, 2] *= sx  # w
+    out[:, 3] *= sy  # h
+    # theta (rad) no cambia
+    return out
+
+def scale_polys(polys_42: Optional[np.ndarray], sx: float, sy: float) -> Optional[np.ndarray]:
+    """Scale polygon vertices by (sx, sy)."""
+    if polys_42 is None or polys_42.size == 0:
+        return polys_42
+    out = polys_42.copy()
+    out[:, :, 0] *= sx
+    out[:, :, 1] *= sy
+    return out
 
 
 # Function to get image size

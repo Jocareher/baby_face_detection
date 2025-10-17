@@ -82,16 +82,46 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     }  # Return the stacked images and padded targets.
 
 
-def images_only_collate(
-    batch: List[Dict[str, torch.Tensor]]
-) -> Dict[str, torch.Tensor]:
+def images_only_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Collate for ImageFolderDataset that returns a dict with "image" only,
-    stacked to (B, C, H, W) to satisfy export_predictions.
+    Collate for images-only datasets. Returns only 'image' and empty 'target'.
+    Does NOT add 'meta'.
     """
-    imgs = [sample["image"] for sample in batch]
+    # Filter out None (if your dataset returns None on read errors)
+    batch = [b for b in batch if b is not None]
+    if not batch:
+        return {
+            "image": torch.empty(0),
+            "target": {
+                "boxes": torch.empty((0, 0, 8), dtype=torch.float32),
+                "angles": torch.empty((0, 0), dtype=torch.float32),
+                "class_idx": torch.empty((0, 0), dtype=torch.long),
+                "child_prob": torch.empty((0, 0), dtype=torch.float32),
+                "valid_mask": torch.empty((0, 0), dtype=torch.bool),
+            },
+            # no 'paths', no 'meta'
+        }
+
+    imgs = [b["image"] for b in batch]
+    imgs = [im if isinstance(im, torch.Tensor) else torch.as_tensor(im) for im in imgs]
+    # If HWC -> CHW
     imgs = [
-        img if isinstance(img, torch.Tensor) else torch.as_tensor(img) for img in imgs
+        im.permute(2, 0, 1)
+        if im.ndim == 3 and im.shape[-1] in (3, 4) and im.shape[0] not in (1, 3, 4)
+        else im
+        for im in imgs
     ]
     images = torch.stack(imgs, dim=0)
-    return {"image": images}
+
+    B = len(batch)
+    targets = {
+        "boxes": torch.zeros((B, 0, 8), dtype=torch.float32),
+        "angles": torch.zeros((B, 0), dtype=torch.float32),
+        "class_idx": torch.zeros((B, 0), dtype=torch.long),
+        "child_prob": torch.zeros((B, 0), dtype=torch.float32),
+        "valid_mask": torch.zeros((B, 0), dtype=torch.bool),
+    }
+
+    # Opcional: si quieres que el batch traiga la lista de paths (sin meta)
+    paths = [b["path"] for b in batch]  # si tu dataset la adjunta por item
+    return {"image": images, "target": targets, "paths": paths}

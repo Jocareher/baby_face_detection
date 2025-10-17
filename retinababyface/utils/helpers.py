@@ -1,9 +1,11 @@
 import os
 import random
+from pathlib import Path
+
 import numpy as np
 import torch
 
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 
 
 def set_seed(seed_value: int = 42) -> None:
@@ -129,3 +131,41 @@ def ensure_polygons_42_shape(polys_np: Optional[np.ndarray]) -> Optional[np.ndar
 
     # Raise an error for unsupported shapes
     raise ValueError(f"Unsupported polygon shape: {polys_np.shape}")
+
+def resolve_image_path(
+    batch: Dict[str, Any],
+    b: int,
+    global_idx: int,
+    dataset: Any = None,
+) -> Path:
+    """
+    Try to resolve the path for the b-th sample of the current batch.
+    Priority:
+      1) batch["paths"][b]               (si el collate lo incluye)
+      2) dataset.paths[global_idx]       (o file_list/files/imgs/images/samples/items)
+      3) fallback: sample_XXXXXX.jpg
+    """
+    # 1) Del batch (si tu images_only_collate incluye "paths")
+    if isinstance(batch, dict) and "paths" in batch:
+        paths = batch["paths"]
+        if isinstance(paths, (list, tuple)) and len(paths) > b:
+            return Path(paths[b])
+
+    # 2) Del dataset (lista de atributos comunes)
+    if dataset is not None:
+        for attr in ("paths", "file_list", "files", "imgs", "images", "samples", "items"):
+            if hasattr(dataset, attr):
+                obj = getattr(dataset, attr)
+                try:
+                    if isinstance(obj, (list, tuple)) and len(obj) > global_idx:
+                        item = obj[global_idx]
+                        # Si es (path, label) u otra tupla, tomar el path en [0]
+                        if isinstance(item, (list, tuple)) and item and isinstance(item[0], (str, Path)):
+                            return Path(item[0])
+                        if isinstance(item, (str, Path)):
+                            return Path(item)
+                except Exception:
+                    pass
+
+    # 3) Respaldo
+    return Path(f"sample_{global_idx:06d}.jpg")

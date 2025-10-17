@@ -35,6 +35,124 @@ from utils.visualize import (
 )
 import config
 
+import cv2
+import numpy as np
+import math
+from pathlib import Path
+from PIL import Image
+
+def _order_tl_tr_br_bl(poly42: np.ndarray) -> np.ndarray:
+    """Devuelve vértices en orden TL,TR,BR,BL (robusto). poly42: (4,2)."""
+    p = poly42.astype(np.float32)
+    s = p.sum(1)
+    d = p[:, 0] - p[:, 1]
+    tl = p[np.argmin(s)]
+    br = p[np.argmax(s)]
+    idx_rem = [k for k in range(4) if not np.allclose(p[k], tl) and not np.allclose(p[k], br)]
+    if len(idx_rem) == 2:
+        r0, r1 = idx_rem
+        tr = p[r0] if d[r0] > d[r1] else p[r1]
+        bl = p[r1] if d[r0] > d[r1] else p[r0]
+        return np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
+    return p  # fallback: como venga
+
+def _rotate_like_A_with_poly(base_img: np.ndarray,
+                             poly42: np.ndarray,         # (4,2) en coords de base_img
+                             angle_rad: float,           # ángulo de tu head (radianes)
+                             pivot: str = "tl",          # "tl" (esquina superior izq) o "center"
+                             crop_out_wh: tuple = (640, 640),
+                             border_mode: str = "replicate",  # "replicate" | "black" | "white"
+                             scale_crop: float = 1.0):   # 1.0 = sin margen extra
+    """
+    1) Elegimos pivote (TL o centro de la OBB).
+    2) Rotamos la imagen completa con warpAffine (como A), expandiendo lienzo para no cortar.
+    3) Transformamos los 4 vértices con la MISMA matriz.
+    4) Recortamos el AABB del polígono rotado.
+    5) Escalamos con 'cover' a crop_out_wh para que LLENE toda la salida.
+    """
+    assert poly42.shape == (4, 2)
+    H, W = base_img.shape[:2]
+    angle_deg = float(math.degrees(float(angle_rad)))
+
+    # 1) Pivote
+    ordered = _order_tl_tr_br_bl(poly42)
+    if pivot == "tl":
+        cx, cy = ordered[0]  # esquina TL
+    else:
+        cx, cy = poly42.mean(axis=0)  # centro geométrico de la OBB
+
+    # 2) Matriz de rotación alrededor del pivote + expansión de lienzo
+    R = cv2.getRotationMatrix2D((float(cx), float(cy)), angle_deg, 1.0)  # 2x3
+
+    # Para expandir el canvas calculamos las esquinas de la IMAGEN rotadas
+    corners = np.array([[0, 0, 1],
+                        [W, 0, 1],
+                        [W, H, 1],
+                        [0, H, 1]], dtype=np.float32).T  # 3x4
+    rot_img_xy = (R @ corners).T  # 4x2
+    min_xy = rot_img_xy.min(axis=0)
+    max_xy = rot_img_xy.max(axis=0)
+    tx, ty = -min_xy[0], -min_xy[1]
+    R[:, 2] += [tx, ty]  # trasladamos para que todo quede en coords positivas
+    newW = int(math.ceil(max_xy[0] - min_xy[0]))
+    newH = int(math.ceil(max_xy[1] - min_xy[1]))
+
+    if border_mode == "replicate":
+        bmode, bval = cv2.BORDER_REPLICATE, 0
+    elif border_mode == "white":
+        bmode, bval = cv2.BORDER_CONSTANT, (255, 255, 255)
+    else:
+        bmode, bval = cv2.BORDER_CONSTANT, (0, 0, 0)
+
+    rot_img = cv2.warpAffine(base_img, R, (newW, newH),
+                             flags=cv2.INTER_LINEAR, borderMode=bmode, borderValue=bval)
+
+    # 3) Transformar también los 4 vértices de la OBB
+    poly_h = np.concatenate([poly42, np.ones((4, 1), dtype=np.float32)], axis=1)  # (4,3)
+    rot_poly = (R @ poly_h.T).T[:, :2]  # (4,2)
+
+    # 4) AABB del polígono rotado (opcional margen)
+    if scale_crop != 1.0:
+        # ampliar según ejes de la OBB original (usamos lados TL-TR y TL-BL para estimar ancho/alto)
+        w_side = np.linalg.norm(ordered[1] - ordered[0])
+        h_side = np.linalg.norm(ordered[3] - ordered[0])
+        # bbox rotada
+        x_min, y_min = rot_poly.min(axis=0)
+        x_max, y_max = rot_poly.max(axis=0)
+        cx_bb = 0.5 * (x_min + x_max)
+        cy_bb = 0.5 * (y_min + y_max)
+        half_w = 0.5 * w_side * scale_crop
+        half_h = 0.5 * h_side * scale_crop
+        # reconstruimos caja expandida alineada a ejes en el espacio rotado
+        x_min, x_max = cx_bb - half_w, cx_bb + half_w
+        y_min, y_max = cy_bb - half_h, cy_bb + half_h
+    else:
+        x_min, y_min = rot_poly.min(axis=0)
+        x_max, y_max = rot_poly.max(axis=0)
+
+    x1 = max(int(math.floor(x_min)), 0)
+    y1 = max(int(math.floor(y_min)), 0)
+    x2 = min(int(math.ceil(x_max)), newW)
+    y2 = min(int(math.ceil(y_max)), newH)
+
+    if x2 <= x1 or y2 <= y1:
+        return None  # nada que recortar
+
+    crop = rot_img[y1:y2, x1:x2]  # ROI eje-alineada tras rotación
+
+    # 5) COVER a salida fija (e.g., 640×640): llena el canvas sin letterbox
+    Wt, Ht = crop_out_wh
+    ch, cw = crop.shape[:2]
+    s = max(Wt / float(cw), Ht / float(ch))
+    newW2, newH2 = int(round(cw * s)), int(round(ch * s))
+    cover = cv2.resize(crop, (newW2, newH2), interpolation=cv2.INTER_LINEAR)
+    left = max(0, (newW2 - Wt) // 2)
+    top  = max(0, (newH2 - Ht) // 2)
+    out = cover[top:top + Ht, left:left + Wt, :]
+
+    return out  # RGB uint8 (Ht, Wt, 3)
+
+
 
 @torch.inference_mode()
 def export_predictions(
@@ -271,85 +389,32 @@ def export_predictions(
 
 
                     # --- CROPS 640x640: recorte OBB -> rotar desde TL -> cover 640x640 ---
+                    # --- CROPS 640×640 con “A sobre 8-puntos”: rotar imagen, transformar poly y recortar ---
                     if polys_for_img is not None and polys_for_img.size > 0:
                         import cv2
+                        Wr_target, Hr_target = resize_size  # (640,640)
+                        for j in range(polys_for_img.shape[0]):
+                            poly = polys_for_img[j].astype(np.float32)  # (4,2)
+                            # ángulo desde tus boxes (radianes). Si no lo tienes, usa 0.0
+                            theta = float(boxes_for_txt[j, 4]) if (boxes_for_txt is not None and boxes_for_txt.size > 0) else 0.0
 
-                        N = polys_for_img.shape[0]
-                        Wr_target, Hr_target = resize_size  # típicamente (640,640)
-
-                        for j in range(N):
-                            poly = polys_for_img[j].astype(np.float32)  # (4,2) como venga
-
-                            # 1) Ordenar a TL,TR,BR,BL solo para definir el warp (la rotación usará TL)
-                            s = poly.sum(1)
-                            d = (poly[:, 0] - poly[:, 1])
-                            tl = poly[np.argmin(s)]
-                            br = poly[np.argmax(s)]
-                            remain_idx = [k for k in range(4) if not np.allclose(poly[k], tl) and not np.allclose(poly[k], br)]
-                            if len(remain_idx) == 2:
-                                r0, r1 = remain_idx
-                                tr = poly[r0] if d[r0] > d[r1] else poly[r1]
-                                bl = poly[r1] if d[r0] > d[r1] else poly[r0]
-                                ordered = np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
-                            else:
-                                ordered = poly.copy()
-
-                            # 2) Tamaño del rect eje-alineado (puedes quitar el margen si no quieres contexto extra)
-                            scale_crop = 1.0  # 1.0 = sin margen; 1.1 ~ 10% más contexto
-                            wj = max(2, int(round(scale_crop * np.linalg.norm(ordered[1] - ordered[0]))))
-                            hj = max(2, int(round(scale_crop * np.linalg.norm(ordered[3] - ordered[0]))))
-
-                            dst = np.array([[0, 0], [wj - 1, 0], [wj - 1, hj - 1], [0, hj - 1]], dtype=np.float32)
-
-                            # 3) Warp OBB -> rect eje-alineado, sin rellenos raros (negro o blanco)
-                            rect = cv2.warpPerspective(
-                                base_img, cv2.getPerspectiveTransform(ordered, dst), (wj, hj),
-                                flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_CONSTANT,
-                                borderValue=(0, 0, 0)  # negro; usa (255,255,255) para blanco
+                            crop640 = _rotate_like_A_with_poly(
+                                base_img=base_img,
+                                poly42=poly,
+                                angle_rad=theta,
+                                pivot="tl",                      # o "center" si prefieres
+                                crop_out_wh=(Wr_target, Hr_target),
+                                border_mode="replicate",         # "replicate" (sin negro) | "black" | "white"
+                                scale_crop=1.0                   # 1.0 sin margen; >1.0 añade contexto
                             )
+                            if crop640 is None:
+                                continue
 
-                            # 4) Rotar alrededor de la ESQUINA TL = (0,0) con lienzo expandido
-                            if boxes_for_txt is not None and boxes_for_txt.size > 0:
-                                theta_deg = float(math.degrees(float(boxes_for_txt[j, 4])))
-                            else:
-                                theta_deg = 0.0
-
-                            R = cv2.getRotationMatrix2D(center=(0, 0), angle=theta_deg, scale=1.0)  # 2x3
-
-                            # calcular tamaño de canvas tras rotación y trasladar a coords positivas
-                            corners = np.array([[0, 0, 1], [wj, 0, 1], [wj, hj, 1], [0, hj, 1]], dtype=np.float32).T  # 3x4
-                            rot_xy = (R @ corners).T[:, :2]  # 4x2
-                            min_xy = rot_xy.min(axis=0)
-                            max_xy = rot_xy.max(axis=0)
-                            R[:, 2] += (-min_xy[0], -min_xy[1])
-                            new_w = int(math.ceil(max_xy[0] - min_xy[0]))
-                            new_h = int(math.ceil(max_xy[1] - min_xy[1]))
-
-                            rot = cv2.warpAffine(
-                                rect, R, (new_w, new_h),
-                                flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_CONSTANT,
-                                borderValue=(0, 0, 0)  # negro o blanco
-                            )
-
-                            # 5) ESCALAR “COVER” a 640x640 y centro-crop (la ROI llena todo el canvas)
-                            Hc, Wc = 640, 640
-                            h, w = rot.shape[:2]
-                            scale = max(Wc / float(w), Hc / float(h))
-                            newW = int(round(w * scale))
-                            newH = int(round(h * scale))
-                            cover = cv2.resize(rot, (newW, newH), interpolation=cv2.INTER_LINEAR)
-
-                            left = max(0, (newW - Wc) // 2)
-                            top  = max(0, (newH - Hc) // 2)
-                            crop_final = cover[top:top + Hc, left:left + Wc, :]  # (640,640,3) RGB
-
-                            # 6) Guardar por class_idx en crops/<cls>/
                             cls = int(labels_np[j]) if (labels_np is not None and labels_np.size > j) else 0
                             cls_dir = Path(out_dir) / "crops" / f"{cls}"
                             cls_dir.mkdir(parents=True, exist_ok=True)
-                            Image.fromarray(crop_final).save(cls_dir / f"{stem}_{j:02d}.jpg")
+                            Image.fromarray(crop640).save(cls_dir / f"{stem}_{j:02d}.jpg")
+
 
                                                 
 

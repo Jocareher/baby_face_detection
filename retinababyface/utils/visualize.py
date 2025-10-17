@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from matplotlib.patches import Polygon
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, Image
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 
@@ -817,3 +817,28 @@ def scale_polys(
 def img_size(p: Path) -> Tuple[int, int]:
     with Image.open(p) as im:
         return im.size
+
+def polygon_to_size(poly42: np.ndarray, boxes_np: Optional[np.ndarray], i: int) -> Tuple[int, int]:
+    """Obtiene (w,h) para el recorte. Prefiere boxes_np[i] si está, si no mide lados del polígono."""
+    if boxes_np is not None and boxes_np.size > 0:
+        w = float(boxes_np[i, 2])
+        h = float(boxes_np[i, 3])
+    else:
+        # ancho ≈ |v0-v1|, alto ≈ |v1-v2|
+        p0, p1, p2 = poly42[i, 0], poly42[i, 1], poly42[i, 2]
+        w = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
+        h = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+    # evitar valores degenerados
+    w = max(1, int(round(w)))
+    h = max(1, int(round(h)))
+    return w, h
+
+def crop_obb(base_img: np.ndarray, quad_xy: np.ndarray, out_w: int, out_h: int) -> Image.Image:
+    """
+    Recorta la OBB como warp perspectivo a un rectángulo (out_w, out_h) usando PIL.Image.transform (QUAD).
+    quad_xy: (4,2) en orden TL,TR,BR,BL (el orden que generas en xywhr_to_poly42_shape coincide).
+    """
+    im = Image.fromarray(base_img)
+    # PIL espera la lista [x0,y0,x1,y1,x2,y2,x3,y3] en coordenadas fuente
+    quad = quad_xy.reshape(-1).tolist()
+    return im.transform((out_w, out_h), Image.QUAD, data=quad, resample=Image.BILINEAR)

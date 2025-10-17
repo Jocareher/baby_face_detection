@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import math
 from typing import Any, Dict, Tuple
 
 import numpy as np
@@ -9,12 +10,11 @@ from tqdm import tqdm
 from PIL import Image
 import torchvision.transforms as T
 
-from data_setup.dataset import BabyFacesDataset, ImageFolderDataset
-from data_setup.collate import custom_collate, images_only_collate
+from data_setup.dataset import ImageFolderDataset
+from data_setup.collate import images_only_collate
 from models.retinababyface import RetinaBabyFace
 from engine.inference import (
     infer_with_rotated_nms,
-    load_original_and_scale,
     denormalize_image,
 )
 from utils.helpers import (
@@ -30,6 +30,8 @@ from utils.visualize import (
     xywhr_to_poly42_shape,
     scale_polys,
     scale_xywhr_boxes,
+    crop_obb,
+    polygon_to_size
 )
 import config
 
@@ -84,6 +86,10 @@ def export_predictions(
     out_lbls = Path(out_dir) / "labels"
     out_imgs.mkdir(parents=True, exist_ok=True)
     out_lbls.mkdir(parents=True, exist_ok=True)
+    out_crops = Path(out_dir) / "crops"
+    out_imgs.mkdir(parents=True, exist_ok=True)
+    out_lbls.mkdir(parents=True, exist_ok=True)
+    out_crops.mkdir(parents=True, exist_ok=True)
 
     # Setup model and anchors
     model.eval()
@@ -261,6 +267,41 @@ def export_predictions(
                     except Exception as e:
                         errors += 1
                         tqdm.write(f"❌  Saving error for {p}: {e}")
+                    
+                    try:
+                        if polys_for_img is not None and polys_for_img.size > 0:
+                            N = polys_for_img.shape[0]
+                            for j in range(N):
+                                poly = polys_for_img[j]  # (4,2) TL,TR,BR,BL in base_img coords
+                                # crop size
+                                wj, hj = polygon_to_size(polys_for_img, boxes_for_txt, j)
+                                if wj <= 2 or hj <= 2:
+                                    continue  # skip degenerate crops
+
+                                # warp to rectangle (wj,hj)
+                                crop = crop_obb(base_img, poly, wj, hj)
+
+                                # angle in degrees (PIL: + = CCW)
+                                if boxes_for_txt is not None and boxes_for_txt.size > 0:
+                                    theta_deg = math.degrees(float(boxes_for_txt[j, 4]))
+                                else:
+                                    theta_deg = 0.0
+
+                                # Requested rotation: negative = clockwise, positive = counterclockwise → PIL already handles this
+                                crop_rot = crop.rotate(theta_deg, expand=True, resample=Image.BILINEAR)
+
+                                # folder by class_idx (numeric)
+                                cls = int(labels_np[j]) if labels_np is not None and labels_np.size > j else 0
+                                cls_dir = out_crops / f"{cls}"
+                                cls_dir.mkdir(parents=True, exist_ok=True)
+
+                                # filename: stem_idx.jpg
+                                crop_name = f"{stem}_{j:02d}.jpg"
+                                crop_rot.save(cls_dir / crop_name)
+                    except Exception as e:
+                        errors += 1
+                        tqdm.write(f"❌  Crop error ({stem}): {e}")
+                        
 
                     pbar_imgs.update(1)
                     global_idx += 1
@@ -276,6 +317,7 @@ def export_predictions(
     tqdm.write(f"   • Errors           : {errors}")
     tqdm.write(f"📂  Images: {out_imgs}")
     tqdm.write(f"📝  Labels: {out_lbls}")
+    tqdm.write(f"✂️  Crops : {out_crops}/<class_idx>/")
 
 
 def parse_args():
@@ -347,7 +389,7 @@ def main():
         [
             T.Resize(resize_size),
             T.ToTensor(),
-            T.Normalize(mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD),
+            T.Normalize(mean=config.MEAN, std=config.STD),
         ]
     )
 

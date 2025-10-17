@@ -674,14 +674,18 @@ class ImageFolderDataset(Dataset):
     Recursively collects images under images_dir and exposes a .paths list.
     Applies a TorchVision transform (PIL in -> Tensor CHW) if provided.
     """
+
     IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
     def __init__(self, images_dir: Union[str, Path], transform=None):
         self.images_dir = Path(images_dir)
         self.transform = transform
         self.paths: List[Path] = sorted(
-            p for p in self.images_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in self.IMG_EXTS and not p.name.startswith("._")
+            p
+            for p in self.images_dir.rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in self.IMG_EXTS
+            and not p.name.startswith("._")
         )
         if not self.paths:
             raise FileNotFoundError(f"No images found under: {self.images_dir}")

@@ -132,6 +132,7 @@ def ensure_polygons_42_shape(polys_np: Optional[np.ndarray]) -> Optional[np.ndar
     # Raise an error for unsupported shapes
     raise ValueError(f"Unsupported polygon shape: {polys_np.shape}")
 
+
 def resolve_image_path(
     batch: Dict[str, Any],
     b: int,
@@ -139,33 +140,62 @@ def resolve_image_path(
     dataset: Any = None,
 ) -> Path:
     """
-    Try to resolve the path for the b-th sample of the current batch.
-    Priority:
-      1) batch["paths"][b]               (si el collate lo incluye)
-      2) dataset.paths[global_idx]       (o file_list/files/imgs/images/samples/items)
-      3) fallback: sample_XXXXXX.jpg
+    Resolves the file path for an image in a dataset batch using multiple fallback options.
+
+    This function attempts to find the image path using three different methods in order of priority:
+    1. From the batch dictionary's "paths" key if available
+    2. From common dataset attributes that typically store paths
+    3. Generates a default filename as last resort
+
+    Args:
+        batch (Dict[str, Any]): The current batch dictionary containing data samples
+        b (int): The index of the current sample within the batch
+        global_idx (int): The global index of the sample in the dataset
+        dataset (Any, optional): The dataset object that may contain path information
+
+    Returns:
+        Path: A Path object representing the resolved image file path
+
+    Example:
+        >>> batch = {"paths": ["image1.jpg", "image2.jpg"]}
+        >>> resolve_image_path(batch, 0, 0)
+        Path('image1.jpg')
     """
-    # 1) Del batch (si tu images_only_collate incluye "paths")
+    # Try to get path from batch dictionary first
     if isinstance(batch, dict) and "paths" in batch:
         paths = batch["paths"]
         if isinstance(paths, (list, tuple)) and len(paths) > b:
             return Path(paths[b])
 
-    # 2) Del dataset (lista de atributos comunes)
+    # If path not in batch, try to find it in common dataset attributes
     if dataset is not None:
-        for attr in ("paths", "file_list", "files", "imgs", "images", "samples", "items"):
+        # Common attribute names that might contain file paths
+        for attr in (
+            "paths",
+            "file_list",
+            "files",
+            "imgs",
+            "images",
+            "samples",
+            "items",
+        ):
             if hasattr(dataset, attr):
                 obj = getattr(dataset, attr)
                 try:
                     if isinstance(obj, (list, tuple)) and len(obj) > global_idx:
                         item = obj[global_idx]
-                        # Si es (path, label) u otra tupla, tomar el path en [0]s
-                        if isinstance(item, (list, tuple)) and item and isinstance(item[0], (str, Path)):
+                        # Handle cases where item is a tuple of (path, label)
+                        if (
+                            isinstance(item, (list, tuple))
+                            and item
+                            and isinstance(item[0], (str, Path))
+                        ):
                             return Path(item[0])
+                        # Handle cases where item is directly a path
                         if isinstance(item, (str, Path)):
                             return Path(item)
                 except Exception:
                     pass
 
-    # 3) Respaldo
+    # Fallback: generate a default filename using the global index
     return Path(f"sample_{global_idx:06d}.jpg")

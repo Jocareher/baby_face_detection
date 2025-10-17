@@ -652,63 +652,96 @@ def draw_predictions_on_image(
 def write_predictions_txt(
     out_labels_dir: Path,
     stem: str,
-    boxes_xywhr: Optional[np.ndarray],   # (N,5) -> cx,cy,w,h,theta(rad)
-    polygons_42: Optional[np.ndarray],   # (N,4,2) in the SAME scale as the saved image
-    labels: Optional[np.ndarray],        # (N,)
-    scores: Optional[np.ndarray],        # (N,)
+    boxes_xywhr: Optional[np.ndarray],  # (N,5) -> cx,cy,w,h,theta(rad)
+    polygons_42: Optional[np.ndarray],  # (N,4,2) in the SAME scale as the saved image
+    labels: Optional[np.ndarray],  # (N,)
+    scores: Optional[np.ndarray],  # (N,)
 ) -> None:
     """
-    Writes predictions to <stem>.txt with format:
-      <class_id> x1 y1 x2 y2 x3 y3 x4 y4 angle_rad score
+    Writes object detection predictions to a text file in a standardized format.
 
-    If polygons are missing, they are reconstructed from boxes (if available).
-    Coordinates are saved exactly in the coordinate system of the passed arrays.
+    Saves predictions including polygon vertices, class labels, angles and confidence scores.
+    If polygon vertices are not provided but boxes are, reconstructs polygons from the boxes.
+    All coordinates are saved in the same coordinate system as the input arrays.
+
+    Args:
+        out_labels_dir (Path): Directory where the output text files will be saved
+        stem (str): Base filename (without extension) for the output .txt file
+        boxes_xywhr (Optional[np.ndarray]): Array of shape (N,5) containing box parameters
+            [center_x, center_y, width, height, rotation_angle] for N predictions
+        polygons_42 (Optional[np.ndarray]): Array of shape (N,4,2) containing vertex
+            coordinates for N predictions, each with 4 vertices (x,y)
+        labels (Optional[np.ndarray]): Array of shape (N,) containing class indices
+        scores (Optional[np.ndarray]): Array of shape (N,) containing confidence scores
+
+    Output format per line:
+        <class_id> x1 y1 x2 y2 x3 y3 x4 y4 angle_rad score
+
+    Notes:
+        - Creates output directory if it doesn't exist
+        - Writes empty file if no predictions exist
+        - Coordinates are rounded to integers
+        - Angles are saved with 6 decimal precision
+        - Default values: labels=0, scores=0.0 if not provided
     """
+    # Create output directory if needed
     out_labels_dir.mkdir(parents=True, exist_ok=True)
     txt_path = out_labels_dir / f"{stem}.txt"
 
-    boxes_np  = to_numpy(boxes_xywhr) if boxes_xywhr is not None else None
+    # Convert inputs to numpy arrays with appropriate dtypes
+    boxes_np = to_numpy(boxes_xywhr) if boxes_xywhr is not None else None
     labels_np = to_numpy(labels).astype(np.int64) if labels is not None else None
     scores_np = to_numpy(scores).astype(np.float32) if scores is not None else None
-    polys_42  = ensure_polygons_42_shape(polygons_42) if polygons_42 is not None else None
+    polys_42 = (
+        ensure_polygons_42_shape(polygons_42) if polygons_42 is not None else None
+    )
 
-    if (polys_42 is None or polys_42.size == 0) and (boxes_np is not None and boxes_np.size > 0):
-        # Reconstruct from boxes
+    # Reconstruct polygons from boxes if polygons not provided but boxes are
+    if (polys_42 is None or polys_42.size == 0) and (
+        boxes_np is not None and boxes_np.size > 0
+    ):
         N = boxes_np.shape[0]
         polys_42 = np.zeros((N, 4, 2), dtype=np.float32)
         for i in range(N):
             cx, cy, w, h, th = boxes_np[i].tolist()
             polys_42[i] = xywhr_to_poly42_shape(cx, cy, w, h, th)
 
-    # Nothing to write
+    # Write empty file if no predictions exist
     if polys_42 is None or polys_42.size == 0:
         with open(txt_path, "w"):
             pass
         return
 
-    # Trim everything to same N
+    # Ensure all arrays have consistent length N
     N = polys_42.shape[0]
-    if boxes_np  is not None and boxes_np.size  > 0: boxes_np  = boxes_np[:N]
-    if labels_np is not None and labels_np.size > 0: labels_np = labels_np[:N]
-    if scores_np is not None and scores_np.size > 0: scores_np = scores_np[:N]
+    if boxes_np is not None and boxes_np.size > 0:
+        boxes_np = boxes_np[:N]
+    if labels_np is not None and labels_np.size > 0:
+        labels_np = labels_np[:N]
+    if scores_np is not None and scores_np.size > 0:
+        scores_np = scores_np[:N]
 
+    # Use default values if labels/scores not provided
     if labels_np is None or labels_np.size == 0:
         labels_np = np.zeros((N,), dtype=np.int64)
     if scores_np is None or scores_np.size == 0:
         scores_np = np.zeros((N,), dtype=np.float32)
 
-    # Angle from boxes if available, else 0
+    # Get angles from boxes if available, else use 0
     if boxes_np is not None and boxes_np.size > 0:
         angles_rad = boxes_np[:, 4]
     else:
         angles_rad = np.zeros((N,), dtype=np.float32)
 
+    # Write predictions to file
     with open(txt_path, "w") as f:
         for i in range(N):
+            # Extract vertex coordinates
             x1, y1 = polys_42[i, 0]
             x2, y2 = polys_42[i, 1]
             x3, y3 = polys_42[i, 2]
             x4, y4 = polys_42[i, 3]
+            # Write line with class, vertices, angle, score
             f.write(
                 f"{int(labels_np[i])} "
                 f"{int(round(x1))} {int(round(y1))} "
@@ -718,25 +751,65 @@ def write_predictions_txt(
                 f"{float(angles_rad[i]):.6f} {float(scores_np[i]):.6f}\n"
             )
 
+
 def scale_xywhr_boxes(boxes_np: np.ndarray, sx: float, sy: float) -> np.ndarray:
-    """Scale (cx,cy,w,h,theta) from resized scale to original scale."""
+    """
+    Scale oriented bounding boxes from resized coordinates back to original image scale.
+
+    Args:
+        boxes_np: Array of shape (N,5) containing [center_x, center_y, width, height, theta]
+                 in resized image coordinates, or None/empty array
+        sx: Scale factor for x-coordinates (original_width / resized_width)
+        sy: Scale factor for y-coordinates (original_height / resized_height)
+
+    Returns:
+        Scaled boxes array of same shape as input, with coordinates in original image scale.
+        Returns None/empty if input is None/empty.
+        Note: Rotation angle (theta) remains unchanged.
+    """
     if boxes_np is None or boxes_np.size == 0:
         return boxes_np
+
+    # Create copy to avoid modifying input
     out = boxes_np.copy()
-    out[:, 0] *= sx  # cx
-    out[:, 1] *= sy  # cy
-    out[:, 2] *= sx  # w
-    out[:, 3] *= sy  # h
-    # theta (rad) no cambia
+
+    # Scale center coordinates and dimensions
+    out[:, 0] *= sx  # center x
+    out[:, 1] *= sy  # center y
+    out[:, 2] *= sx  # width
+    out[:, 3] *= sy  # height
+    # Angle (out[:, 4]) remains unchanged since rotation is scale-invariant
+
     return out
 
-def scale_polys(polys_42: Optional[np.ndarray], sx: float, sy: float) -> Optional[np.ndarray]:
-    """Scale polygon vertices by (sx, sy)."""
+
+def scale_polys(
+    polys_42: Optional[np.ndarray], sx: float, sy: float
+) -> Optional[np.ndarray]:
+    """
+    Scale polygon vertex coordinates from resized scale back to original image scale.
+
+    Args:
+        polys_42: Array of shape (N,4,2) containing N polygons with 4 vertices each,
+                 where vertices are [x,y] coordinates in resized image scale,
+                 or None/empty array
+        sx: Scale factor for x-coordinates (original_width / resized_width)
+        sy: Scale factor for y-coordinates (original_height / resized_height)
+
+    Returns:
+        Scaled polygon array of same shape as input, with vertices in original image scale.
+        Returns None/empty if input is None/empty.
+    """
     if polys_42 is None or polys_42.size == 0:
         return polys_42
+
+    # Create copy to avoid modifying input
     out = polys_42.copy()
-    out[:, :, 0] *= sx
-    out[:, :, 1] *= sy
+
+    # Scale x and y coordinates independently
+    out[:, :, 0] *= sx  # All x coordinates
+    out[:, :, 1] *= sy  # All y coordinates
+
     return out
 
 

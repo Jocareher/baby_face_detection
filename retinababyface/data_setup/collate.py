@@ -122,6 +122,4 @@ def images_only_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "valid_mask": torch.zeros((B, 0), dtype=torch.bool),
     }
 
-    # Opcional: si quieres que el batch traiga la lista de paths (sin meta)
-    paths = [b["path"] for b in batch]  # si tu dataset la adjunta por item
-    return {"image": images, "target": targets, "paths": paths}
+    return {"image": images, "target": targets}

@@ -340,21 +340,26 @@ def export_predictions(
                                 )
 
                                 # --- 5) Resize "COVER" + centro-crop a 640x640 (llena todo el canvas) ---
-                                rw, rh = rot.shape[1], rot.shape[0]
-                                scale_cover = max(Wr_target / float(rw), Hr_target / float(rh))
-                                newW = int(math.ceil(rw * scale_cover))
-                                newH = int(math.ceil(rh * scale_cover))
-                                cover = cv2.resize(rot, (newW, newH), interpolation=cv2.INTER_LINEAR)
+                                H_canvas, W_canvas = 640, 640
+                                h, w = rot.shape[:2]
 
-                                left = max(0, (newW - Wr_target) // 2)
-                                top  = max(0, (newH - Hr_target) // 2)
-                                crop_final = cover[top:top + Hr_target, left:left + Wr_target, :]  # 640x640, RGB
+                                # 1) Escala "cover" para llenar el 640x640
+                                scale = max(W_canvas / float(w), H_canvas / float(h))
+                                newW = int(round(w * scale))
+                                newH = int(round(h * scale))
+                                resized = cv2.resize(rot, (newW, newH), interpolation=cv2.INTER_LINEAR)
 
-                                # --- 6) Guardar en crops/<class_idx>/ ---
+
+                                # 3) Coordenadas para centrar y recortar
+                                left = max(0, (newW - W_canvas) // 2)
+                                top  = max(0, (newH - H_canvas) // 2)
+                                crop_final = resized[top:top + H_canvas, left:left + W_canvas, :]  # (640,640,3)
+
+                                # 4) Guardar (clasificado por class_idx)
                                 cls = int(labels_np[j]) if (labels_np is not None and labels_np.size > j) else 0
                                 cls_dir = Path(out_dir) / "crops" / f"{cls}"
                                 cls_dir.mkdir(parents=True, exist_ok=True)
-                                Image.fromarray(crop_final).save(cls_dir / f"{stem}_{j:02d}.jpg")
+                                Image.fromarray(crop_final).save(cls_dir / f"{stem}.jpg")
                     
                     except Exception as e:
                         errors += 1

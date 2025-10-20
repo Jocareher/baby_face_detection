@@ -365,12 +365,42 @@ def parse_args():
         default=config.DEFAULT_OUT_CHANNELS,
         help="Number of output channels for FPN",
     )
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt file).")
-    parser.add_argument("--batch_size", type=int, default=config.DEFAULT_BATCH_SIZE, help="Batch size for inference (default: 32).")
-    parser.add_argument("--face_thres", type=float, default=config.FACE_THRESH, help="Confidence threshold for detections (default: 0.5).")
-    parser.add_argument("--iou_thres", type=float, default=config.IOU_THRESH, help="IoU threshold for matching (default: 0.3).")
-    parser.add_argument("--class_thres", type=float, default=config.CLASS_THRESH), help="Classification confidence threshold (default: 0.5).")
-    parser.add_argument("--baby_thres", type=float, default=config.BABY_THRESH, help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        required=True,
+        help="Path to model checkpoint (.pt file).",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=config.DEFAULT_BATCH_SIZE,
+        help="Batch size for inference (default: 32).",
+    )
+    parser.add_argument(
+        "--face_thres",
+        type=float,
+        default=config.FACE_THRESH,
+        help="Confidence threshold for detections (default: 0.5).",
+    )
+    parser.add_argument(
+        "--iou_thres",
+        type=float,
+        default=config.IOU_THRESH,
+        help="IoU threshold for matching (default: 0.3).",
+    )
+    parser.add_argument(
+        "--class_thres",
+        type=float,
+        default=config.CLASS_THRESH,
+        help="Classification confidence threshold (default: 0.5).",
+    )
+    parser.add_argument(
+        "--baby_thres",
+        type=float,
+        default=config.BABY_THRESH,
+        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
+    )
     parser.add_argument(
         "--output_scale",
         type=str,

@@ -94,7 +94,7 @@ def evaluate_infantface(
         total_gt += G
 
         # Read model predictions
-        pr_xywhr, pr_scores = read_preds_switch(
+        pr_xywhr, _, pr_scores = read_preds_switch(
             model_type=model_type,
             pred_txt_path=pr_p,
             img_wh=(W, H),
@@ -287,7 +287,7 @@ def main_infantface():
         help="Which reader to use for predictions",
     )
     ap.add_argument("--iou", type=float, default=0.5)
-    ap.add_argument("--min_score", type=float, default=0.0)
+    ap.add_argument("--min_score", type=float, default=0.5)
     args = ap.parse_args()
 
     evaluate_infantface(

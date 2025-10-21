@@ -1,13 +1,8 @@
 import argparse
 from pathlib import Path
-import math
-from typing import Any, Dict, Tuple
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
-from PIL import Image
 import torchvision.transforms as T
 
 from data_setup.dataset import ImageFolderDataset

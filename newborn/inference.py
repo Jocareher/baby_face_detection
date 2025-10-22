@@ -157,9 +157,9 @@ def main():
     # Define face orientation labels
     labels_map = {
         0: "Leftside",
-        1: "3/4 Leftside",
+        1: "3_4 Leftside",
         2: "Frontal",
-        3: "3/4 Rightside",
+        3: "3_4 Rightside",
         4: "Rightside",
     }
 

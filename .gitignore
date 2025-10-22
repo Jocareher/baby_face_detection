@@ -174,3 +174,4 @@ wandb/
 predictions/
 weights/*
 !weights/.gitkeep
+./runs/*

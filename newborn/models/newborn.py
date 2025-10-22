@@ -190,9 +190,9 @@ class ChildHead(nn.Module):
         return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 1)
 
 
-class RetinaBabyFace(nn.Module):
+class NewBORN(nn.Module):
     """
-    RetinaBabyFace model for face detection, orientation estimation and pose classification.
+    NewBORN model for face detection, orientation estimation and pose classification.
 
     This model combines:
     - A feature extraction backbone (various options like ResNet50, DenseNet121, ViT, etc.)
@@ -231,7 +231,7 @@ class RetinaBabyFace(nn.Module):
         pretrained: bool = True,
     ):
         """
-        Initializes the RetinaBabyFace model.
+        Initializes the NewBORN model.
 
         Args:
             backbone_name (str): Name of the backbone to use (e.g., "mobilenetv1", "resnet50", "vgg16", "densenet121", "vit").
@@ -430,7 +430,7 @@ class RetinaBabyFace(nn.Module):
 
     def forward(self, x: torch.Tensor):
         """
-        Forward pass of the RetinaBabyFace model.
+        Forward pass of the NewBORN model.
 
         This method performs multi-scale feature extraction, context refinement, and prediction
         across multiple levels of the feature pyramid. It integrates outputs from two stages

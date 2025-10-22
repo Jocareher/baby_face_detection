@@ -1,7 +1,7 @@
-# This script is used to train the RetinaBabyFace model on the BabyFace dataset.
+# This script is used to train the NewBORN model on the BabyFace dataset.
 # It includes data loading, augmentation, model definition, and training loop.
 # The script uses PyTorch and torchvision for model training and data handling.
-# The RetinaBabyFace model is a custom architecture designed for face detection and recognition tasks.
+# The NewBORN model is a custom architecture designed for face detection and recognition tasks.
 
 import argparse
 import os
@@ -23,7 +23,7 @@ from torchinfo import summary
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
 from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sampler
-from models.retinababyface import RetinaBabyFace, reset_heads, set_backbone_frozen
+from newborn.models.newborn import NewBORN, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference, plot_training_curves_from_csv
@@ -34,9 +34,7 @@ import config
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train and evaluate RetinaBabyFace model"
-    )
+    parser = argparse.ArgumentParser(description="Train and evaluate NewBORN model")
 
     # Dataset
     parser.add_argument(
@@ -511,10 +509,10 @@ def main():
     # IV. Model and loss setup
     # ------------------------------------------------------------------------
 
-    # Initialize the RetinaBabyFace model with the specified backbone and output channels
-    model = RetinaBabyFace(
-        args.backbone, args.out_channel, pretrained=args.use_pretrained
-    ).to(device)
+    # Initialize the NewBORN model with the specified backbone and output channels
+    model = NewBORN(args.backbone, args.out_channel, pretrained=args.use_pretrained).to(
+        device
+    )
 
     # Configure backbone freezing or fine-tuning based on the specified mode
     set_backbone_frozen(
@@ -656,7 +654,7 @@ def main():
     )
 
     # Reload model for inference
-    trained_model = RetinaBabyFace(
+    trained_model = NewBORN(
         args.backbone, args.out_channel, pretrained=args.use_pretrained
     ).to(device)
 

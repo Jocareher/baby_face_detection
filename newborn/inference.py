@@ -7,7 +7,7 @@ import torchvision.transforms as T
 
 from data_setup.dataset import ImageFolderDataset
 from data_setup.collate import images_only_collate
-from models.retinababyface import RetinaBabyFace
+from newborn.models.newborn import NewBORN
 from engine.inference import export_predictions
 from utils.helpers import (
     get_default_device,
@@ -19,7 +19,7 @@ import config
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Export RetinaBabyFace predictions (images + txt)."
+        description="Export NewBORN predictions (images + txt)."
     )
     parser.add_argument(
         "--images_dir",
@@ -137,7 +137,7 @@ def main():
     # === Model Initialization ===
     # Create model and load checkpoint
     print(f"\n🔧 Initializing {args.backbone} backbone...")
-    model = RetinaBabyFace(
+    model = NewBORN(
         backbone_name=args.backbone, out_channel=args.out_channel, pretrained=False
     ).to(device)
 

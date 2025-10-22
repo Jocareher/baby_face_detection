@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
-from models.retinababyface import RetinaBabyFace
+from newborn.models.newborn import NewBORN
 from utils.helpers import get_default_device, seed_worker, set_seed
 import config
 from engine.inference import inference
@@ -14,13 +14,13 @@ from engine.inference import inference
 
 def parse_args():
     """
-    Parses command-line arguments for running inference with RetinaBabyFace.
+    Parses command-line arguments for running inference with NewBORN.
 
     Returns:
         argparse.Namespace: Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Run inference with RetinaBabyFace on a test set."
+        description="Run inference with NewBORN on a test set."
     )
 
     parser.add_argument(
@@ -160,7 +160,7 @@ def main():
     print(f"[INFO] Loaded {len(test_dataset)} samples from '{args.split}' split.")
 
     # 2. Initialize model and load checkpoint
-    model = RetinaBabyFace(
+    model = NewBORN(
         backbone_name=args.backbone,
         out_channel=args.out_channel,
         pretrained=False,

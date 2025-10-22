@@ -2188,14 +2188,15 @@ def export_predictions(
                             if crop640 is None:
                                 continue
 
-                            # Determine class index for this detection (fallback to 0)
+                            # Determine class index and name for this detection (fallback to 0)
                             cls = (
                                 int(labels_np[j])
                                 if (labels_np is not None and labels_np.size > j)
                                 else 0
                             )
-                            # Prepare class-specific output directory for crops
-                            cls_dir = Path(out_dir) / "crops" / f"{cls}"
+                            cls_name = labels_map.get(cls, "unknown")
+                            # Prepare class-specific output directory for crops using class name
+                            cls_dir = Path(out_dir) / "crops" / cls_name
                             cls_dir.mkdir(parents=True, exist_ok=True)
                             # Save the crop as a JPEG with an index in the filename
                             Image.fromarray(crop640).save(
@@ -2216,4 +2217,4 @@ def export_predictions(
     tqdm.write(f"   • Errors           : {errors}")
     tqdm.write(f"📂  Images: {out_imgs}")
     tqdm.write(f"📝  Labels: {out_lbls}")
-    tqdm.write(f"✂️  Crops : {out_crops}/<class_idx>/")
+    tqdm.write(f"✂️  Crops : {out_crops}/{cls_name}/")

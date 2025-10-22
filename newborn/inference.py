@@ -118,7 +118,7 @@ def main():
         [
             T.Resize(resize_size),
             T.ToTensor(),
-            T.Normalize(mean=config.MEAN, std=config.STD),
+            T.Normalize(mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD),
         ]
     )
 

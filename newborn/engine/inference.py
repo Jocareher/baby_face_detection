@@ -2189,12 +2189,12 @@ def export_predictions(
                                 continue
 
                             # Determine class index and name for this detection (fallback to 0)
-                            cls = (
+                            cls_idx = (
                                 int(labels_np[j])
                                 if (labels_np is not None and labels_np.size > j)
                                 else 0
                             )
-                            cls_name = labels_map.get(cls, "unknown")
+                            cls_name = labels_map.get(cls_idx, str(cls_idx))
                             # Prepare class-specific output directory for crops using class name
                             cls_dir = Path(out_dir) / "crops" / cls_name
                             cls_dir.mkdir(parents=True, exist_ok=True)
@@ -2217,4 +2217,4 @@ def export_predictions(
     tqdm.write(f"   • Errors           : {errors}")
     tqdm.write(f"📂  Images: {out_imgs}")
     tqdm.write(f"📝  Labels: {out_lbls}")
-    tqdm.write(f"✂️  Crops : {out_crops}/{cls_name}/")
+    tqdm.write(f"✂️  Crops : {out_crops}")

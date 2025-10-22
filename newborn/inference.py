@@ -7,7 +7,7 @@ import torchvision.transforms as T
 
 from data_setup.dataset import ImageFolderDataset
 from data_setup.collate import images_only_collate
-from newborn.models.newborn import NewBORN
+from models.newborn import NewBORN
 from engine.inference import export_predictions
 from utils.helpers import (
     get_default_device,

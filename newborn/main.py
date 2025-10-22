@@ -23,7 +23,7 @@ from torchinfo import summary
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
 from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sampler
-from newborn.models.newborn import NewBORN, reset_heads, set_backbone_frozen
+from models.newborn import NewBORN, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference, plot_training_curves_from_csv

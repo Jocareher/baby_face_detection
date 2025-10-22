@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
-from newborn.models.newborn import NewBORN
+from models.newborn import NewBORN
 from utils.helpers import get_default_device, seed_worker, set_seed
 import config
 from engine.inference import inference

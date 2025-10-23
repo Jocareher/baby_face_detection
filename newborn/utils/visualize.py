@@ -873,63 +873,61 @@ def order_polygon_vertices_tl_tr_br_bl(poly42: np.ndarray) -> np.ndarray:
 
 def get_oriented_face_crop(
     base_img: np.ndarray,
-    poly42: np.ndarray,  # (4,2) coords in base_img space
-    angle_rad: float,  # face orientation angle in radians
-    pivot: str = "tl",  # "tl" (top-left) or "center"
-    crop_out_wh: tuple = (640, 640),  # output size (W,H)
-    border_mode: str = "replicate",  # "replicate" | "black" | "white"
-    scale_crop: float = 1.0,  # 1.0 = tight crop, >1.0 adds margin
-) -> np.ndarray:
+    poly42: np.ndarray,  # (4,2) vertex coordinates in base_img space
+    angle_rad: float,  # predicted rotation angle (radians, CCW+)
+    pivot: str = "tl",  # rotation pivot point
+    crop_out_wh: tuple = (640, 640),  # output (width,height)
+    border_mode: str = "replicate",  # border handling mode
+    scale_crop: float = 1.0,  # >1.0 adds margin around OBB axes
+) -> Optional[np.ndarray]:
     """
-    Extracts an oriented face crop from an image by rotating and scaling.
+    Extracts an oriented face crop from an image by aligning it to be upright.
 
-    The function performs these steps:
-    1. Chooses a pivot point (top-left corner or center of face)
-    2. Rotates the full image around pivot using warpAffine
-    3. Transforms face vertices using same rotation matrix
-    4. Crops the axis-aligned bounding box of rotated face
-    5. Scales crop to target size using "cover" mode (fills output)
+    This function performs three key steps:
+    1. Rotates the entire image by angle_rad (deskew) with canvas expansion
+    2. Transforms the oriented bounding box (OBB) with the same affine matrix
+    3. Uses perspective warping to map the OBB to a rectangular output
+       (Avoids axis-aligned bounding box issues and fragile W/H swaps)
 
     Args:
-        base_img: Input RGB image as numpy array (H,W,3)
-        poly42: Face polygon vertices as (4,2) array
-        angle_rad: Face orientation angle in radians
-        pivot: Rotation pivot point ("tl" or "center")
-        crop_out_wh: Output dimensions as (width, height)
-        border_mode: Border handling ("replicate", "black", "white")
-        scale_crop: Crop margin factor (1.0 = tight, >1.0 adds context)
+        base_img: Source image as numpy array (H,W,C)
+        poly42: OBB vertices as (4,2) array in source image coordinates
+        angle_rad: Rotation angle in radians (positive = counterclockwise)
+        pivot: Rotation pivot point ("center" or "top-left")
+        crop_out_wh: Output dimensions as (width,height) tuple
+        border_mode: Border handling ("replicate", "black", or "white")
+        scale_crop: Scale factor for output crop (>1.0 adds margin)
 
     Returns:
-        RGB numpy array of size crop_out_wh containing rotated face,
-        or None if crop dimensions are invalid
+        Warped and cropped image array, or None if operation fails
     """
     assert poly42.shape == (4, 2)
     H, W = base_img.shape[:2]
-    angle_deg = float(math.degrees(float(angle_rad)))
 
-    # 1. Choose rotation pivot point
-    ordered = order_polygon_vertices_tl_tr_br_bl(poly42)
-    if pivot == "tl":
-        cx, cy = ordered[0]  # top-left corner
+    # --- 1) Global rotation ---
+    angle_deg_ccw = float(math.degrees(float(angle_rad)))
+
+    # Choose stable pivot point
+    if pivot == "center":
+        px, py = float(poly42[:, 0].mean()), float(poly42[:, 1].mean())
     else:
-        cx, cy = poly42.mean(axis=0)  # geometric center of face
+        ordered0 = order_polygon_vertices_tl_tr_br_bl(poly42)
+        px, py = float(ordered0[0, 0]), float(ordered0[0, 1])
 
-    # 2. Build rotation matrix around pivot + expand canvas
-    R = cv2.getRotationMatrix2D((float(cx), float(cy)), angle_deg, 1.0)  # 2x3
+    # Get rotation matrix around pivot
+    # OpencCV uses CCW+ angle convention
+    R = cv2.getRotationMatrix2D((px, py), angle_deg_ccw, 1.0)
 
-    # Calculate required canvas size by rotating image corners
-    corners = np.array(
-        [[0, 0, 1], [W, 0, 1], [W, H, 1], [0, H, 1]], dtype=np.float32
-    ).T  # 3x4
-    rot_img_xy = (R @ corners).T  # 4x2
-    min_xy = rot_img_xy.min(axis=0)
-    max_xy = rot_img_xy.max(axis=0)
+    # Calculate expanded canvas size
+    corners = np.array([[0, 0, 1], [W, 0, 1], [W, H, 1], [0, H, 1]], dtype=np.float32).T
+    rot_xy = (R @ corners).T[:, :2]
+    min_xy, max_xy = rot_xy.min(0), rot_xy.max(0)
     tx, ty = -min_xy[0], -min_xy[1]
-    R[:, 2] += [tx, ty]  # translate to ensure positive coordinates
+    R[:, 2] += [tx, ty]  # Add translation to matrix
     newW = int(math.ceil(max_xy[0] - min_xy[0]))
     newH = int(math.ceil(max_xy[1] - min_xy[1]))
 
-    # Configure border handling
+    # Set border handling mode
     if border_mode == "replicate":
         bmode, bval = cv2.BORDER_REPLICATE, 0
     elif border_mode == "white":
@@ -947,50 +945,50 @@ def get_oriented_face_crop(
         borderValue=bval,
     )
 
-    # 3. Transform face polygon vertices using same matrix
+    # --- 2) Transform polygon with same affine matrix ---
     poly_h = np.concatenate(
-        [poly42, np.ones((4, 1), dtype=np.float32)], axis=1
-    )  # (4,3)
-    rot_poly = (R @ poly_h.T).T[:, :2]  # (4,2)
+        [poly42.astype(np.float32), np.ones((4, 1), np.float32)], axis=1
+    )
+    rot_poly = (R @ poly_h.T).T[:, :2]  # Apply rotation
 
-    # 4. Calculate crop region (with optional margin)
-    if scale_crop != 1.0:
-        # Scale based on original OBB axes (use TL-TR and TL-BL sides for W/H)
-        w_side = np.linalg.norm(ordered[1] - ordered[0])
-        h_side = np.linalg.norm(ordered[3] - ordered[0])
-        # Get rotated bbox
-        x_min, y_min = rot_poly.min(axis=0)
-        x_max, y_max = rot_poly.max(axis=0)
-        cx_bb = 0.5 * (x_min + x_max)
-        cy_bb = 0.5 * (y_min + y_max)
-        half_w = 0.5 * w_side * scale_crop
-        half_h = 0.5 * h_side * scale_crop
-        # Rebuild expanded axis-aligned box in rotated space
-        x_min, x_max = cx_bb - half_w, cx_bb + half_w
-        y_min, y_max = cy_bb - half_h, cy_bb + half_h
-    else:
-        x_min, y_min = rot_poly.min(axis=0)
-        x_max, y_max = rot_poly.max(axis=0)
+    # Get canonical vertex ordering (TL,TR,BR,BL) after rotation
+    p = order_polygon_vertices_tl_tr_br_bl(rot_poly).astype(np.float32)
 
-    # Ensure crop bounds are within image
-    x1 = max(int(math.floor(x_min)), 0)
-    y1 = max(int(math.floor(y_min)), 0)
-    x2 = min(int(math.ceil(x_max)), newW)
-    y2 = min(int(math.ceil(y_max)), newH)
+    # --- 3) Exact perspective warp of OBB ---
+    # Calculate sides in polygon space (avoids aspect ratio issues)
+    w_side = float(np.linalg.norm(p[1] - p[0]))  # |TR - TL|
+    h_side = float(np.linalg.norm(p[3] - p[0]))  # |BL - TL|
 
-    if x2 <= x1 or y2 <= y1:
-        return None  # invalid crop dimensions
+    # Apply margin scale factor
+    s = max(1.0, float(scale_crop))
+    W_src = max(1.0, w_side * s)
+    H_src = max(1.0, h_side * s)
 
-    crop = rot_img[y1:y2, x1:x2]  # Extract axis-aligned ROI after rotation
+    # Expand OBB around center while maintaining directions
+    c = p.mean(0)  # center point
+    u = p[1] - p[0]  # width axis
+    v = p[3] - p[0]  # height axis
+    u_n = u / (np.linalg.norm(u) + 1e-9)  # normalized width vector
+    v_n = v / (np.linalg.norm(v) + 1e-9)  # normalized height vector
+    halfW, halfH = 0.5 * W_src, 0.5 * H_src
 
-    # 5. Scale to target size using "cover" mode (fills output canvas)
+    # Calculate expanded corners
+    tl = c - halfW * u_n - halfH * v_n
+    tr = c + halfW * u_n - halfH * v_n
+    br = c + halfW * u_n + halfH * v_n
+    bl = c - halfW * u_n + halfH * v_n
+    src = np.stack([tl, tr, br, bl], axis=0).astype(np.float32)
+
+    # Define target rectangle coords
     Wt, Ht = crop_out_wh
-    ch, cw = crop.shape[:2]
-    s = max(Wt / float(cw), Ht / float(ch))
-    newW2, newH2 = int(round(cw * s)), int(round(ch * s))
-    cover = cv2.resize(crop, (newW2, newH2), interpolation=cv2.INTER_LINEAR)
-    left = max(0, (newW2 - Wt) // 2)
-    top = max(0, (newH2 - Ht) // 2)
-    out = cover[top : top + Ht, left : left + Wt, :]
+    dst = np.array(
+        [[0, 0], [Wt - 1, 0], [Wt - 1, Ht - 1], [0, Ht - 1]], dtype=np.float32
+    )
 
-    return out  # RGB uint8 array of shape (Ht, Wt, 3)
+    # Apply perspective transform
+    M = cv2.getPerspectiveTransform(src, dst)
+    out = cv2.warpPerspective(
+        rot_img, M, (Wt, Ht), flags=cv2.INTER_LINEAR, borderMode=bmode, borderValue=bval
+    )
+
+    return out

@@ -249,16 +249,16 @@ class NewBORN(nn.Module):
         self.fpn = FPN(in_channels_list, out_channel)
 
         # SSH layers applied on each FPN output for enhanced feature extraction
-        self.ssh1_stage1 = SSH(out_channel, out_channel)  # P3
+        self.ssh1_stage1 = SSH(out_channel, out_channel)  # P2
         self.ssh1_stage2 = SSH(out_channel, out_channel)
 
-        self.ssh2_stage1 = SSH(out_channel, out_channel)  # P4
+        self.ssh2_stage1 = SSH(out_channel, out_channel)  # P3
         self.ssh2_stage2 = SSH(out_channel, out_channel)
 
-        self.ssh3_stage1 = SSH(out_channel, out_channel)  # P5
+        self.ssh3_stage1 = SSH(out_channel, out_channel)  # P4
         self.ssh3_stage2 = SSH(out_channel, out_channel)
 
-        self.ssh4_stage1 = SSH(out_channel, out_channel)  # P2
+        self.ssh4_stage1 = SSH(out_channel, out_channel)  # P5
         self.ssh4_stage2 = SSH(out_channel, out_channel)
 
         self.ssh5_stage1 = SSH(out_channel, out_channel)  # P6

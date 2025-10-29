@@ -797,7 +797,7 @@ def evaluate_obb(
                 per_score[true_cls].append(score_det)
                 # TP-only IoU
                 iou_errs[true_cls].append(float(iou_val))
-                # Angle error (UNCHANGED)
+                # Angle error
                 dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr[gi, 4])
                 angle_errs[true_cls].append(float(torch.abs(dtheta) * 180.0 / np.pi))
                 # CM bookkeeping
@@ -839,7 +839,6 @@ def evaluate_obb(
             c_gt = int(gt_cls[gi])
             if c_gt in stats:
                 stats[c_gt]["fn"] += 1
-                # keep your previous convention to stabilize PR
                 per_true[c_gt].append(1)
                 per_score[c_gt].append(0.0)
             y_true.append(c_gt)
@@ -1095,7 +1094,7 @@ def evaluate_obb(
             f"  IoU(all GT): mean={iou_all_stats['mean']:.3f}  median={iou_all_stats['median']:.3f}  "
             f"p25={iou_all_stats['p25']:.3f}  p75={iou_all_stats['p75']:.3f}  std={iou_all_stats['std']:.3f}"
         )
-    # Angle global stats (TP-only, unchanged behavior)
+    # Angle global stats
     all_angles = [a for cls in LABELS_MAP for a in angle_errs[cls]]
     angle_global_stats = {}
     if len(all_angles) > 0:

@@ -579,11 +579,11 @@ def plot_precision_recall(
     all_scores = np.concatenate([per_score[c] for c in classes])
 
     prec_all, rec_all, _ = precision_recall_curve(all_true, all_scores)
-    prec_all_s = smooth_curve(prec_all, sigma)
-    rec_all_s = smooth_curve(rec_all, sigma)
+    #prec_all_s = smooth_curve(prec_all, sigma)
+    #rec_all_s = smooth_curve(rec_all, sigma)
     ax.plot(
-        rec_all_s,
-        prec_all_s,
+        rec_all,
+        prec_all,
         lw=3,
         color="blue",
         label=f"all classes {mAP:.3f} mAP@0.5",

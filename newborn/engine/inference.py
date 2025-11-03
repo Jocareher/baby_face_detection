@@ -579,8 +579,8 @@ def plot_precision_recall(
     all_scores = np.concatenate([per_score[c] for c in classes])
 
     prec_all, rec_all, _ = precision_recall_curve(all_true, all_scores)
-    #prec_all_s = smooth_curve(prec_all, sigma)
-    #rec_all_s = smooth_curve(rec_all, sigma)
+    # prec_all_s = smooth_curve(prec_all, sigma)
+    # rec_all_s = smooth_curve(rec_all, sigma)
     ax.plot(
         rec_all,
         prec_all,
@@ -2218,3 +2218,96 @@ def export_predictions(
     tqdm.write(f"📂  Images: {out_imgs}")
     tqdm.write(f"📝  Labels: {out_lbls}")
     tqdm.write(f"✂️  Crops : {out_crops}")
+
+
+def plot_gt_angle_histograms_counts(
+    gt_angles_all_deg: List[float],
+    gt_angles_per_cls_deg: Dict[int, List[float]],
+    labels_map: Dict[int, str],
+    bin_deg: int = 10,
+) -> Dict[str, plt.Figure]:
+    """
+    Create histogram figures of ground-truth face angles (degrees).
+
+    This helper builds two matplotlib figures:
+      - "all": a single histogram aggregating all GT angles across classes.
+      - "per_class": a grid of histograms, one per class (ordered by labels_map keys).
+
+    Purpose:
+      - Inspect the angular distribution of annotated faces.
+      - Reveal class imbalances or preferred orientations in the dataset.
+
+    Arguments:
+      gt_angles_all_deg: Flat list of GT angles in degrees in range [0, 180).
+      gt_angles_per_cls_deg: Mapping class_index -> list of GT angles (degrees).
+      labels_map: Mapping from class_index -> human readable class name.
+      bin_deg: Histogram bin width in degrees. Must be in (0, 180].
+
+    Returns:
+      Dict with keys:
+        - "all": Figure with aggregated histogram.
+        - "per_class": Figure with per-class histogram grid.
+
+    Notes:
+      - Bins are generated as np.arange(0, 180 + bin_deg, bin_deg) so the last bin
+        includes angles close to 180 degrees. Angles should already be in degrees.
+      - Empty classes produce empty histograms (count = 0) and are still shown
+        in the grid; axes for unused grid cells are turned off.
+    """
+    # Validate bin width
+    assert 0 < bin_deg <= 180, "bin_deg must be in the interval (0, 180]"
+
+    # Prepare bin edges from 0 to 180 inclusive so bins represent [0, bin_deg), ... ,[180-bin_deg,180]
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+
+    # -------------------------
+    # Aggregated histogram (all classes combined)
+    # -------------------------
+    fig_all, ax_all = plt.subplots(figsize=(8, 4.5))
+    # Draw histogram with black edges for better readability
+    ax_all.hist(gt_angles_all_deg, bins=bins, edgecolor="black")
+    ax_all.set_title(f"GT angle histogram (all samples) — bin={bin_deg}°")
+    ax_all.set_xlabel("GT angle [deg] ∈ [0, 180)")
+    ax_all.set_ylabel("Count")
+    ax_all.grid(axis="y", linestyle=":", alpha=0.6)
+    # Remove top/right spines for a cleaner look
+    for s in ("top", "right"):
+        ax_all.spines[s].set_visible(False)
+    fig_all.tight_layout()
+
+    # -------------------------
+    # Per-class histograms grid
+    # -------------------------
+    classes = list(labels_map.keys())
+    n_cls = len(classes)
+    # Choose up to 3 columns to keep subplots readable; adjust rows accordingly
+    n_cols = min(3, n_cls) if n_cls > 0 else 1
+    n_rows = math.ceil(n_cls / n_cols) if n_cls > 0 else 1
+    fig_cls, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.8 * n_rows))
+    # Ensure axes is 2D array for consistent indexing
+    axes = np.atleast_2d(axes)
+
+    for idx, c in enumerate(classes):
+        r, col = divmod(idx, n_cols)
+        ax = axes[r, col]
+        vals = gt_angles_per_cls_deg.get(c, [])
+        # Plot histogram even if vals is empty (will render empty axes)
+        ax.hist(vals, bins=bins, edgecolor="black")
+        ax.set_title(f"{labels_map[c]} (n={len(vals)}) — bin={bin_deg}°")
+        ax.set_xlabel("GT angle [deg]")
+        ax.set_ylabel("Count")
+        ax.grid(axis="y", linestyle=":", alpha=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+
+    # Turn off any unused axes (when grid larger than number of classes)
+    total_cells = n_rows * n_cols
+    for k in range(n_cls, total_cells):
+        r, col = divmod(k, n_cols)
+        axes[r, col].axis("off")
+
+    fig_cls.suptitle(f"GT angle histogram per class — bin={bin_deg}°")
+    # Leave space for the suptitle
+    fig_cls.tight_layout(rect=[0, 0, 1, 0.97])
+
+    return {"all": fig_all, "per_class": fig_cls}

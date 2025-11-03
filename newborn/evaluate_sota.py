@@ -26,6 +26,7 @@ from engine.inference import (
     plot_boxplots,
     plot_confusion_matrix,
     plot_f1_vs_threshold,
+    plot_gt_angle_histograms_counts,
 )
 from loss.utils import batch_probiou
 from data_setup.augmentations import wrap_to_pi
@@ -628,7 +629,9 @@ def evaluate_obb(
     iou_errs = {
         c: [] for c in LABELS_MAP
     }  # IoU for matched (TP) pairs -> TP quality by class
-    angle_errs = {c: [] for c in LABELS_MAP}  # Angle error for TPs (UNCHANGED)
+    angle_errs = {c: [] for c in LABELS_MAP}  # Angle error for TPs
+    gt_angles_per_cls_deg: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}
+    gt_angles_all_deg: List[float] = []
 
     # ---------- GT-anchored IoU (FN -> 0) ----------
     iou_all_gt_per_cls: Dict[int, List[float]] = {
@@ -753,6 +756,25 @@ def evaluate_obb(
         matches, unmatched_gt, unmatched_pr = greedy_match(
             gt_xywhr, pr_xywhr, pr_scores, iou_th=iou_th
         )
+
+        # Accumulate gt angular data
+        if G > 0:
+            gt_theta_wrapped = wrap_to_pi(gt_xywhr[:, 4])
+            for gi in range(G):
+                # Only consider GTs of known classes
+                c_gt = int(gt_cls[gi])
+                if c_gt in LABELS_MAP:
+                    # Convert to unsigned degrees in [0, 180)
+                    theta = float(gt_theta_wrapped[gi])
+                    # Convert to unsigned degrees
+                    theta_deg_signed = theta * 180.0 / math.pi
+                    # Make unsigned in [0, 180)
+                    theta_deg_unsigned = abs(theta_deg_signed)
+                    # Clamp to just below 180 to avoid edge case
+                    theta_deg_unsigned = min(theta_deg_unsigned, 180.0 - 1e-6)
+                    # Append to per-class and global lists
+                    gt_angles_per_cls_deg[c_gt].append(theta_deg_unsigned)
+                    gt_angles_all_deg.append(theta_deg_unsigned)
 
         # Class-agnostic PR flags for adult-SOTA comparable summary
         matched_pr_idx = set(pj for (_, pj, _) in matches)
@@ -913,6 +935,26 @@ def evaluate_obb(
         fig.savefig(figs_dir / "angle_boxplot_tp.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
+    #   Boxplot of GT angles per class (babies only) ----------
+    gt_ang_data = []
+    for c, vals_deg in gt_angles_per_cls_deg.items():
+        for v_deg in vals_deg:
+            gt_ang_data.append({"class": LABELS_MAP[c], "gt_angle_deg": v_deg})
+
+    if gt_ang_data:
+        fig = plot_boxplots(
+            data=gt_ang_data,
+            x_field="class",
+            y_field="gt_angle_deg",
+            title="GT angle distribution per class",
+            labels_map=LABELS_MAP,
+            y_lim=(0, 180),
+        )
+        fig.savefig(
+            figs_dir / "gt_angle_boxplot_per_class.png", dpi=150, bbox_inches="tight"
+        )
+        plt.close(fig)
+
     # ---------- IoU histogram & boxplot (ALL GT) ----------
     if len(iou_all_gt_global) > 0:
         arr = np.asarray(iou_all_gt_global, dtype=np.float32)
@@ -955,6 +997,27 @@ def evaluate_obb(
             "p75": 0.0,
             "std": 0.0,
         }
+
+    # --- Histograms of GT angles (counts only; babies only) ---
+    for bin_deg in (20, 10, 5):
+        figs_hist = plot_gt_angle_histograms_counts(
+            gt_angles_all_deg=gt_angles_all_deg,
+            gt_angles_per_cls_deg=gt_angles_per_cls_deg,
+            labels_map=LABELS_MAP,
+            bin_deg=bin_deg,
+        )
+        figs_hist["all"].savefig(
+            figs_dir / f"gt_angle_hist_all_bin{bin_deg}.png",
+            dpi=150,
+            bbox_inches="tight",
+        )
+        plt.close(figs_hist["all"])
+        figs_hist["per_class"].savefig(
+            figs_dir / f"gt_angle_hist_per_class_bin{bin_deg}.png",
+            dpi=150,
+            bbox_inches="tight",
+        )
+    plt.close(figs_hist["per_class"])
 
     # ---------- F1 vs threshold (strict multi-class) ----------
     f1_fig = plot_f1_vs_threshold(all_gts, all_scores, all_preds, LABELS_MAP)

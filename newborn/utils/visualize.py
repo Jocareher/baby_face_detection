@@ -3,16 +3,24 @@ import random
 import re
 import os
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List, Any
 
 import cv2
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 from matplotlib.patches import Polygon
 from PIL import Image, ImageDraw, ImageFont, Image
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-
+from matplotlib import patches
+from scipy.ndimage import gaussian_filter1d
+from sklearn.metrics import (
+    average_precision_score,
+    precision_recall_curve,
+    confusion_matrix,
+    f1_score,
+)
 
 from loss.utils import xyxyxyxy2xywhr, xywhr2xyxyxyxy, decode_vertices
 from utils.helpers import to_numpy, ensure_polygons_42_shape
@@ -992,3 +1000,1242 @@ def get_oriented_face_crop(
     )
 
     return out
+
+
+def plot_gt_angle_histograms_counts(
+    gt_angles_all_deg: List[float],
+    gt_angles_per_cls_deg: Dict[int, List[float]],
+    labels_map: Dict[int, str],
+    bin_deg: int = 10,
+) -> Dict[str, plt.Figure]:
+    """
+    Create histogram figures of ground-truth face angles (degrees).
+
+    This helper builds two matplotlib figures:
+      - "all": a single histogram aggregating all GT angles across classes.
+      - "per_class": a grid of histograms, one per class (ordered by labels_map keys).
+
+    Purpose:
+      - Inspect the angular distribution of annotated faces.
+      - Reveal class imbalances or preferred orientations in the dataset.
+
+    Arguments:
+      gt_angles_all_deg: Flat list of GT angles in degrees in range [0, 180).
+      gt_angles_per_cls_deg: Mapping class_index -> list of GT angles (degrees).
+      labels_map: Mapping from class_index -> human readable class name.
+      bin_deg: Histogram bin width in degrees. Must be in (0, 180].
+
+    Returns:
+      Dict with keys:
+        - "all": Figure with aggregated histogram.
+        - "per_class": Figure with per-class histogram grid.
+
+    Notes:
+      - Bins are generated as np.arange(0, 180 + bin_deg, bin_deg) so the last bin
+        includes angles close to 180 degrees. Angles should already be in degrees.
+      - Empty classes produce empty histograms (count = 0) and are still shown
+        in the grid; axes for unused grid cells are turned off.
+    """
+    # Validate bin width
+    assert 0 < bin_deg <= 180, "bin_deg must be in the interval (0, 180]"
+
+    # Prepare bin edges from 0 to 180 inclusive so bins represent [0, bin_deg), ... ,[180-bin_deg,180]
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+
+    # -------------------------
+    # Aggregated histogram (all classes combined)
+    # -------------------------
+    fig_all, ax_all = plt.subplots(figsize=(8, 4.5))
+    # Draw histogram with black edges for better readability
+    ax_all.hist(gt_angles_all_deg, bins=bins, edgecolor="black")
+    ax_all.set_title(f"GT angle histogram (all samples) — bin={bin_deg}°")
+    ax_all.set_xlabel("GT angle [deg] ∈ [0, 180)")
+    ax_all.set_ylabel("Count")
+    ax_all.grid(axis="y", linestyle=":", alpha=0.6)
+    # Remove top/right spines for a cleaner look
+    for s in ("top", "right"):
+        ax_all.spines[s].set_visible(False)
+    fig_all.tight_layout()
+
+    # -------------------------
+    # Per-class histograms grid
+    # -------------------------
+    classes = list(labels_map.keys())
+    n_cls = len(classes)
+    # Choose up to 3 columns to keep subplots readable; adjust rows accordingly
+    n_cols = min(3, n_cls) if n_cls > 0 else 1
+    n_rows = math.ceil(n_cls / n_cols) if n_cls > 0 else 1
+    fig_cls, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.8 * n_rows))
+    # Ensure axes is 2D array for consistent indexing
+    axes = np.atleast_2d(axes)
+
+    for idx, c in enumerate(classes):
+        r, col = divmod(idx, n_cols)
+        ax = axes[r, col]
+        vals = gt_angles_per_cls_deg.get(c, [])
+        # Plot histogram even if vals is empty (will render empty axes)
+        ax.hist(vals, bins=bins, edgecolor="black")
+        ax.set_title(f"{labels_map[c]} (n={len(vals)}) — bin={bin_deg}°")
+        ax.set_xlabel("GT angle [deg]")
+        ax.set_ylabel("Count")
+        ax.grid(axis="y", linestyle=":", alpha=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+
+    # Turn off any unused axes (when grid larger than number of classes)
+    total_cells = n_rows * n_cols
+    for k in range(n_cls, total_cells):
+        r, col = divmod(k, n_cols)
+        axes[r, col].axis("off")
+
+    fig_cls.suptitle(f"GT angle histogram per class — bin={bin_deg}°")
+    # Leave space for the suptitle
+    fig_cls.tight_layout(rect=[0, 0, 1, 0.97])
+
+    return {"all": fig_all, "per_class": fig_cls}
+
+
+def plot_error_box_by_gt_bins(
+    errs_by_bin: Dict[int, List[float]],
+    bin_deg: int,
+    title: str,
+    y_lim: Tuple[float, float] = (0, 180),
+    show_counts: bool = True,
+    show_global_mean: bool = True,
+) -> plt.Figure:
+    """
+    Create a clean, colorized series of boxplots showing angular error distributions
+    grouped by ground-truth angle bins.
+
+    Args:
+        errs_by_bin: Mapping from bin index -> list of angular errors (degrees) for that bin.
+        bin_deg: Width of each ground-truth angle bin (in degrees). Used for x-axis labels.
+        title: Main title for the figure.
+        y_lim: Optional y-axis limits (min, max). Set to None to auto-scale.
+        show_counts: If True, annotate each box with the sample count (n=...).
+        show_global_mean: If True, draw a dashed horizontal line for the global mean error.
+
+    Returns:
+        A matplotlib.figure.Figure containing the boxplots.
+    """
+    # Sort bins so plotting order is deterministic
+    bin_ids = sorted(errs_by_bin.keys())
+    values = [errs_by_bin[b] for b in bin_ids]
+    labels = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in bin_ids]
+
+    # Flatten all values to compute a global mean reference line
+    all_vals = [v for lst in values for v in lst]
+    global_mean = float(np.mean(all_vals)) if len(all_vals) else 0.0
+
+    # Figure width scales with number of bins (keeps plot readable for many bins)
+    fig_w = max(9, 1.1 * len(labels))
+    fig, ax = plt.subplots(figsize=(fig_w, 5.2))
+
+    # Create the base boxplot with neutral properties;
+    bp = ax.boxplot(
+        values,
+        notch=True,
+        patch_artist=True,
+        widths=0.6,
+        boxprops=dict(facecolor="none", edgecolor="0.2"),
+        medianprops=dict(color="white", linewidth=1.8),
+        whiskerprops=dict(color="0.4"),
+        capprops=dict(color="0.4"),
+        flierprops=dict(
+            marker="o",
+            markersize=3,
+            markerfacecolor="0.6",
+            markeredgecolor="0.4",
+            alpha=0.7,
+        ),
+    )
+
+    # Choose a pleasant qualitative colormap and assign a color per box
+    cmap = plt.get_cmap("tab10")
+    colors = [cmap(i % cmap.N) for i in range(len(labels))]
+
+    # Apply color styling per box, whisker, cap and median for better readability
+    for i, box in enumerate(bp["boxes"]):
+        face = colors[i]
+        # slightly darker edge for contrast
+        edge = "k"
+        box.set(facecolor=face, edgecolor=edge, linewidth=0.9, alpha=0.95)
+
+    # Color medians and fliers to match or contrast nicely
+    for i, median in enumerate(bp["medians"]):
+        # Use a high-contrast median (white/black) depending on box color brightness
+        median.set(color="white", linewidth=1.6)
+
+    for i, flier in enumerate(bp.get("fliers", [])):
+        fc = colors[i] if i < len(colors) else (0.6, 0.6, 0.6, 0.7)
+        flier.set(markerfacecolor=fc, markeredgecolor="0.3", alpha=0.8)
+
+    # Axis labels, title and styling
+    ax.set_xticks(range(1, len(labels) + 1))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+    ax.set_ylabel("Angular error [deg]", fontsize=11)
+    ax.set_title(f"{title}  (bin={bin_deg}°)", fontsize=12)
+    if y_lim is not None:
+        ax.set_ylim(*y_lim)
+    ax.grid(axis="y", linestyle=":", alpha=0.6)
+    ax.tick_params(axis="y", labelsize=10)
+
+    # Remove top/right spines for a cleaner look
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+
+    # Annotate each box with number of samples (n=...) placed just above the whisker/top
+    if show_counts:
+        for i, vals in enumerate(values, start=1):
+            n = len(vals)
+            if n > 0:
+                # Use the maximum non-NaN value as a baseline for the text placement
+                y = float(np.nanmax(vals))
+                ax.text(i, y + 2, f"n={n}", ha="center", va="bottom", fontsize=9)
+
+    # Draw global mean reference line if requested
+    if show_global_mean and len(all_vals) > 0:
+        ax.axhline(global_mean, linestyle="--", linewidth=1.2, color="gray", alpha=0.9)
+        ax.text(
+            0.01,
+            0.97,
+            f"Global mean = {global_mean:.1f}°",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=10,
+            color="gray",
+        )
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_error_bar_mean_std_by_gt_bins(
+    errs_by_bin: Dict[int, List[float]],
+    bin_deg: int,
+    title: str,
+    y_lim: Tuple[float, float] = (0, 180),
+    show_counts: bool = True,
+    show_global_mean: bool = True,
+) -> plt.Figure:
+    """
+    Plot mean ± std bar chart of angular errors grouped by ground-truth angle bins.
+
+    This function produces a horizontally laid out bar chart where each bar corresponds
+    to a GT-angle bin (e.g. [0,10), [10,20), ...). The height of the bar is the mean
+    angular error for that bin and the error bar is the standard deviation. Several
+    small improvements are included compared to a minimal implementation:
+      - nicer categorical colors using a matplotlib qualitative colormap
+      - count annotation above each bar (optional)
+      - global mean reference line (optional) with informative label
+      - defensive handling of empty bins (mean/std set to 0.0)
+      - clear and informative docstring and inline comments
+
+    Args:
+        errs_by_bin: Mapping from bin index -> list of angular errors (degrees) for that bin.
+        bin_deg: Width of each GT-angle bin (degrees). Used to label x-axis bins.
+        title: Main title for the figure.
+        y_lim: Optional y-axis limits (min, max). Set to None for auto-scaling.
+        show_counts: If True annotate each bar with the sample count (n=...).
+        show_global_mean: If True draw a dashed horizontal line for the global mean error.
+
+    Returns:
+        Matplotlib Figure containing the bar plot.
+    """
+    # Sort bins so plotting order is deterministic
+    bin_ids = sorted(errs_by_bin.keys())
+
+    # Compute summary statistics per bin (handle empty lists gracefully)
+    means = [float(np.mean(errs_by_bin[b])) if errs_by_bin[b] else 0.0 for b in bin_ids]
+    stds = [
+        float(np.std(errs_by_bin[b], ddof=0)) if errs_by_bin[b] else 0.0
+        for b in bin_ids
+    ]
+    ns = [len(errs_by_bin[b]) for b in bin_ids]
+
+    # Human readable labels for each bin using the provided bin width
+    labels = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in bin_ids]
+
+    # Flatten to compute a global mean (only if there are values)
+    all_vals = [v for b in bin_ids for v in errs_by_bin[b]]
+    global_mean = float(np.mean(all_vals)) if len(all_vals) else 0.0
+
+    # X positions and figure sizing
+    x = np.arange(len(bin_ids))
+    fig_w = max(9, 1.1 * len(labels))
+    fig, ax = plt.subplots(figsize=(fig_w, 5.2))
+
+    # Choose a pleasant qualitative colormap and assign a color per bar
+    cmap = plt.get_cmap("tab10")  # good distinct colors for categorical bins
+    colors = [cmap(i % cmap.N) for i in range(len(bin_ids))]
+
+    # Draw bars with error bars (std) and nicer styling
+    bars = ax.bar(
+        x,
+        means,
+        yerr=stds,
+        capsize=5,
+        color=colors,
+        edgecolor="0.15",
+        linewidth=0.8,
+        alpha=0.95,
+    )
+
+    # X axis labels and title
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+    ax.set_ylabel("Angular error [deg]", fontsize=11)
+    ax.set_title(f"{title}  (bin={bin_deg}°)", fontsize=12)
+
+    # Apply optional y-limits and grid
+    if y_lim is not None:
+        ax.set_ylim(*y_lim)
+    ax.grid(axis="y", linestyle=":", alpha=0.6)
+    ax.tick_params(axis="y", labelsize=10)
+
+    # Tidy up spines for a cleaner look
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+    ax.spines["left"].set_color("0.2")
+    ax.spines["bottom"].set_color("0.2")
+
+    # Annotate counts above bars (if requested)
+    if show_counts:
+        for rect, n in zip(bars, ns):
+            height = rect.get_height()
+            ax.text(
+                rect.get_x() + rect.get_width() / 2,
+                height + (0.02 * (y_lim[1] - y_lim[0]) if y_lim is not None else 2.0),
+                f"n={n}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+
+    # Draw global mean reference line with label if requested and data exists
+    if show_global_mean and len(all_vals) > 0:
+        ax.axhline(global_mean, linestyle="--", linewidth=1.4, color="gray", alpha=0.9)
+        ax.text(
+            0.01,
+            0.97,
+            f"Global mean = {global_mean:.1f}°",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=10,
+            color="gray",
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=2),
+        )
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_error_bar_mean_std_by_gt_bins_per_class(
+    errs_by_bin_per_cls: Dict[int, Dict[int, List[float]]],
+    labels_map: Dict[int, str],
+    bin_deg: int,
+    title_prefix: str = "Angular error vs GT angle bin",
+    y_lim: Tuple[float, float] = (0, 180),
+    share_y_axis: bool = True,
+    show_global_mean_each: bool = True,
+    show_counts: bool = False,
+    cmap_name: str = "tab10",
+) -> plt.Figure:
+    """
+    Create a multi-panel bar plot (mean ± std) of angular errors grouped by GT-angle bins,
+    produced separately per class.
+
+    This function expects a nested mapping errs_by_bin_per_cls[class_idx][bin_idx] -> list of
+    angular errors (degrees). For each class a subplot is drawn with a bar per bin where:
+      - bar height = mean error for the bin
+      - error bar   = std deviation for the bin
+      - optional: a dashed horizontal line showing the class global mean
+      - optional: annotation above each bar with sample count n=...
+
+    Improvements over a minimal implementation:
+      - nicer qualitative colormap (configurable with cmap_name)
+      - defensive handling of empty classes or empty bins
+      - consistent axis styling and optional shared Y limits for easy comparison
+      - informative per-class subplot titles using labels_map
+
+    Args:
+        errs_by_bin_per_cls: mapping class_idx -> (mapping bin_idx -> list of error values)
+        labels_map: mapping class_idx -> human readable class name
+        bin_deg: width (degrees) used to label bins (e.g. 10)
+        title_prefix: overall figure title prefix
+        y_lim: tuple (ymin, ymax) applied to each subplot if provided
+        share_y_axis: if True force all used subplots to share the same Y limits
+        show_global_mean_each: draw dashed line for class global mean when True
+        show_counts: annotate each bar with number of samples (n=...)
+        cmap_name: matplotlib colormap name used to color bars
+
+    Returns:
+        matplotlib.figure.Figure with one subplot per class (arranged in a grid).
+    """
+    classes = list(labels_map.keys())
+    n_cls = len(classes)
+    if n_cls == 0:
+        raise ValueError("labels_map must contain at least one class")
+
+    # Layout: up to 3 columns to keep individual plots readable
+    n_cols = min(3, n_cls)
+    n_rows = math.ceil(n_cls / n_cols)
+
+    # Figure sizing: scale with grid size
+    fig_w = 4.6 * n_cols
+    fig_h = 3.4 * n_rows
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_w, fig_h), squeeze=False)
+
+    # Colormap for bars; use qualitative colormap and cycle per bin
+    cmap = plt.get_cmap(cmap_name)
+    # Track which axes actually contain plotted data so we can set shared y-limits
+    used_axes = []
+
+    for idx, cls in enumerate(classes):
+        r, c = divmod(idx, n_cols)
+        ax = axes[r, c]
+
+        errs_by_bin = errs_by_bin_per_cls.get(cls, {})
+        bin_ids = sorted(errs_by_bin.keys())
+
+        # If this class has no bins, render a clear "no data" placeholder
+        if not bin_ids:
+            ax.text(
+                0.5, 0.5, "no data", ha="center", va="center", fontsize=10, color="0.4"
+            )
+            ax.axis("off")
+            continue
+
+        # Compute summary statistics per bin, handling empty lists gracefully
+        means = [
+            float(np.mean(errs_by_bin[b])) if errs_by_bin[b] else 0.0 for b in bin_ids
+        ]
+        stds = [
+            float(np.std(errs_by_bin[b], ddof=0)) if errs_by_bin[b] else 0.0
+            for b in bin_ids
+        ]
+        ns = [len(errs_by_bin[b]) for b in bin_ids]
+        labels = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in bin_ids]
+        x = np.arange(len(bin_ids))
+
+        # Choose a set of colors for the bars; rotate through the cmap so adjacent classes differ
+        colors = [cmap(i % cmap.N) for i in range(len(bin_ids))]
+
+        # Draw bars with errorbars and nicer styling
+        bars = ax.bar(
+            x,
+            means,
+            yerr=stds,
+            capsize=4,
+            color=colors,
+            edgecolor="0.15",
+            linewidth=0.8,
+            alpha=0.92,
+        )
+
+        # Annotate sample counts above each bar (optional)
+        if show_counts:
+            # compute a y-offset that is a small fraction of y-range (fallback if y_lim None)
+            yspan = (
+                (y_lim[1] - y_lim[0])
+                if y_lim is not None
+                else (max(means + stds) + 1.0)
+            )
+            offset = 0.03 * (yspan if yspan > 0 else 10.0)
+            for rect, n in zip(bars, ns):
+                if n > 0:
+                    height = rect.get_height()
+                    ax.text(
+                        rect.get_x() + rect.get_width() / 2,
+                        height + offset,
+                        f"n={n}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                        color="0.15",
+                    )
+
+        # Per-class global mean line (optional)
+        all_vals = [v for b in bin_ids for v in errs_by_bin[b]]
+        if show_global_mean_each and len(all_vals) > 0:
+            gmean = float(np.mean(all_vals))
+            ax.axhline(gmean, linestyle="--", linewidth=1.0, color="gray", alpha=0.9)
+            ax.text(
+                0.98,
+                0.92,
+                f"mean={gmean:.2f}°",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=8,
+                color="gray",
+                bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=2),
+            )
+
+        # Axis labels and styling
+        ax.set_title(f"{labels_map.get(cls, str(cls))}", fontsize=11)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel("Angular error [deg]", fontsize=10)
+        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+
+        if y_lim is not None:
+            ax.set_ylim(*y_lim)
+
+        used_axes.append(ax)
+
+    # Turn off any remaining empty subplots in the grid
+    total_cells = n_rows * n_cols
+    for k in range(n_cls, total_cells):
+        r, c = divmod(k, n_cols)
+        axes[r, c].axis("off")
+
+    # Enforce shared y-limits across used axes if requested
+    if share_y_axis and y_lim is not None and used_axes:
+        for a in used_axes:
+            a.set_ylim(*y_lim)
+
+    # Overall title and layout tweaks
+    fig.suptitle(f"{title_prefix}  (bin={bin_deg}°)", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def plot_training_curves_from_csv(csv_path: str, output_dir: Path) -> None:
+    """
+    Creates and saves training/validation curves from a model training log CSV.
+
+    Generates separate plots for different loss components and metrics:
+    - Face detection loss
+    - Classification loss
+    - Angular regression loss
+    - Oriented bounding box (OBB) loss
+    - Total combined loss
+    - Mean Average Precision (mAP)
+
+    Each plot shows training and validation curves (except mAP which is validation only)
+    with epochs on x-axis and the corresponding metric on y-axis.
+
+    Args:
+        csv_path (str): Path to CSV file containing training logs with columns:
+            epoch, train_face_loss, test_face_loss, train_class_loss, etc.
+        output_dir (Path): Directory where plots will be saved under 'curves' subfolder.
+            Will be created if it doesn't exist.
+    """
+    # Read training log data
+    df = pd.read_csv(csv_path)
+    curves_path = output_dir / "curves"
+    curves_path.mkdir(parents=True, exist_ok=True)
+
+    def make_plot(train_col: str, val_col: str, title: str, ylabel: str, filename: str):
+        """Helper function to create and save a single training/validation curve plot"""
+        plt.figure(figsize=(10, 6), facecolor="white")
+
+        # Plot training curve
+        plt.plot(
+            df["epoch"],
+            df[train_col],
+            label="Training",
+            color="#2ecc71",  # Bright green
+            linewidth=2,
+            marker="o",
+            markersize=6,
+            alpha=0.8,
+        )
+
+        # Plot validation curve
+        plt.plot(
+            df["epoch"],
+            df[val_col],
+            label="Validation",
+            color="#e74c3c",  # Bright red
+            linewidth=2,
+            marker="s",
+            markersize=6,
+            alpha=0.8,
+        )
+
+        # Styling
+        plt.xlabel("Epoch", fontsize=12, labelpad=10)
+        plt.ylabel(ylabel, fontsize=12, labelpad=10)
+        plt.title(title, fontsize=14, pad=15)
+
+        # Grid and background
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.gca().set_facecolor("#f8f9fa")  # Light gray background
+
+        # Legend with semi-transparent background
+        plt.legend(
+            framealpha=0.95,
+            facecolor="white",
+            edgecolor="none",
+            fontsize=10,
+            loc="upper right",
+        )
+
+        plt.tight_layout()
+        plt.savefig(curves_path / f"{filename}.png", dpi=300, bbox_inches="tight")
+        plt.close()
+
+    # Generate individual loss component plots
+    make_plot(
+        "train_face_loss",
+        "test_face_loss",
+        "Face Detection Loss Over Training",
+        "Loss",
+        "face_curves",
+    )
+    make_plot(
+        "train_class_loss",
+        "test_class_loss",
+        "Classification Loss Over Training",
+        "Loss",
+        "class_curves",
+    )
+    make_plot(
+        "train_angular_loss",
+        "test_angular_loss",
+        "Angular Regression Loss Over Training",
+        "Loss",
+        "angle_curves",
+    )
+    make_plot(
+        "train_obb_loss",
+        "test_obb_loss",
+        "OBB Regression Loss Over Training",
+        "Loss",
+        "obb_curves",
+    )
+    make_plot(
+        "train_rect_loss",
+        "test_rect_loss",
+        "Orthogonality Regularization Over Training",
+        "Loss",
+        "regularization_curves",
+    )
+    make_plot(
+        "train_child_loss",
+        "test_child_loss",
+        "Child Loss Over Training",
+        "Loss",
+        "child_curves",
+    )
+    make_plot(
+        "train_total_loss",
+        "test_total_loss",
+        "Total Combined Loss Over Training",
+        "Loss",
+        "total_curves",
+    )
+
+    # mAP plot (validation only)
+    plt.figure(figsize=(10, 6), facecolor="white")
+    plt.plot(
+        df["epoch"],
+        df["test_mAP"],
+        label="Validation mAP",
+        color="#3498db",  # Bright blue
+        linewidth=2.5,
+        marker="D",
+        markersize=7,
+    )
+
+    plt.xlabel("Epoch", fontsize=12, labelpad=10)
+    plt.ylabel("mAP", fontsize=12, labelpad=10)
+    plt.title("Mean Average Precision Over Training", fontsize=14, pad=15)
+
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.gca().set_facecolor("#f8f9fa")
+    plt.legend(framealpha=0.95, facecolor="white", edgecolor="none", fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(curves_path / "map.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"[INFO] Training curves saved to: {curves_path}")
+
+
+def smooth_curve(x: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    """
+    Applies a Gaussian smoothing filter to a 1D array.
+
+    Args:
+        x (np.ndarray): Input array to smooth.
+        sigma (float): Standard deviation of the Gaussian filter.
+
+    Returns:
+        np.ndarray: Smoothed array.
+    """
+    return gaussian_filter1d(x, sigma=sigma)
+
+
+def plot_precision_recall(
+    per_true: Dict[int, List[int]],
+    per_score: Dict[int, List[float]],
+    labels_map: Dict[int, str],
+    mAP: float,
+    sigma: float = 2.0,
+) -> plt.Figure:
+    """
+    Plots a smoothed Precision-Recall (PR) curve per class and a global average.
+
+    Args:
+        per_true (Dict[int, List[int]]): Binary true labels per class.
+        per_score (Dict[int, List[float]]): Prediction scores per class.
+        labels_map (Dict[int, str]): Mapping from class index to label string.
+        mAP (float): Mean Average Precision across all classes.
+        sigma (float): Smoothing factor for curves.
+
+    Returns:
+        matplotlib.figure.Figure: PR curve figure.
+    """
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.set_title("Precision-Recall Curve", fontsize=13)
+
+    classes = list(labels_map.keys())
+
+    # Plot per-class PR curves
+    for cls in classes:
+        y_t = np.array(per_true[cls], dtype=int)
+        y_s = np.array(per_score[cls], dtype=float)
+
+        if y_t.sum() == 0:
+            # Avoid division by zero: constant precision
+            prec, rec = np.ones(10), np.linspace(0, 1, 10)
+        else:
+            prec, rec, _ = precision_recall_curve(y_t, y_s)
+
+        # prec_s = smooth_curve(prec, sigma)
+        # rec_s = smooth_curve(rec, sigma)
+        ap = average_precision_score(y_t, y_s) if y_t.sum() > 0 else 0.0
+
+        ax.plot(rec, prec, lw=2, label=f"{labels_map[cls]} {ap:.3f}")
+
+    # Plot global PR curve
+    all_true = np.concatenate([per_true[c] for c in classes])
+    all_scores = np.concatenate([per_score[c] for c in classes])
+
+    prec_all, rec_all, _ = precision_recall_curve(all_true, all_scores)
+    # prec_all_s = smooth_curve(prec_all, sigma)
+    # rec_all_s = smooth_curve(rec_all, sigma)
+    ax.plot(
+        rec_all,
+        prec_all,
+        lw=3,
+        color="blue",
+        label=f"all classes {mAP:.3f} mAP@0.5",
+    )
+
+    # Axes and styling
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Recall", fontsize=11)
+    ax.set_ylabel("Precision", fontsize=11)
+    ax.set_xticks(np.arange(0, 1.01, 0.2))
+    ax.set_yticks(np.arange(0, 1.01, 0.2))
+    ax.tick_params(axis="x", labelsize=14)
+    ax.tick_params(axis="y", labelsize=14)
+
+    ax.legend(loc="upper left", bbox_to_anchor=(1.04, 1.0), fontsize=12, frameon=False)
+    plt.tight_layout()
+    print("[INFO] PR curve plotted.")
+    return fig
+
+
+def plot_confusion_matrix(
+    y_true: List[int], y_pred: List[int], labels_map: Dict[int, str]
+) -> Dict[str, plt.Figure]:
+    """
+    Plots both the raw and normalized confusion matrices.
+
+    Args:
+        y_true (List[int]): Ground truth class indices.
+        y_pred (List[int]): Predicted class indices (may include -1 for background).
+        labels_map (Dict[int, str]): Mapping from class index to class name.
+
+    Returns:
+        Dict[str, plt.Figure]: Dictionary with 'raw' and 'normalized' confusion matrix plots.
+    """
+    labels = list(labels_map.keys()) + [-1]
+    names = [labels_map.get(l, "BG") for l in labels]
+
+    cm_raw = confusion_matrix(y_true, y_pred, labels=labels)
+    cm_norm = cm_raw.astype(float) / cm_raw.sum(axis=1, keepdims=True)
+    cm_norm = np.nan_to_num(cm_norm)  # Replace NaNs from division by zero
+
+    # Raw matrix plot
+    fig_raw, ax_raw = plt.subplots(figsize=(6, 6))
+    im_raw = ax_raw.imshow(cm_raw, cmap="Blues")
+    for i in range(len(names)):
+        for j in range(len(names)):
+            val = cm_raw[i, j]
+            if val == 0:
+                continue
+            text = (
+                f"{np.diag(cm_raw)[i]}/{cm_raw.sum(1)[i]}" if i == j else str(int(val))
+            )
+            color = "white" if val > cm_raw.max() / 2 else "black"
+            ax_raw.text(j, i, text, ha="center", va="center", color=color)
+    ax_raw.set_xticks(range(len(names)))
+    ax_raw.set_yticks(range(len(names)))
+    ax_raw.set_xticklabels(names, rotation=45, ha="right")
+    ax_raw.set_yticklabels(names)
+    ax_raw.set_xlabel("Predicted", fontsize=11)
+    ax_raw.set_ylabel("True", fontsize=11)
+    ax_raw.set_title("Confusion Matrix (Raw)", fontsize=13)
+    plt.colorbar(im_raw, ax=ax_raw, fraction=0.046, pad=0.04)
+    fig_raw.tight_layout()
+
+    # Normalized matrix plot
+    fig_norm, ax_norm = plt.subplots(figsize=(6, 6))
+    im_norm = ax_norm.imshow(cm_norm, cmap="Blues", vmin=0.0, vmax=1.0)
+    for i in range(len(names)):
+        for j in range(len(names)):
+            val = cm_norm[i, j]
+            if val == 0:
+                continue
+            text = f"{val:.2f}"
+            color = "white" if val > 0.5 else "black"
+            ax_norm.text(j, i, text, ha="center", va="center", color=color)
+    ax_norm.set_xticks(range(len(names)))
+    ax_norm.set_yticks(range(len(names)))
+    ax_norm.set_xticklabels(names, rotation=45, ha="right")
+    ax_norm.set_yticklabels(names)
+    ax_norm.set_xlabel("Predicted", fontsize=11)
+    ax_norm.set_ylabel("True", fontsize=11)
+    ax_norm.set_title("Confusion Matrix (Normalized)", fontsize=13)
+    plt.colorbar(im_norm, ax=ax_norm, fraction=0.046, pad=0.04)
+    fig_norm.tight_layout()
+
+    print("[INFO] Confusion matrices plotted (raw and normalized).")
+    return {"raw": fig_raw, "normalized": fig_norm}
+
+
+def plot_child_confusion_matrix(
+    y_true: List[int],
+    y_pred: List[int],
+    figsize: Tuple[int, int] = (4, 4),
+) -> Dict[str, plt.Figure]:
+    """
+    Plot the Adult (0) / Child (1) binary confusion matrix, returning both
+    the raw counts and the row‑normalized version.
+
+    Args:
+        y_true (List[int]): Ground‑truth labels (0 = adult, 1 = child).
+        y_pred (List[int]): Predicted labels  (0 = adult, 1 = child).
+        figsize (Tuple[int, int]): Size of the output figures.
+
+    Returns:
+        Dict[str, plt.Figure]: A dict with keys **"raw"** and **"normalized"**
+        mapping to the corresponding matplotlib figures.
+    """
+    # ------------------------------------------------------------------ #
+    # 1) Compute raw and normalized matrices
+    # ------------------------------------------------------------------ #
+    cm_raw = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    cm_norm = cm_raw.astype(float)
+    row_sums = cm_norm.sum(axis=1, keepdims=True)
+    cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
+
+    classes = ["Adult", "Child"]
+
+    # ------------------------------------------------------------------ #
+    # 2) Plot raw confusion matrix
+    # ------------------------------------------------------------------ #
+    fig_raw, ax_raw = plt.subplots(figsize=figsize)
+    im_raw = ax_raw.imshow(cm_raw, cmap="Blues")
+
+    for i in range(2):
+        for j in range(2):
+            val = cm_raw[i, j]
+            if val == 0:
+                continue
+            ax_raw.text(
+                j,
+                i,
+                int(val),
+                ha="center",
+                va="center",
+                color="white" if val > cm_raw.max() / 2 else "black",
+            )
+
+    ax_raw.set_xticks([0, 1])
+    ax_raw.set_yticks([0, 1])
+    ax_raw.set_xticklabels(classes)
+    ax_raw.set_yticklabels(classes)
+    ax_raw.set_xlabel("Predicted", fontsize=11)
+    ax_raw.set_ylabel("True", fontsize=11)
+    ax_raw.set_title("Adult / Child Confusion Matrix (Raw)", fontsize=13)
+    plt.colorbar(im_raw, ax=ax_raw, fraction=0.046, pad=0.04)
+    fig_raw.tight_layout()
+
+    # ------------------------------------------------------------------ #
+    # 3) Plot normalized confusion matrix
+    # ------------------------------------------------------------------ #
+    fig_norm, ax_norm = plt.subplots(figsize=figsize)
+    im_norm = ax_norm.imshow(cm_norm, cmap="Blues", vmin=0.0, vmax=1.0)
+
+    for i in range(2):
+        for j in range(2):
+            val = cm_norm[i, j]
+            if val == 0:
+                continue
+            ax_norm.text(
+                j,
+                i,
+                f"{val:.2f}",
+                ha="center",
+                va="center",
+                color="white" if val > 0.5 else "black",
+            )
+
+    ax_norm.set_xticks([0, 1])
+    ax_norm.set_yticks([0, 1])
+    ax_norm.set_xticklabels(classes)
+    ax_norm.set_yticklabels(classes)
+    ax_norm.set_xlabel("Predicted", fontsize=11)
+    ax_norm.set_ylabel("True", fontsize=11)
+    ax_norm.set_title("Adult / Child Confusion Matrix (Normalized)", fontsize=13)
+    plt.colorbar(im_norm, ax=ax_norm, fraction=0.046, pad=0.04)
+    fig_norm.tight_layout()
+
+    print("[INFO] Adult/Child confusion matrices plotted.")
+    return {"raw": fig_raw, "normalized": fig_norm}
+
+
+def plot_boxplots(
+    data: List[Dict[str, Any]],
+    x_field: str,
+    y_field: str,
+    title: str,
+    labels_map: Dict[int, str],
+    y_lim: Tuple[float, float] = None,
+    cmap_name: str = "tab10",
+) -> plt.Figure:
+    """
+    Draws class-wise colored boxplots for any metric (IoU, angle error, etc.)
+    and includes a legend with mean ± std per class.
+
+
+    Args:
+        data (List[Dict[str, Any]]): List of metric dictionaries with 'class' and value fields.
+        x_field (str): Name of the field to group by (class).
+        y_field (str): Metric name to plot.
+        title (str): Plot title.
+        labels_map (Dict[int, str]): Mapping from class index to label.
+        y_lim (Tuple[float, float], optional): Y-axis limits.
+        cmap_name (str): Name of the colormap to use.
+
+    Returns:
+        matplotlib.figure.Figure: Boxplot figure.
+    """
+    classes = list(labels_map.keys())
+    class_names = [labels_map[c] for c in classes]
+
+    # Organize values by class
+    values = [
+        [d[y_field] for d in data if d[x_field] == labels_map[c]] for c in classes
+    ]
+
+    # Compute mean ± std for each class
+    mean_std_text = {}
+    for i, val in enumerate(values):
+        name = class_names[i]
+        if val:
+            mu = np.mean(val)
+            sigma = np.std(val)
+            mean_std_text[name] = f"{mu:.2f} ± {sigma:.2f}"
+        else:
+            mean_std_text[name] = "N/A"
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    # Basic boxplot (unstyled)
+    bp = ax.boxplot(
+        values,
+        positions=np.arange(len(class_names)),
+        notch=True,
+        patch_artist=True,
+        boxprops=dict(facecolor="none", edgecolor="black"),
+        medianprops=dict(color="black"),
+        whiskerprops=dict(color="black"),
+        capprops=dict(color="black"),
+    )
+
+    # Apply colormap
+    cmap = plt.get_cmap(cmap_name)
+    colors = {}
+    for i, box in enumerate(bp["boxes"]):
+        this_color = cmap(i)
+        colors[class_names[i]] = this_color
+        box.set_facecolor(this_color)
+        box.set_edgecolor("black")
+
+    # Add jittered points
+    for i, (name, val) in enumerate(zip(class_names, values)):
+        if val:
+            jittered_x = np.random.normal(i, 0.04, size=len(val))
+            ax.scatter(
+                jittered_x,
+                val,
+                alpha=0.7,
+                edgecolors="black",
+                color=colors[name],
+                label=f"{name} {mean_std_text[name]}",
+            )
+
+    # Axes style
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=10)
+    ax.set_ylabel(y_field, fontsize=12)
+    ax.set_title(title, fontsize=14)
+    if y_lim:
+        ax.set_ylim(y_lim)
+    ax.grid(axis="y", linestyle=":", alpha=0.6)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    # Legend outside
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.04, 1.0),
+        frameon=False,
+        title=f"{y_field} per class",
+    )
+
+    plt.tight_layout()
+    print(f"[INFO] Boxplot for '{y_field}' created.")
+    return fig
+
+
+def plot_f1_vs_threshold(
+    all_gts: List[int],
+    all_scores: List[float],
+    all_preds: List[int],
+    labels_map: Dict[int, str],
+    default_th: float = 0.5,
+    n_steps: int = 100,
+    sigma: float = 2.0,
+) -> plt.Figure:
+    """
+    Plots F1 Score vs. confidence threshold for each class, reconstructing
+    predictions from all_scores and all_preds at each threshold.
+
+    Args:
+        all_gts      : List of true labels (integers).
+        all_scores   : List of scores (float) associated with each prediction.
+        all_preds    : List of originally predicted labels (but the previous threshold will be ignored).
+        labels_map   : Dict[int, str] mapping index→class name.
+        default_th   : “default” threshold (used only to show it as a reference).
+        n_steps      : Number of equally spaced points in [0,1] to evaluate F1.
+        sigma        : Smoothing factor for the curve.
+
+    Returns:
+        matplotlib.figure.Figure with F1 vs threshold curves per class.
+    """
+    thresholds = np.linspace(0.0, 1.0, n_steps)
+    y_true = np.array(all_gts, dtype=int)
+    classes = list(labels_map.keys())
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.set_title("F1 vs. Confidence Threshold", fontsize=13)
+
+    for cls in classes:
+        f1s = []
+        for t in thresholds:
+            # For each prediction: if score >= t, assign the original label;
+            # if score < t, assign -1 (background)
+            y_pred_t = [
+                (lbl if sc >= t else -1) for sc, lbl in zip(all_scores, all_preds)
+            ]
+            # Compute F1 with zero_division=0
+            f1_val = f1_score(
+                y_true, y_pred_t, labels=classes, average=None, zero_division=0
+            )
+            f1s.append(f1_val[classes.index(cls)])
+
+        f1s = np.array(f1s)
+        f1_s = smooth_curve(f1s, sigma)
+        ax.plot(thresholds, f1_s, lw=2, label=f"{labels_map[cls]} {f1_s.mean():.3f}")
+
+        # Mark the optimal F1 point for this class
+        best_i = f1_s.argmax()
+        ax.axvline(
+            thresholds[best_i],
+            linestyle="--",
+            lw=1,
+            color=ax.get_lines()[-1].get_color(),
+        )
+        ax.scatter(
+            [thresholds[best_i]],
+            [f1_s[best_i]],
+            s=50,
+            zorder=3,
+            color=ax.get_lines()[-1].get_color(),
+        )
+
+    # Reference to the default threshold
+    ax.axvline(
+        default_th,
+        color="gray",
+        linestyle=":",
+        linewidth=1.0,
+        label=f"default_th={default_th}",
+    )
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Confidence Threshold", fontsize=11)
+    ax.set_ylabel("F1 Score", fontsize=11)
+    ax.set_xticks(np.arange(0, 1.01, 0.2))
+    ax.set_yticks(np.arange(0, 1.01, 0.2))
+    ax.tick_params(axis="x", labelsize=12)
+    ax.tick_params(axis="y", labelsize=12)
+
+    ax.legend(loc="upper left", bbox_to_anchor=(1.04, 1.0), fontsize=10, frameon=False)
+    plt.tight_layout()
+    print("[INFO] F1 vs. threshold curve plotted.")
+    return fig
+
+
+# -----------------------------------------------------------------------------
+# IV. Qualitative Grid & Saving Individually
+# -----------------------------------------------------------------------------
+
+
+def plot_qualitative_grid(
+    samples: List[
+        Tuple[
+            Any, Dict[str, torch.Tensor], str, torch.Tensor, torch.Tensor, torch.Tensor
+        ]
+    ],
+    labels_map: Dict[int, str],
+    grid_shape: Tuple[int, int],
+    mean: Tuple[float, float, float],
+    std: Tuple[float, float, float],
+) -> plt.Figure:
+    """
+    Creates a grid of sample predictions showing both ground truth and predicted oriented bounding boxes (OBBs).
+
+    Args:
+        samples (List[Tuple]): List of samples, where each sample contains:
+            - image_tensor (torch.Tensor): Normalized image tensor
+            - prediction_dict (Dict[str, torch.Tensor]): Model predictions including:
+                - 'polygons': Vertex coordinates of predicted OBBs
+                - 'labels': Predicted class labels
+                - 'scores': Confidence scores
+                - 'boxes': OBB parameters (x,y,w,h,θ)
+            - filename (str): Original image filename
+            - gt_boxes (torch.Tensor): Ground truth OBB vertex coordinates
+            - gt_angles (torch.Tensor): Ground truth rotation angles
+            - gt_labels (torch.Tensor): Ground truth class labels
+            - fp_count (int): Number of false positives
+            - fn_count (int): Number of false negatives
+            - viz_payload (Optional[Dict]): Optional visualization metadata
+        labels_map (Dict[int, str]): Mapping from class indices to human-readable labels
+        grid_shape (Tuple[int, int]): Number of (rows, columns) in the visualization grid
+        mean (Tuple[float, float, float]): Channel-wise means for image denormalization
+        std (Tuple[float, float, float]): Channel-wise standard deviations for denormalization
+
+    Returns:
+        matplotlib.figure.Figure: Figure containing the grid of visualizations with both
+        ground truth (green dashed) and predicted (blue solid) oriented bounding boxes,
+        each annotated with class label, angle and confidence score.
+    """
+    rows, cols = grid_shape
+    # Create figure with white background for better visualization
+    fig, axes = plt.subplots(
+        rows, cols, figsize=(cols * 4, rows * 4), facecolor="white"
+    )
+    axes = axes.flatten()
+
+    # Process only enough samples to fill the grid
+    for ax, sample in zip(axes, samples[: rows * cols]):
+        # Handle both 8-element and 9-element sample tuples (with/without viz_payload)
+        if len(sample) == 9:
+            img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img, _viz = sample
+        else:
+            img_t, out, fname, gt_b, gt_a, gt_l, fp_img, fn_img = sample
+
+        # Display denormalized image and configure axis
+        ax.imshow(denormalize_image(img_t, mean=mean, std=std))
+        ax.axis("off")
+        ax.set_title(f"{Path(fname).name}\nFP:{fp_img}  FN:{fn_img}", fontsize=7)
+        ax.set_aspect("equal")
+
+        # Draw ground truth OBBs (green dashed boxes)
+        for pts, angle, cls in zip(gt_b, gt_a, gt_l):
+            pts_np = pts.view(4, 2).numpy()
+            # Draw OBB polygon
+            ax.add_patch(
+                patches.Polygon(
+                    pts_np,
+                    closed=True,
+                    fill=False,
+                    edgecolor="#008000",  # Dark green
+                    linewidth=2,
+                    linestyle="--",
+                )
+            )
+            # Draw front edge (orientation indicator)
+            ax.plot(pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="orange", linewidth=2)
+
+            # Add label with class and angle at bottom-right
+            br_x, br_y = pts_np[:, 0].max(), pts_np[:, 1].max()
+            ax.text(
+                br_x,
+                br_y,
+                f"{labels_map.get(int(cls), 'unknown')}: {math.degrees(float(angle)):.1f}°",
+                color="white",
+                fontsize=6,
+                fontweight="bold",
+                ha="right",
+                va="bottom",
+                bbox=dict(facecolor="#008000", alpha=0.8, edgecolor="none", pad=2.5),
+            )
+
+        # Draw predicted OBBs (blue solid boxes)
+        for i, (pts, lbl, score) in enumerate(
+            zip(out["polygons"], out["labels"], out["scores"])
+        ):
+            pts_np = pts.view(4, 2).numpy()
+            # Draw OBB polygon
+            ax.add_patch(
+                patches.Polygon(
+                    pts_np,
+                    closed=True,
+                    fill=False,
+                    edgecolor="#004080",  # Dark blue
+                    linewidth=1.5,
+                )
+            )
+            # Draw front edge (orientation indicator)
+            ax.plot(
+                pts_np[[0, 1], 0], pts_np[[0, 1], 1], color="#800000", linewidth=1.5
+            )
+
+            # Add label with class, angle and score at top-left
+            tl_x, tl_y = pts_np[:, 0].min(), pts_np[:, 1].min()
+            ang = math.degrees(float(out["boxes"][i, 4]))
+            ax.text(
+                tl_x,
+                tl_y,
+                f"{labels_map.get(int(lbl), 'unknown')}: {ang:.1f}° / {score:.2f}",
+                color="white",
+                fontsize=6,
+                ha="left",
+                va="top",
+                bbox=dict(facecolor="#004080", alpha=0.9, edgecolor="none", pad=2.5),
+            )
+
+    # Hide any unused axes in the grid
+    for ax in axes[len(samples) :]:
+        ax.axis("off")
+
+    fig.tight_layout(pad=0.5)
+    print("[INFO] Grid of qualitative predictions plotted.")
+    return fig

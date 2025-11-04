@@ -20,17 +20,21 @@ from benchmark.benchmark import (
     plot_precision_recall_vs_threshold,
     classify_image_gt,
 )
-from engine.inference import (
+from engine.inference import compute_map_and_pr
+from loss.utils import batch_probiou
+from data_setup.augmentations import wrap_to_pi
+from utils.visualize import (
+    img_size,
+    plot_gt_angle_histograms_counts,
+    plot_error_box_by_gt_bins,
+    plot_error_bar_mean_std_by_gt_bins,
+    plot_error_bar_mean_std_by_gt_bins_per_class,
     plot_precision_recall,
-    compute_map_and_pr,
     plot_boxplots,
     plot_confusion_matrix,
     plot_f1_vs_threshold,
-    plot_gt_angle_histograms_counts,
 )
-from loss.utils import batch_probiou
-from data_setup.augmentations import wrap_to_pi
-from utils.visualize import img_size
+
 
 LABELS_MAP: Dict[int, str] = {
     0: "Leftside",
@@ -630,8 +634,11 @@ def evaluate_obb(
         c: [] for c in LABELS_MAP
     }  # IoU for matched (TP) pairs -> TP quality by class
     angle_errs = {c: [] for c in LABELS_MAP}  # Angle error for TPs
+    # ---------- Angle error over ALL GTs ----------
     gt_angles_per_cls_deg: Dict[int, List[float]] = {c: [] for c in LABELS_MAP}
     gt_angles_all_deg: List[float] = []
+    angle_errors_by_gtbin_global: Dict[int, Dict[int, List[float]]] = {}
+    angle_errors_by_gtbin_per_cls: Dict[int, Dict[int, Dict[int, List[float]]]] = {}
 
     # ---------- GT-anchored IoU (FN -> 0) ----------
     iou_all_gt_per_cls: Dict[int, List[float]] = {
@@ -671,10 +678,22 @@ def evaluate_obb(
                 per_true[cls].append(0)
                 per_score[cls].append(0.0)
 
+    def init_bin_buckets(bin_deg: int):
+        if bin_deg not in angle_errors_by_gtbin_global:
+            angle_errors_by_gtbin_global[bin_deg] = {}
+            angle_errors_by_gtbin_per_cls[bin_deg] = {c: {} for c in LABELS_MAP}
+
+    def gt_bin_index(theta_deg_unsigned: float, bin_deg: int) -> int:
+        t = min(theta_deg_unsigned, 180.0 - 1e-6)
+        return int(t // bin_deg)
+
     # ---------- Enumerate images ----------
     jpgs = sorted(list(images_dir.glob("*.jpg"))) + sorted(
         list(images_dir.glob("*.png"))
     )
+
+    for bin in (20, 10, 5):
+        init_bin_buckets(bin)
 
     for img_p in jpgs:
         stem = img_p.stem
@@ -821,13 +840,31 @@ def evaluate_obb(
                 iou_errs[true_cls].append(float(iou_val))
                 # Angle error
                 dtheta = wrap_to_pi(pr_xywhr[pj, 4] - gt_xywhr[gi, 4])
-                angle_errs[true_cls].append(float(torch.abs(dtheta) * 180.0 / np.pi))
+                error_deg = float(torch.abs(dtheta) * 180.0 / np.pi)
+                angle_errs[true_cls].append(error_deg)
                 # CM bookkeeping
                 y_true.append(true_cls)
                 y_pred.append(true_cls)
                 all_gts.append(true_cls)
                 all_preds.append(true_cls)
                 all_scores.append(score_det)
+
+                # Binning por ángulo GT (unsigned en [0,180))
+                theta_gt = float(wrap_to_pi(gt_xywhr[gi, 4]) * 180.0 / math.pi)
+                theta_gt_unsigned = abs(theta_gt)
+                theta_gt_unsigned = min(theta_gt_unsigned, 180.0 - 1e-6)
+
+                for bin_deg in (20, 10, 5):
+                    init_bin_buckets(bin_deg)
+                    bidx = gt_bin_index(theta_gt_unsigned, bin_deg)
+                    # Global
+                    angle_errors_by_gtbin_global[bin_deg].setdefault(bidx, []).append(
+                        error_deg
+                    )
+                    # Por clase
+                    angle_errors_by_gtbin_per_cls[bin_deg][true_cls].setdefault(
+                        bidx, []
+                    ).append(error_deg)
             else:
                 # Class mismatch → FP for predicted, FN for true
                 if pred_cls in stats:
@@ -1019,6 +1056,47 @@ def evaluate_obb(
         )
     plt.close(figs_hist["per_class"])
 
+    for bin_deg in (20, 10, 5):
+        # Global
+        if len(angle_errors_by_gtbin_global.get(bin_deg, {})) > 0:
+            fig_box = plot_error_box_by_gt_bins(
+                angle_errors_by_gtbin_global[bin_deg],
+                bin_deg,
+                title="Angular error by GT angle bin",
+            )
+            fig_box.savefig(
+                figs_dir / f"angerr_by_gtbin_all_box_bin{bin_deg}.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig_box)
+
+            fig_bar = plot_error_bar_mean_std_by_gt_bins(
+                angle_errors_by_gtbin_global[bin_deg],
+                bin_deg,
+                title="Angular error mean±std by GT angle bin",
+            )
+            fig_bar.savefig(
+                figs_dir / f"angerr_by_gtbin_all_bar_bin{bin_deg}.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig_bar)
+
+    # Per class
+    fig_bar_cls = plot_error_bar_mean_std_by_gt_bins_per_class(
+        angle_errors_by_gtbin_per_cls[bin_deg],
+        LABELS_MAP,
+        bin_deg,
+        title_prefix="Angular error mean±std by GT angle bin per class",
+    )
+    fig_bar_cls.savefig(
+        figs_dir / f"angerr_by_gtbin_per_class_bar_bin{bin_deg}.png",
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close(fig_bar_cls)
+
     # ---------- F1 vs threshold (strict multi-class) ----------
     f1_fig = plot_f1_vs_threshold(all_gts, all_scores, all_preds, LABELS_MAP)
     f1_fig.savefig(figs_dir / "f1_threshold.png", dpi=150, bbox_inches="tight")
@@ -1060,7 +1138,7 @@ def evaluate_obb(
     recall_macro_baby = (
         float(np.mean(recalls_present)) if len(recalls_present) > 0 else 0.0
     )
-    # --- Summary A rows (GT/TP/FN/Recall) por clase ---
+    # --- Summary A rows (GT/TP/FN/Recall) per clase ---
     summary_sota_rows = []
     for c in LABELS_MAP:
         GT_c = int(loc_tp_per_cls[c] + loc_fn_per_cls[c])

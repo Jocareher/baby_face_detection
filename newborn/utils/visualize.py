@@ -1095,6 +1095,43 @@ def plot_gt_angle_histograms_counts(
     return {"all": fig_all, "per_class": fig_cls}
 
 
+def full_bin_ids(bin_deg: int, max_deg: int = 180) -> List[int]:
+    """
+    Return the sequence of integer bin indices that partition the interval [0, max_deg)
+    into contiguous bins of width `bin_deg`.
+
+    The number of bins K is computed as ceil(max_deg / bin_deg) so that the union of
+    bins [0, bin_deg), [bin_deg, 2*bin_deg), ..., [(K-1)*bin_deg, K*bin_deg) covers
+    the range up to (and possibly beyond) max_deg. Only indices 0..K-1 are returned.
+
+    Args:
+        bin_deg: Width of each bin in degrees. Must be positive.
+        max_deg: Upper bound (exclusive) of the angle range to cover. Default 180.
+
+    Returns:
+        List[int]: Consecutive bin indices [0, 1, ..., K-1].
+
+    Raises:
+        ValueError: If bin_deg <= 0 or max_deg <= 0.
+
+    Examples:
+        >>> full_bin_ids(10, 180)
+        [0, 1, 2, ..., 17]
+        >>> full_bin_ids(45, 100)
+        [0, 1, 2]
+    """
+    if bin_deg <= 0:
+        raise ValueError("bin_deg must be > 0")
+    if max_deg <= 0:
+        raise ValueError("max_deg must be > 0")
+
+    # Compute number of bins required to cover [0, max_deg).
+    k = int(math.ceil(float(max_deg) / float(bin_deg)))
+
+    # Return integer indices for each bin: 0 .. k-1
+    return list(range(k))
+
+
 def plot_error_box_by_gt_bins(
     errs_by_bin: Dict[int, List[float]],
     bin_deg: int,
@@ -1102,99 +1139,105 @@ def plot_error_box_by_gt_bins(
     y_lim: Tuple[float, float] = (0, 180),
     show_counts: bool = True,
     show_global_mean: bool = True,
-) -> plt.Figure:
+):
     """
-    Create a clean, colorized series of boxplots showing angular error distributions
-    grouped by ground-truth angle bins.
+    Creates boxplots of angular errors grouped by ground truth (GT) angle bins.
+
+    This function generates two types of boxplots:
+    1. `fig_noempty`: Includes only bins with data.
+    2. `fig_all`: Includes all bins [0, 180) based on `bin_deg`, showing empty bins
+       as gaps (no box) but with labels and `n=0` annotations.
 
     Args:
-        errs_by_bin: Mapping from bin index -> list of angular errors (degrees) for that bin.
-        bin_deg: Width of each ground-truth angle bin (in degrees). Used for x-axis labels.
-        title: Main title for the figure.
-        y_lim: Optional y-axis limits (min, max). Set to None to auto-scale.
-        show_counts: If True, annotate each box with the sample count (n=...).
-        show_global_mean: If True, draw a dashed horizontal line for the global mean error.
+        errs_by_bin (Dict[int, List[float]]): Mapping of bin indices to lists of angular errors.
+        bin_deg (int): Width of each bin in degrees (e.g., 10 for bins like [0,10), [10,20), etc.).
+        title (str): Title for the plots.
+        y_lim (Tuple[float, float], optional): Y-axis limits for the plots. Default is (0, 180).
+        show_counts (bool, optional): Whether to annotate each box with the sample count. Default is True.
+        show_global_mean (bool, optional): Whether to display a horizontal line for the global mean. Default is True.
 
     Returns:
-        A matplotlib.figure.Figure containing the boxplots.
+        Tuple[plt.Figure, plt.Figure]: A tuple containing:
+            - `fig_noempty`: Boxplot figure with only bins that have data.
+            - `fig_all`: Boxplot figure with all bins, including empty ones.
+
+    Notes:
+        - The `fig_noempty` plot excludes bins with no data.
+        - The `fig_all` plot includes all bins, even if they are empty, and annotates them with `n=0`.
+        - The global mean is calculated across all bins and displayed as a dashed line if `show_global_mean` is True.
     """
-    # Sort bins so plotting order is deterministic
-    bin_ids = sorted(errs_by_bin.keys())
+    # ---------- Variant A: Only bins with data ----------
+    # Filter bins to include only those with data
+    bin_ids = [b for b in sorted(errs_by_bin.keys()) if len(errs_by_bin[b]) > 0]
     values = [errs_by_bin[b] for b in bin_ids]
     labels = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in bin_ids]
 
-    # Flatten all values to compute a global mean reference line
+    # Calculate global mean across all values
     all_vals = [v for lst in values for v in lst]
-    global_mean = float(np.mean(all_vals)) if len(all_vals) else 0.0
+    global_mean = float(np.mean(all_vals)) if all_vals else 0.0
 
-    # Figure width scales with number of bins (keeps plot readable for many bins)
-    fig_w = max(9, 1.1 * len(labels))
-    fig, ax = plt.subplots(figsize=(fig_w, 5.2))
+    # Create the figure for bins with data
+    fig_w = max(9, 1.1 * max(1, len(labels)))  # Adjust width based on number of bins
+    fig_noempty, ax = plt.subplots(figsize=(fig_w, 5.2))
 
-    # Create the base boxplot with neutral properties;
-    bp = ax.boxplot(
-        values,
-        notch=True,
-        patch_artist=True,
-        widths=0.6,
-        boxprops=dict(facecolor="none", edgecolor="0.2"),
-        medianprops=dict(color="white", linewidth=1.8),
-        whiskerprops=dict(color="0.4"),
-        capprops=dict(color="0.4"),
-        flierprops=dict(
-            marker="o",
-            markersize=3,
-            markerfacecolor="0.6",
-            markeredgecolor="0.4",
-            alpha=0.7,
-        ),
-    )
+    if values:  # Only plot if there are bins with data
+        pos = np.arange(len(values))  # Positions for the boxplots
+        bp = ax.boxplot(
+            values,
+            positions=pos,
+            notch=True,
+            patch_artist=True,
+            widths=0.7,
+            boxprops=dict(facecolor="none", edgecolor="0.2"),
+            medianprops=dict(color="white", linewidth=1.8),
+            whiskerprops=dict(color="0.4"),
+            capprops=dict(color="0.4"),
+            flierprops=dict(
+                marker="o",
+                markersize=3,
+                markerfacecolor="0.6",
+                markeredgecolor="0.4",
+                alpha=0.7,
+            ),
+        )
 
-    # Choose a pleasant qualitative colormap and assign a color per box
-    cmap = plt.get_cmap("tab10")
-    colors = [cmap(i % cmap.N) for i in range(len(labels))]
+        # Apply colors to the boxes
+        cmap = plt.get_cmap("tab10")
+        colors = [cmap(i % cmap.N) for i in range(len(values))]
+        for i, box in enumerate(bp["boxes"]):
+            box.set(facecolor=colors[i], edgecolor="0.15", linewidth=0.9, alpha=0.95)
+        for med in bp["medians"]:
+            med.set(color="white", linewidth=1.6)
 
-    # Apply color styling per box, whisker, cap and median for better readability
-    for i, box in enumerate(bp["boxes"]):
-        face = colors[i]
-        # slightly darker edge for contrast
-        edge = "k"
-        box.set(facecolor=face, edgecolor=edge, linewidth=0.9, alpha=0.95)
+        # Set x-axis labels and limits
+        ax.set_xticks(pos)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+        ax.set_xlim(-0.5, len(pos) - 0.5)  # No extra margin on the sides
 
-    # Color medians and fliers to match or contrast nicely
-    for i, median in enumerate(bp["medians"]):
-        # Use a high-contrast median (white/black) depending on box color brightness
-        median.set(color="white", linewidth=1.6)
+        # Annotate sample counts above each box
+        if show_counts:
+            pad = 0.02 * ((y_lim[1] - y_lim[0]) if y_lim else 100.0)  # Vertical padding
+            for i, vals in enumerate(values):
+                n = len(vals)
+                y = (float(np.nanmax(vals)) if n > 0 else 0.0) + pad
+                ax.text(i, y, f"n={n}", ha="center", va="bottom", fontsize=9)
+    else:
+        # If no data, display a "no data" message
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xticks([])
 
-    for i, flier in enumerate(bp.get("fliers", [])):
-        fc = colors[i] if i < len(colors) else (0.6, 0.6, 0.6, 0.7)
-        flier.set(markerfacecolor=fc, markeredgecolor="0.3", alpha=0.8)
-
-    # Axis labels, title and styling
-    ax.set_xticks(range(1, len(labels) + 1))
-    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+    # Set axis labels, title, and grid
     ax.set_ylabel("Angular error [deg]", fontsize=11)
     ax.set_title(f"{title}  (bin={bin_deg}°)", fontsize=12)
     if y_lim is not None:
         ax.set_ylim(*y_lim)
     ax.grid(axis="y", linestyle=":", alpha=0.6)
     ax.tick_params(axis="y", labelsize=10)
-
-    # Remove top/right spines for a cleaner look
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
 
-    # Annotate each box with number of samples (n=...) placed just above the whisker/top
-    if show_counts:
-        for i, vals in enumerate(values, start=1):
-            n = len(vals)
-            if n > 0:
-                # Use the maximum non-NaN value as a baseline for the text placement
-                y = float(np.nanmax(vals))
-                ax.text(i, y + 2, f"n={n}", ha="center", va="bottom", fontsize=9)
-
-    # Draw global mean reference line if requested
-    if show_global_mean and len(all_vals) > 0:
+    # Add global mean line if requested
+    if show_global_mean and all_vals:
         ax.axhline(global_mean, linestyle="--", linewidth=1.2, color="gray", alpha=0.9)
         ax.text(
             0.01,
@@ -1207,8 +1250,94 @@ def plot_error_box_by_gt_bins(
             color="gray",
         )
 
-    fig.tight_layout()
-    return fig
+    fig_noempty.tight_layout()
+
+    # ---------- Variant B: All bins (including empty ones) ----------
+    # Generate all bins, including empty ones
+    full_bins = full_bin_ids(bin_deg, 180)
+    labels_all = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in full_bins]
+
+    # Prepare data for all bins
+    values_all = [errs_by_bin.get(b, []) for b in full_bins]
+    pos_all = [i for i, v in enumerate(values_all) if len(v) > 0]  # Positions with data
+    draw_vals = [v for v in values_all if len(v) > 0]  # Values for bins with data
+
+    # Calculate global mean for all bins
+    all_vals2 = [v for lst in values_all for v in lst]
+    global_mean2 = float(np.mean(all_vals2)) if all_vals2 else 0.0
+
+    # Create the figure for all bins
+    fig_all, ax2 = plt.subplots(figsize=(max(9, 1.1 * len(labels_all)), 5.2))
+    if draw_vals:  # Only plot if there are bins with data
+        bp2 = ax2.boxplot(
+            draw_vals,
+            positions=np.array(pos_all, dtype=float),
+            notch=True,
+            patch_artist=True,
+            widths=0.7,
+            boxprops=dict(facecolor="none", edgecolor="0.2"),
+            medianprops=dict(color="white", linewidth=1.8),
+            whiskerprops=dict(color="0.4"),
+            capprops=dict(color="0.4"),
+            flierprops=dict(
+                marker="o",
+                markersize=3,
+                markerfacecolor="0.6",
+                markeredgecolor="0.4",
+                alpha=0.7,
+            ),
+        )
+
+        # Apply colors to the boxes
+        cmap = plt.get_cmap("tab10")
+        colors2 = [cmap(i % cmap.N) for i in range(len(draw_vals))]
+        for i, box in enumerate(bp2["boxes"]):
+            box.set(facecolor=colors2[i], edgecolor="0.15", linewidth=0.9, alpha=0.95)
+        for med in bp2["medians"]:
+            med.set(color="white", linewidth=1.6)
+
+    # Set x-axis labels and limits
+    ax2.set_xticks(np.arange(len(full_bins)))
+    ax2.set_xticklabels(labels_all, rotation=45, ha="right", fontsize=10)
+    ax2.set_xlim(-0.5, len(full_bins) - 0.5)  # No extra margin on the sides
+
+    # Annotate sample counts above each box
+    if show_counts:
+        pad2 = 0.02 * ((y_lim[1] - y_lim[0]) if y_lim else 100.0)  # Vertical padding
+        for i, vals in enumerate(values_all):
+            n = len(vals)
+            y = (float(np.nanmax(vals)) if n > 0 else 0.0) + pad2
+            ax2.text(i, y, f"n={n}", ha="center", va="bottom", fontsize=9, color="0.3")
+
+    # Set axis labels, title, and grid
+    ax2.set_ylabel("Angular error [deg]", fontsize=11)
+    ax2.set_title(f"{title}  (bin={bin_deg}°) — all bins", fontsize=12)
+    if y_lim is not None:
+        ax2.set_ylim(*y_lim)
+    ax2.grid(axis="y", linestyle=":", alpha=0.6)
+    ax2.tick_params(axis="y", labelsize=10)
+    for s in ("top", "right"):
+        ax2.spines[s].set_visible(False)
+
+    # Add global mean line if requested
+    if show_global_mean and all_vals2:
+        ax2.axhline(
+            global_mean2, linestyle="--", linewidth=1.2, color="gray", alpha=0.9
+        )
+        ax2.text(
+            0.01,
+            0.97,
+            f"Global mean = {global_mean2:.1f}°",
+            transform=ax2.transAxes,
+            ha="left",
+            va="top",
+            fontsize=10,
+            color="gray",
+        )
+
+    fig_all.tight_layout()
+
+    return fig_noempty, fig_all
 
 
 def plot_error_bar_mean_std_by_gt_bins(
@@ -1218,103 +1347,114 @@ def plot_error_bar_mean_std_by_gt_bins(
     y_lim: Tuple[float, float] = (0, 180),
     show_counts: bool = True,
     show_global_mean: bool = True,
-) -> plt.Figure:
+):
     """
-    Plot mean ± std bar chart of angular errors grouped by ground-truth angle bins.
+    Creates bar plots (mean ± std) of angular errors grouped by ground truth (GT) angle bins.
 
-    This function produces a horizontally laid out bar chart where each bar corresponds
-    to a GT-angle bin (e.g. [0,10), [10,20), ...). The height of the bar is the mean
-    angular error for that bin and the error bar is the standard deviation. Several
-    small improvements are included compared to a minimal implementation:
-      - nicer categorical colors using a matplotlib qualitative colormap
-      - count annotation above each bar (optional)
-      - global mean reference line (optional) with informative label
-      - defensive handling of empty bins (mean/std set to 0.0)
-      - clear and informative docstring and inline comments
+    This function generates two types of bar plots:
+    1. `fig_noempty`: Includes only bins with data.
+    2. `fig_all`: Includes all bins [0, 180) based on `bin_deg`, showing empty bins
+       as gaps (no bar) but with labels and `n=0` annotations.
 
     Args:
-        errs_by_bin: Mapping from bin index -> list of angular errors (degrees) for that bin.
-        bin_deg: Width of each GT-angle bin (degrees). Used to label x-axis bins.
-        title: Main title for the figure.
-        y_lim: Optional y-axis limits (min, max). Set to None for auto-scaling.
-        show_counts: If True annotate each bar with the sample count (n=...).
-        show_global_mean: If True draw a dashed horizontal line for the global mean error.
+        errs_by_bin (Dict[int, List[float]]): Mapping of bin indices to lists of angular errors.
+        bin_deg (int): Width of each bin in degrees (e.g., 10 for bins like [0,10), [10,20), etc.).
+        title (str): Title for the plots.
+        y_lim (Tuple[float, float], optional): Y-axis limits for the plots. Default is (0, 180).
+        show_counts (bool, optional): Whether to annotate each bar with the sample count. Default is True.
+        show_global_mean (bool, optional): Whether to display a horizontal line for the global mean. Default is True.
 
     Returns:
-        Matplotlib Figure containing the bar plot.
+        Tuple[plt.Figure, plt.Figure]: A tuple containing:
+            - `fig_noempty`: Bar plot figure with only bins that have data.
+            - `fig_all`: Bar plot figure with all bins, including empty ones.
+
+    Notes:
+        - The `fig_noempty` plot excludes bins with no data.
+        - The `fig_all` plot includes all bins, even if they are empty, and annotates them with `n=0`.
+        - The global mean is calculated across all bins and displayed as a dashed line if `show_global_mean` is True.
     """
-    # Sort bins so plotting order is deterministic
-    bin_ids = sorted(errs_by_bin.keys())
 
-    # Compute summary statistics per bin (handle empty lists gracefully)
-    means = [float(np.mean(errs_by_bin[b])) if errs_by_bin[b] else 0.0 for b in bin_ids]
-    stds = [
-        float(np.std(errs_by_bin[b], ddof=0)) if errs_by_bin[b] else 0.0
-        for b in bin_ids
-    ]
-    ns = [len(errs_by_bin[b]) for b in bin_ids]
+    def stats(vec: List[float]) -> Tuple[float, float, int]:
+        """
+        Computes the mean, standard deviation, and count of a list of values.
 
-    # Human readable labels for each bin using the provided bin width
+        Args:
+            vec (List[float]): List of values.
+
+        Returns:
+            Tuple[float, float, int]: Mean, standard deviation, and count of the values.
+        """
+        return (
+            float(np.mean(vec)) if vec else 0.0,
+            float(np.std(vec, ddof=0)) if vec else 0.0,
+            len(vec),
+        )
+
+    # ---------- Variant A: Only bins with data ----------
+    # Filter bins to include only those with data
+    bin_ids = [b for b in sorted(errs_by_bin.keys()) if len(errs_by_bin[b]) > 0]
+    means, stds, ns = [], [], []
+    for b in bin_ids:
+        m, s, n = stats(errs_by_bin[b])
+        means.append(m)
+        stds.append(s)
+        ns.append(n)
+
     labels = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in bin_ids]
-
-    # Flatten to compute a global mean (only if there are values)
     all_vals = [v for b in bin_ids for v in errs_by_bin[b]]
-    global_mean = float(np.mean(all_vals)) if len(all_vals) else 0.0
+    global_mean = float(np.mean(all_vals)) if all_vals else 0.0
 
-    # X positions and figure sizing
     x = np.arange(len(bin_ids))
-    fig_w = max(9, 1.1 * len(labels))
-    fig, ax = plt.subplots(figsize=(fig_w, 5.2))
+    fig_noempty, ax = plt.subplots(figsize=(max(9, 1.1 * max(1, len(labels))), 5.2))
+    if len(x) > 0:
+        # Create bar plot with error bars
+        cmap = plt.get_cmap("tab10")
+        colors = [cmap(i % cmap.N) for i in range(len(x))]
+        bars = ax.bar(
+            x,
+            means,
+            yerr=stds,
+            capsize=5,
+            color=colors,
+            edgecolor="0.15",
+            linewidth=0.8,
+            alpha=0.95,
+        )
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+        ax.set_xlim(-0.5, len(x) - 0.5)  # No extra margin on the sides
 
-    # Choose a pleasant qualitative colormap and assign a color per bar
-    cmap = plt.get_cmap("tab10")  # good distinct colors for categorical bins
-    colors = [cmap(i % cmap.N) for i in range(len(bin_ids))]
+        # Annotate sample counts above each bar
+        if show_counts:
+            pad = 0.02 * ((y_lim[1] - y_lim[0]) if y_lim else 100.0)  # Vertical padding
+            for rect, n in zip(bars, ns):
+                height = rect.get_height()
+                ax.text(
+                    rect.get_x() + rect.get_width() / 2,
+                    max(height, 0) + pad,
+                    f"n={n}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                )
+    else:
+        # If no data, display a "no data" message
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xticks([])
 
-    # Draw bars with error bars (std) and nicer styling
-    bars = ax.bar(
-        x,
-        means,
-        yerr=stds,
-        capsize=5,
-        color=colors,
-        edgecolor="0.15",
-        linewidth=0.8,
-        alpha=0.95,
-    )
-
-    # X axis labels and title
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=10)
+    # Set axis labels, title, and grid
     ax.set_ylabel("Angular error [deg]", fontsize=11)
     ax.set_title(f"{title}  (bin={bin_deg}°)", fontsize=12)
-
-    # Apply optional y-limits and grid
     if y_lim is not None:
         ax.set_ylim(*y_lim)
     ax.grid(axis="y", linestyle=":", alpha=0.6)
     ax.tick_params(axis="y", labelsize=10)
-
-    # Tidy up spines for a cleaner look
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
-    ax.spines["left"].set_color("0.2")
-    ax.spines["bottom"].set_color("0.2")
 
-    # Annotate counts above bars (if requested)
-    if show_counts:
-        for rect, n in zip(bars, ns):
-            height = rect.get_height()
-            ax.text(
-                rect.get_x() + rect.get_width() / 2,
-                height + (0.02 * (y_lim[1] - y_lim[0]) if y_lim is not None else 2.0),
-                f"n={n}",
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-
-    # Draw global mean reference line with label if requested and data exists
-    if show_global_mean and len(all_vals) > 0:
+    # Add global mean line if requested
+    if show_global_mean and all_vals:
         ax.axhline(global_mean, linestyle="--", linewidth=1.4, color="gray", alpha=0.9)
         ax.text(
             0.01,
@@ -1327,9 +1467,83 @@ def plot_error_bar_mean_std_by_gt_bins(
             color="gray",
             bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=2),
         )
+    fig_noempty.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    # ---------- Variant B: All bins (including empty ones) ----------
+    # Generate all bins, including empty ones
+    full_bins = full_bin_ids(bin_deg, 180)
+    labels_all = [f"[{b*bin_deg},{(b+1)*bin_deg})" for b in full_bins]
+    m_all, s_all, n_all = [], [], []
+    for b in full_bins:
+        m, s, n = stats(errs_by_bin.get(b, []))
+        m_all.append(m)
+        s_all.append(s)
+        n_all.append(n)
+
+    x2 = np.arange(len(full_bins))
+    all_vals2 = [v for b in full_bins for v in errs_by_bin.get(b, [])]
+    global_mean2 = float(np.mean(all_vals2)) if all_vals2 else 0.0
+
+    fig_all, ax2 = plt.subplots(figsize=(max(9, 1.1 * len(labels_all)), 5.2))
+    cmap2 = plt.get_cmap("tab20")
+    colors2 = [cmap2(i % cmap2.N) for i in range(len(x2))]
+    bars2 = ax2.bar(
+        x2,
+        m_all,
+        yerr=s_all,
+        capsize=5,
+        color=colors2,
+        edgecolor="0.15",
+        linewidth=0.8,
+        alpha=0.95,
+    )
+
+    ax2.set_xticks(x2)
+    ax2.set_xticklabels(labels_all, rotation=45, ha="right", fontsize=10)
+    ax2.set_xlim(-0.5, len(x2) - 0.5)  # No extra margin on the sides
+    ax2.set_ylabel("Angular error [deg]", fontsize=11)
+    ax2.set_title(f"{title}  (bin={bin_deg}°) — all bins", fontsize=12)
+    if y_lim is not None:
+        ax2.set_ylim(*y_lim)
+    ax2.grid(axis="y", linestyle=":", alpha=0.6)
+    ax2.tick_params(axis="y", labelsize=10)
+    for s in ("top", "right"):
+        ax2.spines[s].set_visible(False)
+
+    # Annotate sample counts above each bar
+    if show_counts:
+        pad2 = 0.02 * ((y_lim[1] - y_lim[0]) if y_lim else 100.0)  # Vertical padding
+        for rect, n in zip(bars2, n_all):
+            height = rect.get_height()
+            ax2.text(
+                rect.get_x() + rect.get_width() / 2,
+                max(height, 0) + pad2,
+                f"n={n}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color="0.3",
+            )
+
+    # Add global mean line if requested
+    if show_global_mean and all_vals2:
+        ax2.axhline(
+            global_mean2, linestyle="--", linewidth=1.4, color="gray", alpha=0.9
+        )
+        ax2.text(
+            0.01,
+            0.97,
+            f"Global mean = {global_mean2:.1f}°",
+            transform=ax2.transAxes,
+            ha="left",
+            va="top",
+            fontsize=10,
+            color="gray",
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=2),
+        )
+
+    fig_all.tight_layout()
+    return fig_noempty, fig_all
 
 
 def plot_error_bar_mean_std_by_gt_bins_per_class(

@@ -1059,29 +1059,41 @@ def evaluate_obb(
     for bin_deg in (20, 10, 5):
         # Global
         if len(angle_errors_by_gtbin_global.get(bin_deg, {})) > 0:
-            fig_box = plot_error_box_by_gt_bins(
+            fig_box_all, fig_box_filter = plot_error_box_by_gt_bins(
                 angle_errors_by_gtbin_global[bin_deg],
                 bin_deg,
                 title="Angular error by GT angle bin",
             )
-            fig_box.savefig(
-                figs_dir / f"angerr_by_gtbin_all_box_bin{bin_deg}.png",
+            fig_box_all.savefig(
+                figs_dir / f"box_angle_error_per_bin_filter_{bin_deg}.png",
                 dpi=150,
                 bbox_inches="tight",
             )
-            plt.close(fig_box)
+            plt.close(fig_box_all)
+            fig_box_filter.savefig(
+                figs_dir / f"box_angle_error_per_bin_all_{bin_deg}.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig_box_filter)
 
-            fig_bar = plot_error_bar_mean_std_by_gt_bins(
+            fig_bar_all, fig_bar_filter = plot_error_bar_mean_std_by_gt_bins(
                 angle_errors_by_gtbin_global[bin_deg],
                 bin_deg,
                 title="Angular error mean±std by GT angle bin",
             )
-            fig_bar.savefig(
-                figs_dir / f"angerr_by_gtbin_all_bar_bin{bin_deg}.png",
+            fig_bar_all.savefig(
+                figs_dir / f"hist_angle_error_per_bin_filter_{bin_deg}.png",
                 dpi=150,
                 bbox_inches="tight",
             )
-            plt.close(fig_bar)
+            plt.close(fig_bar_all)
+            fig_bar_filter.savefig(
+                figs_dir / f"hist_angle_error_per_bin_all_{bin_deg}.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.close(fig_bar_filter)
 
     # Per class
     fig_bar_cls = plot_error_bar_mean_std_by_gt_bins_per_class(
@@ -1091,7 +1103,7 @@ def evaluate_obb(
         title_prefix="Angular error mean±std by GT angle bin per class",
     )
     fig_bar_cls.savefig(
-        figs_dir / f"angerr_by_gtbin_per_class_bar_bin{bin_deg}.png",
+        figs_dir / f"angle_error_per_class_bar_bin_{bin_deg}.png",
         dpi=150,
         bbox_inches="tight",
     )

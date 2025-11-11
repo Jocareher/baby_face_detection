@@ -455,9 +455,9 @@ def run_evaluation(
                     )
                 )
 
-            # Clean up to free memory
-            del imgs, outputs, targets
-            torch.cuda.empty_cache()
+            # # Clean up to free memory
+            # del imgs, outputs, targets
+            # torch.cuda.empty_cache()
 
     # Finalize metrics for each class
     for cls in labels_map:
@@ -1233,12 +1233,9 @@ def export_predictions(
     # Create output directories
     out_imgs = Path(out_dir) / "images"
     out_lbls = Path(out_dir) / "labels"
-    out_imgs.mkdir(parents=True, exist_ok=True)
-    out_lbls.mkdir(parents=True, exist_ok=True)
     out_crops = Path(out_dir) / "crops"
-    out_imgs.mkdir(parents=True, exist_ok=True)
-    out_lbls.mkdir(parents=True, exist_ok=True)
-    out_crops.mkdir(parents=True, exist_ok=True)
+    for d in (out_imgs, out_lbls, out_crops):
+        d.mkdir(parents=True, exist_ok=True)
 
     # Setup model and anchors
     model.eval()

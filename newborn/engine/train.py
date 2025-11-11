@@ -546,8 +546,7 @@ def compute_map_rotated(
 
         # Ensure precision is non-decreasing
         for i in range(precision.shape[0] - 2, -1, -1):
-            if precision[i] < precision[i + 1]:
-                precision[i] = precision[i + 1]
+            precision[i] = torch.maximum(precision[i], precision[i + 1])
 
         # Compute AP using the trapezoidal rule
         delta_rec = recall[1:] - recall[:-1]
@@ -1055,7 +1054,7 @@ def val_step(
     baby_thres: float = 0.25,
     iou_thres: float = 0.5,
     class_thres: float = 0.6,
-) -> Tuple[float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float]:
     """
     Runs one full evaluation loop on the validation dataset, computing predictions, losses, and rotated mAP.
 

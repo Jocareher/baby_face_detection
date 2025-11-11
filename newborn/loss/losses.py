@@ -687,7 +687,7 @@ class MultiTaskLoss(nn.Module):
                         reduction="none",
                     ).view(-1)
                 _, hard_order = per_neg_loss.sort(descending=True)
-                num_hard = min(hard_order.numel(), num_pos_1 * self.neg_samples_ratio)
+                num_hard = max(1, min(hard_order.numel(), num_pos_1 * self.neg_samples_ratio))
                 hard_neg_idx = neg_idx_1[hard_order[:num_hard]]
                 sel_idx_1 = torch.cat([pos_idx_1, hard_neg_idx], dim=0)
                 tgt_face = pos_mask_1.float().unsqueeze(1)[sel_idx_1]
@@ -712,7 +712,7 @@ class MultiTaskLoss(nn.Module):
 
                 # ---------- Orientation classification loss (only for baby anchors) ----------
                 if baby_mask.numel() and baby_mask.any():
-                    pos_idx_1_baby = pos_idx_1[baby_mask]
+                    pos_idx_1_baby = pos_idx_1_valid[baby_mask]
                     valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
                     if valid_cls_mask.any():
                         pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]

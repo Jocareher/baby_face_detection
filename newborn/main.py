@@ -26,9 +26,9 @@ from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sam
 from models.newborn import NewBORN, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
-from engine.inference import inference, plot_training_curves_from_csv
+from engine.inference import inference
 from loss.losses import MultiTaskLoss
-from utils.visualize import visualize_and_save_dataset_in_script
+from utils.visualize import visualize_and_save_dataset_in_script, plot_training_curves_from_csv
 from utils.repro import save_reproducibility_metadata
 import config
 
@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument(
         "--sampler",
         type=str,
-        default=None,
+        default="none",
         choices=["none", "weighted", "batch"],
         help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
@@ -91,7 +91,7 @@ def parse_args():
     parser.add_argument(
         "--backbone_mode",
         type=str,
-        default="feature_extractor",
+        default=config.DEFAULT_BACKBONE_MODE,
         choices=["feature_extractor", "fine_tuning", "train_all"],
         help="How to treat the backbone parameters during training.",
     )

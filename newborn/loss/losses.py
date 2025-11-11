@@ -657,6 +657,11 @@ class MultiTaskLoss(nn.Module):
         )
         cls_batches = 0  # Images where orientation classification loss is computed
         stage2_batches = 0  # Images with valid positives in stage 2
+        
+        # 
+        pred_dtype = orient_logits.dtype
+        anchors_xy = anchors_xy.to(dtype=pred_dtype)
+        anchors_xywhr = anchors_xywhr.to(dtype=pred_dtype)
 
         for b in range(B):
             # ---------- Stage 1: Anchor matching ----------

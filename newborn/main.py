@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from torchinfo import summary
 
 from data_setup.dataset import BabyFacesDataset
+from data_setup.augmentations import collect_deg_by_class_from_dataset, plot_histograms_split, build_bin_weights_from_degrees, save_counts_csv
 from data_setup.collate import custom_collate
 from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sampler
 from models.newborn import NewBORN, reset_heads, set_backbone_frozen
@@ -352,6 +353,16 @@ def parse_args():
         default=3,
         help="Number of columns in the qualitative mosaic grid.",
     )
+    
+    parser.add_argument("--bin_deg", type=int, default=10, help="Ancho de bin angular (grados).")
+    parser.add_argument("--equalize_angle_bins", action="store_true", default=True,
+                        help="Forzar distribución uniforme/inverse-freq de ángulos en train.")
+    parser.add_argument("--aug_bin_strategy", type=str, default="inverse_freq",
+                        choices=["uniform","inverse_freq"], help="Estrategia de muestreo de bins.")
+    parser.add_argument("--max_rotate", type=float, default=60.0, help="Límite de rotación (grados).")
+    parser.add_argument("--audit_aug_bins", action="store_true", default=True,
+                        help="Guardar histogramas pre y post augmentation en train.")
+
 
     return parser.parse_args()
 
@@ -407,12 +418,49 @@ def main():
 
     # Define image size tuple
     img_size = tuple(args.img_size)
+    
+    # Define label mapping for inference
+    labels_map = {
+        0: "Leftside",
+        1: "3/4 Leftside",
+        2: "Frontal",
+        3: "3/4 Rightside",
+        4: "Rightside",
+    }
+
+    if args.audit_aug_bins:
+        raw_train = BabyFacesDataset(args.root_dir, split="train", transform=None)
+        pre_stats = collect_deg_by_class_from_dataset(raw_train, labels_map)
+        angles_dir = (output_dir / "angles"); angles_dir.mkdir(exist_ok=True)
+        plot_histograms_split(pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_PRE")
+
+        # pesos por bin para inverse_freq
+        bin_weights = build_bin_weights_from_degrees(pre_stats["all"], args.bin_deg)
+    else:
+        bin_weights = None
 
     # Configure data augmentation and normalization transforms for training and validation
-    train_transform = config.get_train_transform(
-        img_size, args.use_augmentation, mean=norm_mean, std=norm_std
+    train_transform = config.make_train_transform(
+        img_size, args.use_augmentation, mean=norm_mean, std=norm_std,
+        equalize=args.equalize_angle_bins,
+        bin_deg=args.bin_deg,
+        strategy=args.aug_bin_strategy,
+        max_rotate=args.max_rotate,
+        bin_weights=bin_weights,
     )
+
     val_transform = config.get_val_transform(img_size, mean=norm_mean, std=norm_std)
+    
+    if args.audit_aug_bins:
+        # crear un "dataset de auditoría" con las MISMAS transforms del train
+        audit_ds = BabyFacesDataset(args.root_dir, split="train", transform=train_transform)
+        post_stats = collect_deg_by_class_from_dataset(audit_ds, labels_map)
+        angles_dir = (output_dir / "angles"); angles_dir.mkdir(exist_ok=True)
+        plot_histograms_split(pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_POST")
+
+    save_counts_csv(angles_dir / f"train_PRE_counts_bin{args.bin_deg}.csv", pre_stats, args.bin_deg)
+    save_counts_csv(angles_dir / f"train_POST_counts_bin{args.bin_deg}.csv", post_stats, args.bin_deg)
+
 
     # ------------------------------------------------------------------------
     # III. Datasets and loaders
@@ -427,15 +475,6 @@ def main():
     print(
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
-
-    # Define label mapping for inference
-    labels_map = {
-        0: "Leftside",
-        1: "3/4 Leftside",
-        2: "Frontal",
-        3: "3/4 Rightside",
-        4: "Rightside",
-    }
 
     # Optional: visualize datasets and save sample grids
     visualize_and_save_dataset_in_script(

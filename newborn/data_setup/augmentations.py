@@ -1,9 +1,13 @@
+from pathlib import Path
+import csv
+
 import cv2
 import math
 import random
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
-from typing import Tuple
+from typing import Tuple, List, Optional, Dict
 
 
 class Resize(object):
@@ -771,3 +775,195 @@ def wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
 
     """
     return (angle + math.pi) % (2 * math.pi) - math.pi
+
+class RandomRotateOBBEqualizeBins:
+    """
+    Rota la imagen para que una GT caiga en un bin objetivo.
+    strategy: "uniform" | "inverse_freq"
+    - "inverse_freq" espera bin_weights (conteos por bin) y pondera por 1/weight.
+    ref_policy: "random" | "largest" | "first"
+    """
+
+    def __init__(
+        self,
+        bin_deg: int = 10,
+        max_angle: float = 30,
+        prob: float = 0.8,
+        strategy: str = "uniform",
+        bin_weights: Optional[List[int]] = None,
+        ref_policy: str = "random",
+        max_tries: int = 20,
+    ):
+        assert 0 < bin_deg <= 180
+        assert strategy in ("uniform", "inverse_freq")
+        assert ref_policy in ("random", "largest", "first")
+        self.bin_deg = bin_deg
+        self.max_angle = float(max_angle)
+        self.prob = prob
+        self.strategy = strategy
+        self.ref_policy = ref_policy
+        self.max_tries = max_tries
+
+        edges = np.arange(0, 180 + bin_deg, bin_deg, dtype=np.float32)
+        self.bin_edges = edges
+        self.bin_centers_deg = (edges[:-1] + edges[1:]) * 0.5
+        self.K = len(self.bin_centers_deg)
+
+        if strategy == "inverse_freq" and bin_weights is not None:
+            w = np.asarray(bin_weights, dtype=np.float64)
+            w = np.maximum(w, 1e-8)
+            p = (1.0 / w); p = p / p.sum()
+            self.prob_bins = p
+        else:
+            self.prob_bins = np.ones(self.K, dtype=np.float64) / self.K
+
+    @staticmethod
+    def _wrap_to_pi(x):
+        return (x + np.pi) % (2 * np.pi) - np.pi
+
+    def _choose_ref_index(self, boxes: torch.Tensor, policy: str) -> int:
+        N = boxes.shape[0]
+        if N == 0: return -1
+        if policy == "first": return 0
+        if policy == "random": return int(np.random.randint(0, N))
+        # largest (área del AABB del OBB)
+        pts = boxes.view(N, 4, 2).cpu().numpy()
+        w = pts[...,0].max(1) - pts[...,0].min(1)
+        h = pts[...,1].max(1) - pts[...,1].min(1)
+        return int(np.argmax(w * h))
+
+    def _delta_to_bin_center(self, theta_rad: float, center_deg: float) -> float:
+        trg = np.deg2rad(center_deg)
+        cands = np.array([self._wrap_to_pi(theta_rad - trg),
+                          self._wrap_to_pi(theta_rad + trg)], dtype=np.float32)
+        return float(cands[np.argmin(np.abs(cands))])
+
+    def __call__(self, sample: dict) -> dict:
+        if np.random.rand() > self.prob:
+            return sample
+
+        image, target = sample["image"], sample["target"]
+        boxes = target.get("boxes"); angles = target.get("angles")
+        if boxes is None or angles is None or boxes.numel() == 0:
+            phi = np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle))
+            return self._apply_rotation(sample, phi)
+
+        ref_idx = self._choose_ref_index(boxes, self.ref_policy)
+        if ref_idx < 0:
+            phi = np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle))
+            return self._apply_rotation(sample, phi)
+
+        theta_ref = float(angles[ref_idx].item())
+        lim = np.deg2rad(self.max_angle) + 1e-6
+        for _ in range(self.max_tries):
+            k = np.random.choice(self.K, p=self.prob_bins)
+            delta = self._delta_to_bin_center(theta_ref, float(self.bin_centers_deg[k]))
+            if abs(delta) <= lim:
+                return self._apply_rotation(sample, delta)
+
+        # fallback
+        phi = np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle))
+        return self._apply_rotation(sample, phi)
+
+    def _apply_rotation(self, sample: dict, angle_rad: float) -> dict:
+        image, target = sample["image"], sample["target"]
+        h, w = image.shape[:2]
+        ang_deg = float(np.rad2deg(angle_rad))
+
+        c, s = abs(np.cos(angle_rad)), abs(np.sin(angle_rad))
+        new_w, new_h = int(h * s + w * c), int(h * c + w * s)
+
+        rot = cv2.getRotationMatrix2D((w/2.0, h/2.0), ang_deg, 1.0).astype(np.float32)
+        rot[0,2] += (new_w - w) / 2.0
+        rot[1,2] += (new_h - h) / 2.0
+
+        img_rot = cv2.warpAffine(image, rot, (new_w, new_h), flags=cv2.INTER_LINEAR)
+
+        boxes = target["boxes"].clone(); N = boxes.shape[0]
+        if N > 0:
+            pts = boxes.view(N,4,2).cpu().numpy().astype(np.float32)
+            hom = np.concatenate([pts, np.ones((N,4,1), np.float32)], axis=2)
+            pts_rot = hom @ rot.T
+            target["boxes"] = torch.tensor(pts_rot.reshape(N,8),
+                                           dtype=torch.float32, device=boxes.device)
+            ang = target["angles"].clone()
+            ang = wrap_to_pi(ang - float(angle_rad))
+            target["angles"] = ang
+
+        sample["image"] = img_rot
+        target["valid_mask"] = torch.ones(N, dtype=torch.bool, device=target["boxes"].device) if N>0 else torch.zeros(0, dtype=torch.bool)
+        sample["target"] = target
+        return sample
+
+
+def angles_rad_to_deg_0_180(t: torch.Tensor) -> np.ndarray:
+    t = (t + math.pi) % (2*math.pi) - math.pi
+    t = t.abs()
+    deg = t * (180.0 / math.pi)
+    return torch.clamp(deg, max=180.0 - 1e-6).cpu().numpy()
+
+def collect_deg_by_class_from_dataset(ds, labels_map: Dict[int,str]) -> Dict[str, object]:
+    """Itera el dataset (tal cual está definido) y devuelve:
+       {'all': [deg...], 'per_cls': {c:[deg...]}, 'counts': {c:int}}"""
+    per_cls = {c: [] for c in labels_map.keys()}
+    all_deg = []
+    for i in range(len(ds)):
+        sample = ds[i]
+        ang = sample["target"]["angles"]            # (N,)
+        cls = sample["target"]["class_idx"]         # (N,)
+        mask = sample["target"]["valid_mask"] if "valid_mask" in sample["target"] else torch.ones_like(cls,dtype=torch.bool)
+        if ang.numel()==0: continue
+        ang = ang[mask]; cls = cls[mask]
+        deg = angles_rad_to_deg_0_180(ang)
+        all_deg.extend(deg.tolist())
+        for d, c in zip(deg, cls.tolist()):
+            if c in per_cls: per_cls[c].append(float(d))
+    counts = {c: len(per_cls[c]) for c in labels_map.keys()}
+    return {"all": all_deg, "per_cls": per_cls, "counts": counts}
+
+def plot_histograms_split(data: Dict[str,object], labels_map: Dict[int,str], bin_deg:int, out_dir: Path, tag:str):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # ALL
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+    fig, ax = plt.subplots(figsize=(8,4.5))
+    ax.hist(data["all"], bins=bins, edgecolor="black")
+    ax.set_title(f"{tag}: GT angle histogram (ALL) — bin={bin_deg}°")
+    ax.set_xlabel("GT angle [deg]"); ax.set_ylabel("Count"); ax.grid(axis="y", linestyle=":", alpha=0.6)
+    for s in ("top","right"): ax.spines[s].set_visible(False)
+    fig.tight_layout(); fig.savefig(out_dir / f"{tag}_ALL_bin{bin_deg}.png", dpi=200); plt.close(fig)
+
+    # per class
+    classes = list(labels_map.keys()); n_cls = len(classes)
+    n_cols = min(3, n_cls); n_rows = int(math.ceil(n_cls / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 3.8*n_rows)); axes = np.atleast_2d(axes)
+    for i,c in enumerate(classes):
+        r, col = divmod(i, n_cols); ax = axes[r, col]
+        ax.hist(data["per_cls"][c], bins=bins, edgecolor="black")
+        ax.set_title(f"{labels_map[c]} (n={len(data['per_cls'][c])}) — bin={bin_deg}°")
+        ax.set_xlabel("GT angle [deg]"); ax.set_ylabel("Count"); ax.grid(axis="y", linestyle=":", alpha=0.6)
+        for s in ("top","right"): ax.spines[s].set_visible(False)
+    for k in range(n_cls, n_rows*n_cols):
+        r, col = divmod(k, n_cols); axes[r,col].axis("off")
+    fig.suptitle(f"{tag}: GT angle histogram per class — bin={bin_deg}°")
+    fig.tight_layout(rect=[0,0,1,0.97])
+    fig.savefig(out_dir / f"{tag}_perclass_bin{bin_deg}.png", dpi=200); plt.close(fig)
+
+def build_bin_weights_from_degrees(all_deg: List[float], bin_deg:int) -> List[int]:
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+    counts, _ = np.histogram(all_deg, bins=bins)
+    return counts.tolist()  # len = 180/bin_deg
+
+def save_counts_csv(path: Path, stats: Dict[str,object], bin_deg:int, labels_map: Dict[int,str]):
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+    rows = []
+    counts_all, edges = np.histogram(stats["all"], bins=bins)
+    for i,c in enumerate(counts_all):
+        rows.append({"scope":"ALL","class_idx":"ALL","class_name":"ALL",
+                        "bin_left":int(edges[i]),"bin_right":int(edges[i+1]),"count":int(c)})
+    for c, name in labels_map.items():
+        counts_c,_ = np.histogram(stats["per_cls"][c], bins=bins)
+        for i,cnt in enumerate(counts_c):
+            rows.append({"scope":"PERCLASS","class_idx":c,"class_name":name,
+                            "bin_left":int(edges[i]),"bin_right":int(edges[i+1]),"count":int(cnt)})
+    with open(path,"w",newline="") as f:
+        w = csv.DictWriter(f, fieldnames=rows[0].keys()); w.writeheader(); w.writerows(rows)

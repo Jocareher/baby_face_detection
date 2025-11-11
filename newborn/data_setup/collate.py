@@ -84,8 +84,7 @@ def custom_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def images_only_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Collate for images-only datasets. Returns only 'image' and empty 'target'.
-    Does NOT add 'meta'.
+    Collate for images-only datasets. Returns only 'image' and empty 'target'.s
     """
     # Filter out None (if your dataset returns None on read errors)
     batch = [b for b in batch if b is not None]

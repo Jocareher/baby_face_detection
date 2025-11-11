@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+from matplotlib import patches
 from torch.utils.data import DataLoader
 from torch.nn import functional as F
 from tqdm import tqdm
@@ -1257,11 +1258,11 @@ def export_predictions(
     # Print configuration
     tqdm.write(f"🧠  Inference on device: {device}")
     tqdm.write(
-        f"📦  Dataloader: {len(loader)} batches | batch_size={getattr(loader, 'batch_size', '?')}"
+        f"Dataloader: {len(loader)} batches | batch_size={getattr(loader, 'batch_size', '?')}"
     )
-    tqdm.write(f"🗋  Output dir: {out_dir}  →  images/, labels/")
-    tqdm.write(f"📐  Resize size (W,H): {resize_size} | NMS uses (H,W)={nms_image_size}")
-    tqdm.write(f"📏  Output scale: {output_scale}")
+    tqdm.write(f"Output dir: {out_dir}  →  images/, labels/")
+    tqdm.write(f"Resize size (W,H): {resize_size} | NMS uses (H,W)={nms_image_size}")
+    tqdm.write(f"Output scale: {output_scale}")
 
     with tqdm(total=len(loader), desc="⚙️  Batches", unit="batch") as pbar_batches:
         global_idx = 0
@@ -1288,14 +1289,14 @@ def export_predictions(
                 )
             except Exception as e:
                 errors += 1
-                tqdm.write(f"❌  Inference error in batch: {e}")
+                tqdm.write(f"Inference error in batch: {e}")
                 pbar_batches.update(1)
                 continue
 
             # Process each image in batch
             B = imgs.size(0)
             with tqdm(
-                total=B, desc="   🖼️  Images", leave=False, unit="img"
+                total=B, desc="   Images", leave=False, unit="img"
             ) as pbar_imgs:
                 for b in range(B):
                     processed += 1
@@ -1321,7 +1322,7 @@ def export_predictions(
                                 ext = ".jpg"
                     except Exception as e:
                         errors += 1
-                        tqdm.write(f"❌  Could not prepare base image for {p}: {e}")
+                        tqdm.write(f"Could not prepare base image for {p}: {e}")
                         pbar_imgs.update(1)
                         global_idx += 1
                         continue
@@ -1351,7 +1352,7 @@ def export_predictions(
                             )
                     except Exception as e:
                         errors += 1
-                        tqdm.write(f"❌  Postprocess error for {p}: {e}")
+                        tqdm.write(f"Postprocess error for {p}: {e}")
                         pbar_imgs.update(1)
                         global_idx += 1
                         continue
@@ -1414,7 +1415,7 @@ def export_predictions(
 
                     except Exception as e:
                         errors += 1
-                        tqdm.write(f"❌  Saving error for {p}: {e}")
+                        tqdm.write(f"Saving error for {p}: {e}")
 
                     if polys_for_img is not None and polys_for_img.size > 0:
                         # Model input size (width, height) used for the face crops (e.g., 640x640)
@@ -1474,12 +1475,12 @@ def export_predictions(
             pbar_batches.update(1)
 
     # Print summary statistics
-    tqdm.write("✅  Export complete")
+    tqdm.write("Export complete")
     tqdm.write(f"   • Processed images : {processed}")
     tqdm.write(f"   • Saved (img+txt)  : {saved}")
     tqdm.write(f"   • No detections    : {no_dets}")
     tqdm.write(f"   • Empty batches    : {empty_batches}")
     tqdm.write(f"   • Errors           : {errors}")
-    tqdm.write(f"📂  Images: {out_imgs}")
-    tqdm.write(f"📝  Labels: {out_lbls}")
-    tqdm.write(f"✂️  Crops : {out_crops}")
+    tqdm.write(f"Images: {out_imgs}")
+    tqdm.write(f"Labels: {out_lbls}")
+    tqdm.write(f"Crops : {out_crops}")

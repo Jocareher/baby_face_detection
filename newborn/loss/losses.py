@@ -736,7 +736,7 @@ class MultiTaskLoss(nn.Module):
 
             with torch.no_grad():
                 pred_deltas_1 = deltas[b][pos_mask_1_baby]
-                anc_xy_1 = anchors_xy[b][pos_mask_1_baby]
+                anc_xy_1 = anchors_xy[pos_mask_1_baby]
                 ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)
                 verts_1 = decode_vertices(
                     pred_deltas_1, anc_xy_1, ang_1, image_sizes[b]
@@ -764,7 +764,7 @@ class MultiTaskLoss(nn.Module):
             # ---------- OBB regression loss ----------
             pred_deltas_2 = deltas[b][abs_pos_idx_2]
             gt_boxes_2 = targets["boxes"][b][gt_idx_2]
-            anc_xy_2 = anchors_xy[b][abs_pos_idx_2]
+            anc_xy_2 = anchors_xy[abs_pos_idx_2]
             ga_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
 
             # OBB regression loss in canonical space

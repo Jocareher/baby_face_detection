@@ -959,9 +959,9 @@ def train_step(
 
         optimizer.zero_grad()  # Reset gradients before backward pass
         anchors_xy, anchors_xywhr = anchors
-        batch_anchors = anchors_xy.unsqueeze(0).repeat(
-            images.size(0), 1, 1
-        )  # Expand anchors for batch
+        # batch_anchors = anchors_xy.unsqueeze(0).repeat(
+        #     images.size(0), 1, 1
+        # )  # Expand anchors for batch
         image_sizes = [(images.shape[3], images.shape[2])] * images.size(
             0
         )  # List of image sizes per batch
@@ -976,7 +976,7 @@ def train_step(
                 loss_angle,
                 loss_rect,
                 loss_child,
-            ) = loss_fn(pred, targets, batch_anchors, anchors_xywhr, image_sizes)
+            ) = loss_fn(pred, targets, anchors_xy, anchors_xywhr, image_sizes)
 
         if scaler is not None:
             scaler.scale(loss).backward()  # Backward pass with gradient scaling
@@ -1109,7 +1109,7 @@ def val_step(
             targets = build_multitask_targets(targets_raw, device)  # Prepare targets
 
             anchors_xy, anchors_xywhr = anchors
-            batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
+            #batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
             preds = model(images)
 
@@ -1165,7 +1165,7 @@ def val_step(
                 loss_angle,
                 loss_rect,
                 loss_child,
-            ) = loss_fn(preds, targets, batch_anchors, anchors_xywhr, image_sizes)
+            ) = loss_fn(preds, targets, anchors_xy, anchors_xywhr, image_sizes)
 
             total_loss += loss.item()
             class_loss_sum += loss_class
@@ -1362,6 +1362,14 @@ def train(
         anchor_preview_path=anchor_preview_path,
         anchors_cache_path=anchors_cache_path,
     )
+    
+    with torch.no_grad():
+        dtype = torch.bfloat16 if (device.type == "cuda") else torch.float32
+        anchors_xy    = anchors_xy.to(device, dtype=dtype, non_blocking=True)
+        anchors_xywhr = anchors_xywhr.to(device, dtype=dtype, non_blocking=True)
+        anchors_xy.requires_grad_(False)
+        anchors_xywhr.requires_grad_(False)
+        
     anchors_tuple = (anchors_xy, anchors_xywhr)
 
     # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training

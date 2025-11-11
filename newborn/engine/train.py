@@ -181,12 +181,8 @@ def nms_rotated(
     if boxes.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=scores.device)
 
-    # Ensure boxes and scores are on the appropriate device
-    device = (
-        boxes.device
-        if boxes.is_cuda
-        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
+    # Retrive current device
+    device = boxes.device
     boxes = boxes.to(device)
     scores = scores.to(device)
 

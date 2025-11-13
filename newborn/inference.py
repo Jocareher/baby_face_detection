@@ -100,17 +100,17 @@ def main():
     # Set random seed and get device (CPU/GPU)
     set_seed(42)
     device = get_default_device()
-    print(f"\n🖥️  Using device: {device}")
+    print(f"\nUsing device: {device}")
 
     # Create output directory
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"📁 Output directory: {out_dir}")
+    print(f"Output directory: {out_dir}")
 
     # === Model Input Size Configuration ===
     # Get resize dimensions (W,H) from config - should match training settings
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
-    print(f"🔄 Model input size (W,H): {resize_size}")
+    print(f"Model input size (W,H): {resize_size}")
 
     # === Dataset/DataLoader Setup ===
     # Configure image transformations (resize, normalize)
@@ -132,16 +132,16 @@ def main():
         num_workers=4,
         pin_memory=True,
     )
-    print(f"📊 Loaded {len(dataset)} images from: {args.images_dir}")
+    print(f"Loaded {len(dataset)} images from: {args.images_dir}")
 
     # === Model Initialization ===
     # Create model and load checkpoint
-    print(f"\n🔧 Initializing {args.backbone} backbone...")
+    print(f"\nInitializing {args.backbone} backbone...")
     model = NewBORN(
         backbone_name=args.backbone, out_channel=args.out_channel, pretrained=False
     ).to(device)
 
-    print(f"📥 Loading checkpoint: {args.checkpoint}")
+    print(f"Loading checkpoint: {args.checkpoint}")
     raw = torch.load(args.checkpoint, map_location=device)
     state = raw.get("model_state_dict", raw)
 
@@ -169,7 +169,7 @@ def main():
     print(f"⚓ Loaded {anchors_xy.size(0)} anchor boxes")
 
     # === Run Inference ===
-    print("\n🚀 Starting inference...")
+    print("\nStarting inference...")
     export_predictions(
         model=model,
         loader=loader,
@@ -185,7 +185,7 @@ def main():
         output_scale=args.output_scale,
     )
 
-    print(f"\n✨ Inference complete! Results saved to: {out_dir}")
+    print(f"\nInference complete! Results saved to: {out_dir}")
 
 
 if __name__ == "__main__":

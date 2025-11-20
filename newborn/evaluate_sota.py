@@ -723,51 +723,50 @@ def evaluate_obb(
 
         # --------- No baby GTs (ADULT_ONLY or BG) ---------
         if img_kind != "BABY":
-            # 1) Count background (BG) instances:
-            #    - ADULT_ONLY: count one instance per annotated adult
-            #    - Pure BG (no .txt or empty .txt): count 1 BG instance
+            # 1) Count background (BG) instances for aggregated metrics (not for the confusion matrix)
             if img_kind == "ADULT_ONLY":
-                n_bg_instances = count_adults_in_gt(gt_p)  # Use helper to count adults
+                n_bg_instances = count_adults_in_gt(gt_p)
                 bg_instances_adult_total += n_bg_instances
-                fp_in_adult_imgs += P  # All predictions are false positives
-            else:  # Pure "BG" (no annotations)
+                fp_in_adult_imgs += P  # all predictions are false positives (FP)
+            else:  # pure background (BG)
                 n_bg_instances = 1
                 bg_instances_pure_total += 1
-                fp_in_bg_imgs += P  # All predictions are false positives
+                fp_in_bg_imgs += P  # all predictions are false positives (FP)
 
-            # 2) Add true negatives (TNs) for each BG instance to fill the BG/BG diagonal
-            for _ in range(max(1, n_bg_instances)):
-                y_true.append(-1)  # True label is background (-1)
-                y_pred.append(-1)  # Predicted label is also background (-1)
-                all_gts.append(-1)  # Ground truth is background
-                all_preds.append(-1)  # Prediction is background
-                all_scores.append(0.0)  # No confidence score for TNs
-
-            # 3) Register false positives (FPs) if there are predictions in non-baby images
-            if P > 0:
-                fp_global_loc += P  # Increment global FP count
+            # 2) Update face/no-face metrics and confusion matrix
+            if P == 0:
+                # The model did not detect anything in an image without babies
+                # Count ONE true negative (TN) at the image level for BG->BG
+                y_true.append(-1)
+                y_pred.append(-1)
+                all_gts.append(-1)
+                all_preds.append(-1)
+                all_scores.append(0.0)
+            else:
+                # There are detections in an image without babies: all are false positives (FP)
+                fp_global_loc += P
                 for j in range(P):
-                    c_det = int(pr_cls[j])  # Predicted class
-                    s_det = float(pr_scores[j])  # Confidence score
+                    c_det = int(pr_cls[j])
+                    s_det = float(pr_scores[j])
 
-                    # Face/no-face PR: all predictions are false positives
-                    per_true_face[0].append(0)  # Mark as FP
-                    per_score_face[0].append(s_det)  # Record score
+                    # Face / no face: all are false positives (FP)
+                    per_true_face[0].append(0)
+                    per_score_face[0].append(s_det)
 
-                    # Strict multi-class: mark as FP for the predicted class
+                    # Strict multi-class: FP for the predicted class
                     if c_det in stats:
                         stats[c_det]["fp"] += 1
-                        per_true[c_det].append(0)  # Mark as FP
-                        per_score[c_det].append(s_det)  # Record score
+                        per_true[c_det].append(0)
+                        per_score[c_det].append(s_det)
 
-                    # Confusion matrix: row for BG (true=-1) against predicted class
-                    y_true.append(-1)  # True label is background
-                    y_pred.append(c_det)  # Predicted class
-                    all_gts.append(-1)  # Ground truth is background
-                    all_preds.append(c_det)  # Prediction is the detected class
-                    all_scores.append(s_det)  # Confidence score
+                        # BG row in the confusion matrix: true BG, predicted class c_det
+                        y_true.append(-1)
+                        y_pred.append(c_det)
+                        all_gts.append(-1)
+                        all_preds.append(c_det)
+                        all_scores.append(s_det)
 
-            # No IoU/angle calculations since there are no baby ground truths
+            # No IoU or angle calculations, as there is no baby ground truth (GT)
             continue
 
         # --------- Images WITH baby GTs ---------

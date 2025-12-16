@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument(
         "--sampler",
         type=str,
-        default=None,
+        default="weighted",
         choices=["none", "weighted", "batch"],
         help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--backbone",
         type=str,
-        default="densenet121",
+        default=config.DEFAULT_BACKBONE,
         choices=[
             "mobilenetv1",
             "resnet50",
@@ -94,7 +94,7 @@ def parse_args():
     parser.add_argument(
         "--backbone_mode",
         type=str,
-        default="feature_extractor",
+        default=config.DEFAULT_BACKBONE_MODE,
         choices=["feature_extractor", "fine_tuning", "train_all"],
         help="How to treat the backbone parameters during training.",
     )

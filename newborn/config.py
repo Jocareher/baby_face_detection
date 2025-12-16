@@ -32,11 +32,12 @@ DEFAULT_BATCH_SIZE = 32
 DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_OPTIMIZER = "ADAMW"
 DEFAULT_SCHEDULER = "Cosine"
-DEFAULT_CLIP_VALUE = None
+DEFAULT_CLIP_VALUE = 1.0
 DEFAULT_GRAD_CLIP_MODE = "Norm"
 DEFAULT_PATIENCE = 20
 DEFAULT_OUT_CHANNELS = 128
 DEFAULT_BACKBONE_MODE = "train_all"
+DEFAULT_BACKBONE = "densenet121"
 
 # =======================
 # Precomputed OBB Statistics
@@ -121,7 +122,7 @@ LAMBDA_CLS = 1.0
 LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0
 LAMBDA_ROT = 2.0
-LAMBDA_RECT = 1.0  # Weight for the rectangle loss
+LAMBDA_RECT = 0.2  # Weight for the rectangle loss
 LAMBDA_CHILD = 1.0
 OBB_LOSS_TYPE = "smooth_l1"  # "smooth_l1", "l1"
 ROT_LOSS_TYPE = "vector"  # "cosine", "vector"

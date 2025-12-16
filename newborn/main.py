@@ -49,7 +49,7 @@ def parse_args():
         "--sampler",
         type=str,
         default="none",
-        choices=["none", "weighted", "batch"],
+        choices=["weighted", "weighted", "batch"],
         help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
 

@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         choices=["mobilenetv1", "resnet50", "vgg16", "densenet121", "vit", "vggface2"],
     )
     p.add_argument("--out_channel", type=int, default=config.DEFAULT_OUT_CHANNELS)
-    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_workers", type=int, default=4)
 
     p.add_argument("--face_thres", type=float, default=config.FACE_THRESH)
@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--match_iou_thr",
         type=float,
-        default=0.30,
+        default=0.50,
         help="Minimum pIoU required to rotate an image (matching GT to a prediction).",
     )
     p.add_argument(
@@ -321,7 +321,7 @@ def rotate_expand_and_transform_polys(
     """
     h, w = image_bgr.shape[:2]
     cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
-    angle_deg = float(math.degrees(angle_rad_ccw))
+    angle_deg = -float(math.degrees(angle_rad_ccw))
 
     M = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0).astype(np.float32)
 

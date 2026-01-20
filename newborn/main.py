@@ -371,60 +371,37 @@ def parse_args():
 def main():
     args = parse_args()
     print("[INFO] Starting training and inference with args:", vars(args))
-    
-    def apply_wandb_sweep_config(args: argparse.Namespace) -> argparse.Namespace:
-        """Overwrite argparse args with W&B sweep config values when available."""
-        if wandb.run is None:
-            return args
 
-        cfg = wandb.config
-        overridable_keys = [
-            "lambda_cls",
-            "lambda_rot",
-            "lambda_obb",
-            "lambda_face",
-            "lambda_child",
-            "lambda_rect",
-            "epochs",
-        ]
+    # Decide if we should use W&B:
+    # - record_metrics True => normal run
+    # - When launched by wandb agent, WANDB_SWEEP_ID is set
+    use_wandb = bool(args.record_metrics) or ("WANDB_SWEEP_ID" in os.environ)
 
-        for key in overridable_keys:
-            if key in cfg and cfg[key] is not None:
-                current_val = getattr(args, key)
-                setattr(args, key, type(current_val)(cfg[key]))
-
-        return args
-
-
-    use_wandb = args.record_metrics or ("WANDB_SWEEP_ID" in os.environ)
     if use_wandb:
-        # For sweeps, wandb.init() is mandatory here so wandb.config is populated
+        # IMPORTANT:
+        # - In sweeps, project/entity are controlled by the sweep, so they may be ignored.
+        # - Do not "update" config keys that are sweep-controlled (they are locked).
         wandb.init(project=args.project, config=vars(args))
-        args = apply_wandb_sweep_config(args)
 
-    # Persist the final resolved args back to W&B
-    wandb.config.update(vars(args), allow_val_change=True)
+        # Optional: set a descriptive name (allowed in sweeps)
+        sweep_run_name = (
+            f"bayes_lcls{args.lambda_cls:.3f}"
+            f"_lrot{args.lambda_rot:.3f}"
+            f"_lobb{args.lambda_obb:.3f}"
+            f"_lface{args.lambda_face:.3f}"
+            f"_lchild{args.lambda_child:.3f}"
+            f"_lrect{args.lambda_rect:.3f}"
+            f"_ep{int(args.epochs)}"
+        )
+        if wandb.run is not None:
+            wandb.run.name = sweep_run_name
 
-    sweep_run_name = (
-        f"bayes_lcls{args.lambda_cls:.3f}"
-        f"_lrot{args.lambda_rot:.3f}"
-        f"_lobb{args.lambda_obb:.3f}"
-        f"_lface{args.lambda_face:.3f}"
-        f"_lchild{args.lambda_child:.3f}"
-        f"_lrect{args.lambda_rect:.3f}"
-        f"_ep{int(args.epochs)}"
-    )
+        # Keep filesystem outputs aligned with this run name
+        args.run_name = sweep_run_name
 
-    if wandb.run is not None:
-        wandb.run.name = sweep_run_name
-        wandb.run.save()
-
-    # Keep filesystem outputs aligned with W&B run name
-    args.run_name = sweep_run_name
     # ------------------------------------------------------------------------
     # 0. Reproducibility
     # ------------------------------------------------------------------------
-    # Set random seed for reproducibility
     set_seed(42)
 
     # ------------------------------------------------------------------------
@@ -434,10 +411,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Output directory created at: {output_dir}")
 
-    # Save run metadata for reproducibility
     save_reproducibility_metadata(output_dir, vars(args))
 
-    # Create subdirectories for checkpoints, CSV logs, config, figures, grids, and predictions
     ckpt_path = output_dir / "checkpoint.pt"
     csv_path = output_dir / f"{args.run_name}.csv"
     config_path = output_dir / f"{args.run_name}.yaml"
@@ -448,10 +423,15 @@ def main():
     inference_preview.mkdir(exist_ok=True)
     grids_dir.mkdir(exist_ok=True)
 
-    # Save full config to YAML
     with open(config_path, "w") as f:
         yaml.dump(vars(args), f)
     print(f"[INFO] Saved config to {config_path}")
+
+    # If using W&B, you can save files explicitly (optional)
+    if use_wandb and wandb.run is not None:
+        # Save the YAML config as a file in the run
+        wandb.save(str(config_path))
+
 
     # ------------------------------------------------------------------------
     # II. Setup
@@ -716,6 +696,12 @@ def main():
     )
 
     print("\n[INFO] Training completed!")
+    
+    if use_wandb and wandb.run is not None:
+        wandb.save(str(csv_path))
+        wandb.save(str(ckpt_path))
+        wandb.save(str(anchor_preview_path))
+        wandb.save(str(output_dir / "model_summary.txt"))
 
     # ------------------------------------------------------------------------
     # VI. Inference

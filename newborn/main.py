@@ -396,28 +396,41 @@ def main():
             "epochs",
         ]
 
-        for k in overridable_keys:
-            if k in cfg and cfg[k] is not None:
-                setattr(args, k, type(getattr(args, k))(cfg[k]))
+        for key in overridable_keys:
+            if key in cfg and cfg[key] is not None:
+                current_val = getattr(args, key)
+                cast_type = type(current_val)
+                setattr(args, key, cast_type(cfg[key]))
 
         return args
+
+
     if args.record_metrics:
-        wandb.init(project=args.project, name=args.run_name, config=vars(args))
-        args = apply_wandb_sweep_config(args)
+        # Initialize W&B run first; wandb.agent sets wandb.config for sweeps.
+        wandb.init(project=args.project, name=args.run_name)
 
-        # Ahora que args puede haber cambiado, poné el name final
-        sweep_run_name = (
-            f"bayes_lcls{args.lambda_cls:.3f}"
-            f"_lrot{args.lambda_rot:.3f}"
-            f"_lobb{args.lambda_obb:.3f}"
-            f"_lr{args.lr:.1e}"
-            f"_wd{args.weight_decay:.1e}"
-        )
-        wandb.run.name = sweep_run_name
-        wandb.run.save()
+    # Apply sweep overrides (if any) onto args
+    args = apply_wandb_sweep_config(args)
 
-        # MUY IMPORTANTE: también actualizá args.run_name para tu carpeta runs/
-        args.run_name = sweep_run_name
+    # Now that args are final, update W&B config with the final resolved values
+    wandb.config.update(vars(args), allow_val_change=True)
+
+    # Create a deterministic, informative run name for this configuration
+    sweep_run_name = (
+        f"bayes_lcls{args.lambda_cls:.3f}"
+        f"_lrot{args.lambda_rot:.3f}"
+        f"_lobb{args.lambda_obb:.3f}"
+        f"_lface{args.lambda_face:.3f}"
+        f"_lchild{args.lambda_child:.3f}"
+        f"_lrect{args.lambda_rect:.3f}"
+        f"_ep{int(args.epochs)}"
+    )
+
+    wandb.run.name = sweep_run_name
+    wandb.run.save()
+
+    # IMPORTANT: keep filesystem outputs aligned with the W&B run name
+    args.run_name = sweep_run_name
     # ------------------------------------------------------------------------
     # 0. Reproducibility
     # ------------------------------------------------------------------------
@@ -792,6 +805,10 @@ def main():
     print(f"[INFO] Plotting training curves from {csv_path}")
     plot_training_curves_from_csv(csv_path, output_dir)
     print(f"[INFO] All done! Check {output_dir} for results.")
+    
+    if args.record_metrics and wandb.run is not None:
+        wandb.finish()
+
 
     # # Create a GIF of the training process
     # create_training_gif(image_folder=inference_preview, output_path=output_dir / "training.gif")

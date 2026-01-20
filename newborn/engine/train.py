@@ -1391,177 +1391,177 @@ def train(
 
     start_time = time.time()
     if record_metrics and wandb.run is None:
-        wandb.init(project=project, name=run_name)  # Initialize Weights & Biases.
+        #wandb.init(project=project, name=run_name)  # Initialize Weights & Biases.
         wandb.watch(model, loss_fn, log="all")  # Watch model and loss function.
 
-    try:
-        for epoch in tqdm(range(epochs), desc="Epochs", unit="epoch"):
-            epoch_start = time.time()
+    #try:
+    for epoch in tqdm(range(epochs), desc="Epochs", unit="epoch"):
+        epoch_start = time.time()
 
-            # Perform a training step
-            (
-                train_total_loss,
-                train_class_loss,
-                train_face_loss,
-                train_obb_loss,
-                train_angular_loss,
-                train_rect_loss,
-                train_child_loss,
-                current_lr,
-            ) = train_step(
-                model=model,
-                train_dataloader=train_dataloader,
-                loss_fn=loss_fn,
-                optimizer=optimizer,
-                clip_value=clip_value,
-                grad_clip_mode=grad_clip_mode,
-                scheduler=scheduler,
-                device=device,
-                anchors=anchors_tuple,
-                scaler=scaler,
-                autocast_context=autocast_context,
-            )
+        # Perform a training step
+        (
+            train_total_loss,
+            train_class_loss,
+            train_face_loss,
+            train_obb_loss,
+            train_angular_loss,
+            train_rect_loss,
+            train_child_loss,
+            current_lr,
+        ) = train_step(
+            model=model,
+            train_dataloader=train_dataloader,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            clip_value=clip_value,
+            grad_clip_mode=grad_clip_mode,
+            scheduler=scheduler,
+            device=device,
+            anchors=anchors_tuple,
+            scaler=scaler,
+            autocast_context=autocast_context,
+        )
 
-            # Perform a validation step
-            (
-                test_total_loss,
-                test_class_loss,
-                test_face_loss,
-                test_obb_loss,
-                test_angular_loss,
-                test_rect_loss,
-                test_child_loss,
-                test_mAP,
-            ) = val_step(
-                model=model,
-                val_dataloader=val_dataloader,
-                loss_fn=loss_fn,
-                device=device,
-                anchors=anchors_tuple,
-                face_thres=face_thres,
-                iou_thres=iou_thres,
-                class_thres=class_thres,
-                baby_thres=baby_thres,
-            )
+        # Perform a validation step
+        (
+            test_total_loss,
+            test_class_loss,
+            test_face_loss,
+            test_obb_loss,
+            test_angular_loss,
+            test_rect_loss,
+            test_child_loss,
+            test_mAP,
+        ) = val_step(
+            model=model,
+            val_dataloader=val_dataloader,
+            loss_fn=loss_fn,
+            device=device,
+            anchors=anchors_tuple,
+            face_thres=face_thres,
+            iou_thres=iou_thres,
+            class_thres=class_thres,
+            baby_thres=baby_thres,
+        )
 
-            # Update scheduler if applicable
-            if scheduler is not None:
-                if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
-                    scheduler.step(test_total_loss)
-                # elif isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
-                #     scheduler.step() # Cosine scheduler does not need step here
-                # since T_max is set to total iterations
+        # Update scheduler if applicable
+        if scheduler is not None:
+            if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(test_total_loss)
+            # elif isinstance(scheduler, lr_scheduler.CosineAnnealingLR):
+            #     scheduler.step() # Cosine scheduler does not need step here
+            # since T_max is set to total iterations
 
-            epoch_time = time.time() - epoch_start
-            print(
-                f"""
+        epoch_time = time.time() - epoch_start
+        print(
+            f"""
 📘 Epoch {epoch+1:02d} | LR: {current_lr:.6f} | Time: {epoch_time//60:.0f}m {epoch_time%60:.2f}s
 
 🔧 Metrics Overview:
-    ┌────────────────────┬────────────┬────────────┐
-    │ Metric             │   Train    │    Val     │
-    ├────────────────────┼────────────┼────────────┤
-    │ Total Loss         │ {train_total_loss:10.4f} │ {test_total_loss:10.4f} │
-    │ Face Loss          │ {train_face_loss:10.4f} │ {test_face_loss:10.4f} │
-    │ Child Loss         │ {train_child_loss:10.4f} │ {test_child_loss:10.4f} │
-    │ Class Loss         │ {train_class_loss:10.4f} │ {test_class_loss:10.4f} │
-    │ OBB Loss           │ {train_obb_loss:10.4f} │ {test_obb_loss:10.4f} │
-    │ Angle Loss         │ {train_angular_loss:10.4f} │ {test_angular_loss:10.4f} │
-    │ Rect Loss          │ {train_rect_loss:10.4f} │ {test_rect_loss:10.4f} │
-    │ mAP (Val only)     │      ---   │ {test_mAP:10.4f} │
-    └────────────────────┴────────────┴────────────┘
+┌────────────────────┬────────────┬────────────┐
+│ Metric             │   Train    │    Val     │
+├────────────────────┼────────────┼────────────┤
+│ Total Loss         │ {train_total_loss:10.4f} │ {test_total_loss:10.4f} │
+│ Face Loss          │ {train_face_loss:10.4f} │ {test_face_loss:10.4f} │
+│ Child Loss         │ {train_child_loss:10.4f} │ {test_child_loss:10.4f} │
+│ Class Loss         │ {train_class_loss:10.4f} │ {test_class_loss:10.4f} │
+│ OBB Loss           │ {train_obb_loss:10.4f} │ {test_obb_loss:10.4f} │
+│ Angle Loss         │ {train_angular_loss:10.4f} │ {test_angular_loss:10.4f} │
+│ Rect Loss          │ {train_rect_loss:10.4f} │ {test_rect_loss:10.4f} │
+│ mAP (Val only)     │      ---   │ {test_mAP:10.4f} │
+└────────────────────┴────────────┴────────────┘
 """
+        )
+
+        if record_metrics:
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "train_total_loss": train_total_loss,
+                    "train_class_loss": train_class_loss,
+                    "train_child_loss": train_child_loss,
+                    "train_face_loss": train_face_loss,
+                    "train_obb_loss": train_obb_loss,
+                    "train_angular_loss": train_angular_loss,
+                    "train_rect_loss": train_rect_loss,
+                    "test_total_loss": test_total_loss,
+                    "test_class_loss": test_class_loss,
+                    "test_face_loss": test_face_loss,
+                    "test_obb_loss": test_obb_loss,
+                    "test_angular_loss": test_angular_loss,
+                    "test_rect_loss": test_rect_loss,
+                    "test_child_loss": test_child_loss,
+                    "test_mAP": test_mAP,
+                    "learning_rate": current_lr,
+                    "epoch_time": epoch_time,
+                }
+            )  # Log metrics to Weights & Biases.
+
+        # Update results dictionary
+        results["train_total_loss"].append(train_total_loss)
+        results["train_class_loss"].append(train_class_loss)
+        results["train_face_loss"].append(train_face_loss)
+        results["train_child_loss"].append(train_child_loss)
+        results["train_obb_loss"].append(train_obb_loss)
+        results["train_angular_loss"].append(train_angular_loss)
+        results["train_rect_loss"].append(train_rect_loss)
+        results["test_total_loss"].append(test_total_loss)
+        results["test_class_loss"].append(test_class_loss)
+        results["test_face_loss"].append(test_face_loss)
+        results["test_child_loss"].append(test_child_loss)
+        results["test_obb_loss"].append(test_obb_loss)
+        results["test_angular_loss"].append(test_angular_loss)
+        results["test_rect_loss"].append(test_rect_loss)
+        results["test_mAP"].append(test_mAP)
+
+        # Write metrics to CSV file
+        with open(csv_filename, mode="a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    epoch + 1,
+                    f"{train_total_loss:.4f}",
+                    f"{train_class_loss:.4f}",
+                    f"{train_face_loss:.4f}",
+                    f"{train_child_loss:.4f}",
+                    f"{train_obb_loss:.4f}",
+                    f"{train_angular_loss:.4f}",
+                    f"{train_rect_loss:.4f}",
+                    f"{test_total_loss:.4f}",
+                    f"{test_class_loss:.4f}",
+                    f"{test_face_loss:.4f}",
+                    f"{test_child_loss:.4f}",
+                    f"{test_obb_loss:.4f}",
+                    f"{test_angular_loss:.4f}",
+                    f"{test_rect_loss:.4f}",
+                    f"{test_mAP:.4f}",
+                    f"{current_lr:.5f}",
+                    f"{epoch_time:.4f}",
+                ]
             )
 
-            if record_metrics:
-                wandb.log(
-                    {
-                        "epoch": epoch + 1,
-                        "train_total_loss": train_total_loss,
-                        "train_class_loss": train_class_loss,
-                        "train_child_loss": train_child_loss,
-                        "train_face_loss": train_face_loss,
-                        "train_obb_loss": train_obb_loss,
-                        "train_angular_loss": train_angular_loss,
-                        "train_rect_loss": train_rect_loss,
-                        "test_total_loss": test_total_loss,
-                        "test_class_loss": test_class_loss,
-                        "test_face_loss": test_face_loss,
-                        "test_obb_loss": test_obb_loss,
-                        "test_angular_loss": test_angular_loss,
-                        "test_rect_loss": test_rect_loss,
-                        "test_child_loss": test_child_loss,
-                        "test_mAP": test_mAP,
-                        "learning_rate": current_lr,
-                        "epoch_time": epoch_time,
-                    }
-                )  # Log metrics to Weights & Biases.
+        # Save inference preview every few epochs
+        if (epoch + 1) % show_every_epoch == 0 and inference_preview is not None:
+            out_path = inference_preview / f"{run_name}_epoch{epoch+1}.jpg"
+            in_training_inference(
+                model,
+                val_dataloader,
+                anchors_xy,
+                device,
+                resize_size,
+                out_path,
+                grid_shape,
+            )
 
-            # Update results dictionary
-            results["train_total_loss"].append(train_total_loss)
-            results["train_class_loss"].append(train_class_loss)
-            results["train_face_loss"].append(train_face_loss)
-            results["train_child_loss"].append(train_child_loss)
-            results["train_obb_loss"].append(train_obb_loss)
-            results["train_angular_loss"].append(train_angular_loss)
-            results["train_rect_loss"].append(train_rect_loss)
-            results["test_total_loss"].append(test_total_loss)
-            results["test_class_loss"].append(test_class_loss)
-            results["test_face_loss"].append(test_face_loss)
-            results["test_child_loss"].append(test_child_loss)
-            results["test_obb_loss"].append(test_obb_loss)
-            results["test_angular_loss"].append(test_angular_loss)
-            results["test_rect_loss"].append(test_rect_loss)
-            results["test_mAP"].append(test_mAP)
-
-            # Write metrics to CSV file
-            with open(csv_filename, mode="a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(
-                    [
-                        epoch + 1,
-                        f"{train_total_loss:.4f}",
-                        f"{train_class_loss:.4f}",
-                        f"{train_face_loss:.4f}",
-                        f"{train_child_loss:.4f}",
-                        f"{train_obb_loss:.4f}",
-                        f"{train_angular_loss:.4f}",
-                        f"{train_rect_loss:.4f}",
-                        f"{test_total_loss:.4f}",
-                        f"{test_class_loss:.4f}",
-                        f"{test_face_loss:.4f}",
-                        f"{test_child_loss:.4f}",
-                        f"{test_obb_loss:.4f}",
-                        f"{test_angular_loss:.4f}",
-                        f"{test_rect_loss:.4f}",
-                        f"{test_mAP:.4f}",
-                        f"{current_lr:.5f}",
-                        f"{epoch_time:.4f}",
-                    ]
-                )
-
-            # Save inference preview every few epochs
-            if (epoch + 1) % show_every_epoch == 0 and inference_preview is not None:
-                out_path = inference_preview / f"{run_name}_epoch{epoch+1}.jpg"
-                in_training_inference(
-                    model,
-                    val_dataloader,
-                    anchors_xy,
-                    device,
-                    resize_size,
-                    out_path,
-                    grid_shape,
-                )
-
-            # Check early stopping condition
-            if early_stopping is not None:
-                early_stopping(test_total_loss, model)
-                if early_stopping.early_stop:
-                    print("Early stopping")
-                    break
-    finally:
-        if record_metrics and wandb.run is not None:
-            wandb.finish()  # Finish Weights & Biases run.
+        # Check early stopping condition
+        if early_stopping is not None:
+            early_stopping(test_total_loss, model)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+#finally:
+        # if record_metrics and wandb.run is not None:
+        #     wandb.finish()  # Finish Weights & Biases run.
 
     elapsed_time = time.time() - start_time
     print(

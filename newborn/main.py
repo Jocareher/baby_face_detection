@@ -371,21 +371,13 @@ def parse_args():
 def main():
     args = parse_args()
     print("[INFO] Starting training and inference with args:", vars(args))
+    
     def apply_wandb_sweep_config(args: argparse.Namespace) -> argparse.Namespace:
-        """
-        Overwrites argparse args with W&B sweep config values when available.
-
-        Args:
-            args: Parsed CLI arguments.
-
-        Returns:
-            Updated args with sweep overrides applied.
-        """
+        """Overwrite argparse args with W&B sweep config values when available."""
         if wandb.run is None:
             return args
 
         cfg = wandb.config
-
         overridable_keys = [
             "lambda_cls",
             "lambda_rot",
@@ -399,23 +391,20 @@ def main():
         for key in overridable_keys:
             if key in cfg and cfg[key] is not None:
                 current_val = getattr(args, key)
-                cast_type = type(current_val)
-                setattr(args, key, cast_type(cfg[key]))
+                setattr(args, key, type(current_val)(cfg[key]))
 
         return args
 
 
-    if args.record_metrics:
-        # Initialize W&B run first; wandb.agent sets wandb.config for sweeps.
-        wandb.init(project=args.project, name=args.run_name)
+    use_wandb = args.record_metrics or ("WANDB_SWEEP_ID" in os.environ)
+    if use_wandb:
+        # For sweeps, wandb.init() is mandatory here so wandb.config is populated
+        wandb.init(project=args.project, config=vars(args))
+        args = apply_wandb_sweep_config(args)
 
-    # Apply sweep overrides (if any) onto args
-    args = apply_wandb_sweep_config(args)
-
-    # Now that args are final, update W&B config with the final resolved values
+    # Persist the final resolved args back to W&B
     wandb.config.update(vars(args), allow_val_change=True)
 
-    # Create a deterministic, informative run name for this configuration
     sweep_run_name = (
         f"bayes_lcls{args.lambda_cls:.3f}"
         f"_lrot{args.lambda_rot:.3f}"
@@ -426,10 +415,11 @@ def main():
         f"_ep{int(args.epochs)}"
     )
 
-    wandb.run.name = sweep_run_name
-    wandb.run.save()
+    if wandb.run is not None:
+        wandb.run.name = sweep_run_name
+        wandb.run.save()
 
-    # IMPORTANT: keep filesystem outputs aligned with the W&B run name
+    # Keep filesystem outputs aligned with W&B run name
     args.run_name = sweep_run_name
     # ------------------------------------------------------------------------
     # 0. Reproducibility

@@ -1390,7 +1390,7 @@ def train(
         autocast_context = nullcontext()  # No-op context for CPU or no AMP
 
     start_time = time.time()
-    if record_metrics and wandb.run is None:
+    if record_metrics and wandb.run is not None:
         #wandb.init(project=project, name=run_name)  # Initialize Weights & Biases.
         wandb.watch(model, loss_fn, log="all")  # Watch model and loss function.
 

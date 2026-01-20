@@ -3,7 +3,7 @@ import csv
 import os
 import random
 from contextlib import nullcontext
-from typing import List, Optional, Dict, Tuple, Union
+from typing import Any, Iterable, List, Optional, Dict, Sequence, Sequence, Tuple, Union
 from pathlib import Path
 
 import numpy as np
@@ -74,7 +74,13 @@ class EarlyStopping:
         self.fold = None
         self.filename = None
 
-    def __call__(self, val_loss: float, model: nn.Module, fold: int = None):
+    def __call__(
+        self,
+        val_loss: float,
+        model: nn.Module,
+        loss_fn: Optional[nn.Module],
+        fold: int = None,
+    ):
         """
         This method is called during the training process to monitor the validation loss and decide whether to stop
         the training process early or not.
@@ -82,6 +88,7 @@ class EarlyStopping:
         Args:
             val_loss: Validation loss of the model at the current epoch.
             model: The PyTorch model being trained.
+            loss_fn: The loss function used for training.
             fold: The current fold of the KFold cross-validation. Required if use_kfold is True.
         """
         if np.isnan(val_loss):
@@ -106,7 +113,7 @@ class EarlyStopping:
         # If the best score is None, sets it to the current score and saves the checkpoint
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(val_loss, model, loss_fn)
 
         # If the score is less than the best score plus delta, increments the counter
         # and checks if the patience has been reached
@@ -121,17 +128,27 @@ class EarlyStopping:
         # If the score is better than the best score plus delta, saves the checkpoint and resets the counter
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(val_loss, model, loss_fn)
             self.counter = 0
 
-    def save_checkpoint(self, val_loss: float, model: nn.Module):
+    def save_checkpoint(
+        self, val_loss: float, model: nn.Module, loss_fn: Optional[nn.Module]
+    ):
         """
         Saves the model when validation loss decreases and it's a numerical value.
 
         Args:
             val_loss: The current validation loss.
             model: The PyTorch model being trained.
+            loss_fn: The loss function used for training.
         """
+
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "val_loss": float(val_loss),
+        }
+        if loss_fn is not None:
+            checkpoint["loss_state_dict"] = loss_fn.state_dict()
         # If verbose mode is on, print a message about the validation loss decreasing and saving the model
         if self.verbose:
             self.trace_func(
@@ -140,9 +157,9 @@ class EarlyStopping:
 
         # Save the state of the model to the appropriate filename based on whether KFold is used or not
         if self.use_kfold:
-            torch.save(model.state_dict(), self.filename)
+            torch.save(checkpoint, self.filename)
         else:
-            torch.save(model.state_dict(), self.path)
+            torch.save(checkpoint, self.path)
 
         # Update the minimum validation loss seen so far to the current validation loss
         self.val_loss_min = val_loss
@@ -741,55 +758,50 @@ def generate_anchors_for_training(
 
 
 def create_optimizer(
-    which_optimizer: str, model: nn.Module, learning_rate: float, weight_decay: float
+    which_optimizer: str,
+    parameters: Union[Iterable[nn.Parameter], Sequence[Dict[str, Any]]],
+    learning_rate: float,
 ) -> torch.optim.Optimizer:
     """
     Creates and returns an optimizer for the model.
 
     Args:
-        which_optimizer (str): The optimizer to use ('ADAM', 'SGD', 'ADAMW', or 'RAdam').
-        model (nn.Module): The model whose parameters will be optimized.
-        learning_rate (float): The learning rate for the optimizer.
-        weight_decay (float): The weight decay (L2 regularization).
+        which_optimizer (str): Optimizer type ('ADAM', 'SGD', 'ADAMW', 'RAdam').
+        parameters: Model parameters or param groups.
+        learning_rate (float): Learning rate.
 
     Returns:
-        torch.optim.Optimizer: Instantiated optimizer.
-
-    Raises:
-        ValueError: If the optimizer name is not recognized.
+        torch.optim.Optimizer
     """
-    # Select optimizer based on string identifier
     if which_optimizer == "ADAM":
         return Adam(
-            model.parameters(),
+            parameters,
             lr=learning_rate,
-            weight_decay=weight_decay,
             amsgrad=True,
         )
+
     elif which_optimizer == "SGD":
         return SGD(
-            model.parameters(),
+            parameters,
             lr=learning_rate,
-            weight_decay=weight_decay,
             momentum=0.9,
         )
+
     elif which_optimizer == "ADAMW":
         return AdamW(
-            model.parameters(),
+            parameters,
             lr=learning_rate,
-            weight_decay=weight_decay,
             amsgrad=True,
         )
+
     elif which_optimizer == "RAdam":
         return RAdam(
-            model.parameters(),
+            parameters,
             lr=learning_rate,
-            weight_decay=weight_decay,
         )
+
     else:
-        raise ValueError(
-            "The optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', or 'RAdam'"
-        )
+        raise ValueError("Optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', 'RAdam'")
 
 
 def create_scheduler(
@@ -1001,6 +1013,11 @@ def train_step(
 
             optimizer.step()  # Optimizer step
 
+        if hasattr(loss_fn, "log_var_cls"):
+            with torch.no_grad():
+                loss_fn.log_var_cls.clamp_(loss_fn.log_var_min, loss_fn.log_var_max)
+                loss_fn.log_var_rot.clamp_(loss_fn.log_var_min, loss_fn.log_var_max)
+
         # Step the scheduler if it's not ReduceLROnPlateau
         # ReduceLROnPlateau requires a separate step with validation loss
         # scheduler.step(loss) is called in the validation step.
@@ -1109,7 +1126,7 @@ def val_step(
             targets = build_multitask_targets(targets_raw, device)  # Prepare targets
 
             anchors_xy, anchors_xywhr = anchors
-            #batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
+            # batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
             preds = model(images)
 
@@ -1325,14 +1342,25 @@ def train(
         "test_angular_loss": [],
         "test_rect_loss": [],
         "test_mAP": [],
+        "log_var_cls": [],
+        "log_var_rot": [],
+        "lambda_cls_weight": [],
+        "lambda_rot_weight": [],
     }
 
     model.to(device)  # Move model to the specified device.
+    model_params = list(model.parameters())
+    loss_params = list(loss_fn.parameters())
+
+    param_groups = [
+        {"params": model_params, "weight_decay": weight_decay},
+        {"params": loss_params, "weight_decay": 0.0},
+    ]
+
     optimizer = create_optimizer(
         which_optimizer=which_optimizer,
-        model=model,
+        parameters=param_groups,
         learning_rate=learning_rate,
-        weight_decay=weight_decay,
     )  # Create optimizer.
 
     scheduler = create_scheduler(
@@ -1362,14 +1390,14 @@ def train(
         anchor_preview_path=anchor_preview_path,
         anchors_cache_path=anchors_cache_path,
     )
-    
+
     with torch.no_grad():
         dtype = torch.bfloat16 if (device.type == "cuda") else torch.float32
-        anchors_xy    = anchors_xy.to(device, dtype=dtype, non_blocking=True)
+        anchors_xy = anchors_xy.to(device, dtype=dtype, non_blocking=True)
         anchors_xywhr = anchors_xywhr.to(device, dtype=dtype, non_blocking=True)
         anchors_xy.requires_grad_(False)
         anchors_xywhr.requires_grad_(False)
-        
+
     anchors_tuple = (anchors_xy, anchors_xywhr)
 
     # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
@@ -1444,6 +1472,10 @@ def train(
                 baby_thres=baby_thres,
             )
 
+            effective_weights = {}
+            if hasattr(loss_fn, "get_effective_weights"):
+                effective_weights = loss_fn.get_effective_weights()
+
             # Update scheduler if applicable
             if scheduler is not None:
                 if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
@@ -1497,6 +1529,9 @@ def train(
                     }
                 )  # Log metrics to Weights & Biases.
 
+            if record_metrics and effective_weights:
+                wandb.log({**effective_weights})
+
             # Update results dictionary
             results["train_total_loss"].append(train_total_loss)
             results["train_class_loss"].append(train_class_loss)
@@ -1513,6 +1548,10 @@ def train(
             results["test_angular_loss"].append(test_angular_loss)
             results["test_rect_loss"].append(test_rect_loss)
             results["test_mAP"].append(test_mAP)
+            if hasattr(loss_fn, "get_effective_weights"):
+                w = loss_fn.get_effective_weights()
+                results["lambda_cls_weight"].append(w.get("lambda_cls_eff", None))
+                results["lambda_rot_weight"].append(w.get("lambda_rot_eff", None))
 
             # Write metrics to CSV file
             with open(csv_filename, mode="a", newline="") as f:
@@ -1555,7 +1594,7 @@ def train(
 
             # Check early stopping condition
             if early_stopping is not None:
-                early_stopping(test_total_loss, model)
+                early_stopping(test_total_loss, model, loss_fn)
                 if early_stopping.early_stop:
                     print("Early stopping")
                     break

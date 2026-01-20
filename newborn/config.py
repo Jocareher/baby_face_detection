@@ -201,29 +201,57 @@ def get_val_transform(img_size=(640, 640), mean=IMAGENET_MEAN, std=IMAGENET_STD)
     )
 
 
-def make_train_transform(img_size, use_augmentation, mean, std,
-                         equalize, bin_deg, strategy, max_rotate, bin_weights):
+def make_train_transform(
+    img_size,
+    use_augmentation,
+    mean,
+    std,
+    equalize,
+    bin_deg,
+    strategy,
+    max_rotate,
+    bin_weights,
+):
     norm = ToTensorNormalize(mean=mean, std=std)
     if not use_augmentation:
         return transforms.Compose([Resize(img_size), norm])
 
-    rot = RandomRotateOBBEqualizeBins(
-        bin_deg=bin_deg,
-        max_angle=max_rotate,
-        prob=0.8,
-        strategy=("inverse_freq" if (equalize and strategy=="inverse_freq") else "uniform"),
-        bin_weights=(bin_weights if (equalize and strategy=="inverse_freq") else None),
-        ref_policy="random",
-    ) if equalize else RandomRotateOBB(max_angle=15, prob=0.3)
+    rot = (
+        RandomRotateOBBEqualizeBins(
+            bin_deg=bin_deg,
+            max_angle=max_rotate,
+            prob=0.5,
+            strategy=(
+                "inverse_freq"
+                if (equalize and strategy == "inverse_freq")
+                else "uniform"
+            ),
+            bin_weights=(
+                bin_weights if (equalize and strategy == "inverse_freq") else None
+            ),
+            ref_policy="random",
+        )
+        if equalize
+        else RandomRotateOBB(max_angle=15, prob=0.3)
+    )
 
-    return transforms.Compose([
-        RandomHorizontalFlipOBB(prob=0.5),
-        rot,
-        RandomOcclusionOBB(max_size_ratio=0.5, prob=0.5),
-        RandomNoiseOBB(std=10, prob=0.7),
-        RandomBlurOBB(ksize=(5,5), prob=0.7),
-        RandomGrayOBB(prob=0.3),
-        ColorJitterOBB(brightness=0.2, contrast=0.2, saturation=0.2, prob=0.7, hue=0.05, gamma=0.1),
-        Resize(img_size),
-        norm,
-    ])
+    return transforms.Compose(
+        [
+            RandomHorizontalFlipOBB(prob=0.5),
+            rot,
+            RandomOcclusionOBB(max_size_ratio=0.5, prob=0.5),
+            RandomNoiseOBB(std=10, prob=0.7),
+            RandomBlurOBB(ksize=(5, 5), prob=0.7),
+            RandomGrayOBB(prob=0.3),
+            ColorJitterOBB(
+                brightness=0.2,
+                contrast=0.2,
+                saturation=0.2,
+                prob=0.7,
+                hue=0.05,
+                gamma=0.1,
+            ),
+            Resize(img_size),
+            norm,
+        ]
+    )

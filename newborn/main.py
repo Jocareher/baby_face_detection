@@ -14,6 +14,7 @@ if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
     print(f"[INFO] Adding {ROOT_DIR} to sys.path")
 
+import wandb
 import yaml
 import torch
 from torch import nn
@@ -48,8 +49,8 @@ def parse_args():
     parser.add_argument(
         "--sampler",
         type=str,
-        default="none",
-        choices=["weighted", "weighted", "batch"],
+        default="weighted",
+        choices=["none", "weighted", "batch"],
         help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
 
@@ -357,10 +358,10 @@ def parse_args():
     parser.add_argument("--bin_deg", type=int, default=10, help="Ancho de bin angular (grados).")
     parser.add_argument("--equalize_angle_bins", action="store_true", default=True,
                         help="Forzar distribución uniforme/inverse-freq de ángulos en train.")
-    parser.add_argument("--aug_bin_strategy", type=str, default="inverse_freq",
+    parser.add_argument("--aug_bin_strategy", type=str, default="uniform",
                         choices=["uniform","inverse_freq"], help="Estrategia de muestreo de bins.")
-    parser.add_argument("--max_rotate", type=float, default=60.0, help="Límite de rotación (grados).")
-    parser.add_argument("--audit_aug_bins", action="store_true", default=True,
+    parser.add_argument("--max_rotate", type=float, default=180.0, help="Límite de rotación (grados).")
+    parser.add_argument("--audit_aug_bins", action="store_true", default=False,
                         help="Guardar histogramas pre y post augmentation en train.")
 
 
@@ -370,7 +371,53 @@ def parse_args():
 def main():
     args = parse_args()
     print("[INFO] Starting training and inference with args:", vars(args))
+    def apply_wandb_sweep_config(args: argparse.Namespace) -> argparse.Namespace:
+        """
+        Overwrites argparse args with W&B sweep config values when available.
 
+        Args:
+            args: Parsed CLI arguments.
+
+        Returns:
+            Updated args with sweep overrides applied.
+        """
+        if wandb.run is None:
+            return args
+
+        cfg = wandb.config
+
+        overridable_keys = [
+            "lambda_cls",
+            "lambda_rot",
+            "lambda_obb",
+            "lambda_face",
+            "lambda_child",
+            "lambda_rect",
+            "epochs",
+        ]
+
+        for k in overridable_keys:
+            if k in cfg and cfg[k] is not None:
+                setattr(args, k, type(getattr(args, k))(cfg[k]))
+
+        return args
+    if args.record_metrics:
+        wandb.init(project=args.project, name=args.run_name, config=vars(args))
+        args = apply_wandb_sweep_config(args)
+
+        # Ahora que args puede haber cambiado, poné el name final
+        sweep_run_name = (
+            f"bayes_lcls{args.lambda_cls:.3f}"
+            f"_lrot{args.lambda_rot:.3f}"
+            f"_lobb{args.lambda_obb:.3f}"
+            f"_lr{args.lr:.1e}"
+            f"_wd{args.weight_decay:.1e}"
+        )
+        wandb.run.name = sweep_run_name
+        wandb.run.save()
+
+        # MUY IMPORTANTE: también actualizá args.run_name para tu carpeta runs/
+        args.run_name = sweep_run_name
     # ------------------------------------------------------------------------
     # 0. Reproducibility
     # ------------------------------------------------------------------------
@@ -451,15 +498,15 @@ def main():
 
     val_transform = config.get_val_transform(img_size, mean=norm_mean, std=norm_std)
     
-    if args.audit_aug_bins:
-        # crear un "dataset de auditoría" con las MISMAS transforms del train
-        audit_ds = BabyFacesDataset(args.root_dir, split="train", transform=train_transform)
-        post_stats = collect_deg_by_class_from_dataset(audit_ds, labels_map)
-        angles_dir = (output_dir / "angles"); angles_dir.mkdir(exist_ok=True)
-        plot_histograms_split(pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_POST")
+    # if args.audit_aug_bins:
+    #     # crear un "dataset de auditoría" con las MISMAS transforms del train
+    #     audit_ds = BabyFacesDataset(args.root_dir, split="train", transform=train_transform)
+    #     post_stats = collect_deg_by_class_from_dataset(audit_ds, labels_map)
+    #     angles_dir = (output_dir / "angles"); angles_dir.mkdir(exist_ok=True)
+    #     plot_histograms_split(pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_POST")
 
-    save_counts_csv(angles_dir / f"train_PRE_counts_bin{args.bin_deg}.csv", pre_stats, args.bin_deg)
-    save_counts_csv(angles_dir / f"train_POST_counts_bin{args.bin_deg}.csv", post_stats, args.bin_deg)
+    # save_counts_csv(angles_dir / f"train_PRE_counts_bin{args.bin_deg}.csv", pre_stats, args.bin_deg)
+    # save_counts_csv(angles_dir / f"train_POST_counts_bin{args.bin_deg}.csv", post_stats, args.bin_deg)
 
 
     # ------------------------------------------------------------------------

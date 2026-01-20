@@ -1,0 +1,33 @@
+program: main.py
+method: bayes
+metric:
+  name: test_total_loss
+  goal: minimize
+
+parameters:
+  lambda_cls:
+    distribution: uniform
+    min: 1.0
+    max: 8.0
+  lambda_rot:
+    distribution: uniform
+    min: 1.0
+    max: 8.0
+  lambda_obb:
+    distribution: uniform
+    min: 1.0
+    max: 8.0
+
+  lambda_face:
+    distribution: uniform
+    min: 1.0
+    max: 8.0
+  lambda_child:
+    distribution: uniform
+    min: 1.0
+    max: 8.0
+  lambda_rect:
+    value: 0.2
+
+  epochs:
+    value: 20

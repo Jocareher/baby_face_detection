@@ -1390,7 +1390,7 @@ def train(
         autocast_context = nullcontext()  # No-op context for CPU or no AMP
 
     start_time = time.time()
-    if record_metrics:
+    if record_metrics and wandb.run is None:
         wandb.init(project=project, name=run_name)  # Initialize Weights & Biases.
         wandb.watch(model, loss_fn, log="all")  # Watch model and loss function.
 
@@ -1560,7 +1560,7 @@ def train(
                     print("Early stopping")
                     break
     finally:
-        if record_metrics:
+        if record_metrics and wandb.run is not None:
             wandb.finish()  # Finish Weights & Biases run.
 
     elapsed_time = time.time() - start_time

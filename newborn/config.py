@@ -210,7 +210,7 @@ def make_train_transform(img_size, use_augmentation, mean, std,
     rot = RandomRotateOBBEqualizeBins(
         bin_deg=bin_deg,
         max_angle=max_rotate,
-        prob=0.8,
+        prob=0.5,
         strategy=("inverse_freq" if (equalize and strategy=="inverse_freq") else "uniform"),
         bin_weights=(bin_weights if (equalize and strategy=="inverse_freq") else None),
         ref_policy="random",

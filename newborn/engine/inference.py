@@ -32,6 +32,7 @@ from utils.helpers import (
 )
 from utils.visualize import (
     draw_predictions_on_image,
+    plot_error_bar_mean_std_by_gt_bins_per_class,
     write_predictions_txt,
     xywhr_to_poly42_shape,
     scale_polys,
@@ -44,6 +45,8 @@ from utils.visualize import (
     plot_f1_vs_threshold,
     plot_precision_recall,
     plot_qualitative_grid,
+    plot_error_bar_mean_std_by_gt_bins,
+    plot_error_box_by_gt_bins,
 )
 from data_setup.augmentations import wrap_to_pi
 
@@ -176,6 +179,19 @@ def run_evaluation(
     y_true, y_pred = [], []
     iou_errs = {c: [] for c in labels_map}
     angle_errs = {c: [] for c in labels_map}
+    # Angle error by GT-angle bins (unsigned degrees in [0,180))
+    bin_degs = (20, 10, 5)
+    angle_errs_by_gtbin_global: Dict[int, Dict[int, List[float]]] = {
+        bd: {} for bd in bin_degs
+    }
+    angle_errs_by_gtbin_per_cls: Dict[int, Dict[int, Dict[int, List[float]]]] = {
+        bd: {c: {} for c in labels_map} for bd in bin_degs
+    }
+
+    def gt_bin_index(theta_deg_unsigned: float, bin_deg: int) -> int:
+        theta = min(theta_deg_unsigned, 180.0 - 1e-6)
+        return int(theta // bin_deg)
+
     child_stats = {"tp": 0, "fp": 0, "fn": 0}
     samples = []
 
@@ -358,11 +374,31 @@ def run_evaluation(
 
                             # Compute geometric errors
                             iou_errs[true_cls].append(best_iou_val)
+                            # Compute angular error in degrees (0..180)
                             angle_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
-                            angle_errs[true_cls].append(
-                                float(wrap_to_pi(angle_diff).abs() * 180.0 / math.pi)
+                            error_deg = float(
+                                wrap_to_pi(angle_diff).abs() * 180.0 / math.pi
+                            )
+                            angle_errs[true_cls].append(error_deg)
+
+                            # Bin by GT angle (unsigned deg in [0,180))
+                            theta_gt_rad = float(
+                                wrap_to_pi(gt_angles[best_gt_idx]).item()
+                            )
+                            theta_gt_deg_signed = theta_gt_rad * 180.0 / math.pi
+                            theta_gt_deg_unsigned = abs(theta_gt_deg_signed)
+                            theta_gt_deg_unsigned = min(
+                                theta_gt_deg_unsigned, 180.0 - 1e-6
                             )
 
+                            for bd in bin_degs:
+                                bidx = gt_bin_index(theta_gt_deg_unsigned, bd)
+                                angle_errs_by_gtbin_global[bd].setdefault(
+                                    bidx, []
+                                ).append(error_deg)
+                                angle_errs_by_gtbin_per_cls[bd][true_cls].setdefault(
+                                    bidx, []
+                                ).append(error_deg)
                             all_gts.append(true_cls)
                             all_preds.append(true_cls)
                             all_scores.append(score_det)
@@ -484,6 +520,9 @@ def run_evaluation(
         "child_gt": child_gt,
         "child_pred": child_pred,
         "samples": samples,
+        "angle_errs_by_gtbin_global": angle_errs_by_gtbin_global,
+        "angle_errs_by_gtbin_per_cls": angle_errs_by_gtbin_per_cls,
+        "bin_degs": bin_degs,
     }
 
 
@@ -926,6 +965,32 @@ def inference(
         "angle_boxplot.png",
     )
 
+    # Angular error by GT bins (global)
+    for bd in results["bin_degs"]:
+        buckets = results["angle_errs_by_gtbin_global"][bd]
+        if buckets:
+            fig_box_all, fig_box_filter = plot_error_box_by_gt_bins(
+                buckets, bd, title="Angular error by GT angle bin"
+            )
+            save_figure(fig_box_all, f"box_angle_error_per_bin_all_{bd}.png")
+            save_figure(fig_box_filter, f"box_angle_error_per_bin_filter_{bd}.png")
+
+            fig_bar_all, fig_bar_filter = plot_error_bar_mean_std_by_gt_bins(
+                buckets, bd, title="Angular error mean±std by GT angle bin"
+            )
+            save_figure(fig_bar_all, f"hist_angle_error_per_bin_all_{bd}.png")
+            save_figure(fig_bar_filter, f"hist_angle_error_per_bin_filter_{bd}.png")
+
+    # Per-class bars (elige un bd, o loop)
+    for bd in results["bin_degs"]:
+        fig_bar_cls = plot_error_bar_mean_std_by_gt_bins_per_class(
+            results["angle_errs_by_gtbin_per_cls"][bd],
+            labels_map,
+            bd,
+            title_prefix="Angular error mean±std by GT angle bin per class",
+        )
+        save_figure(fig_bar_cls, f"angle_error_per_class_bar_bin_{bd}.png")
+
     # F1 score vs. confidence threshold
     save_figure(
         plot_f1_vs_threshold(
@@ -1253,7 +1318,7 @@ def export_predictions(
     errors = 0  # Failed operations
 
     # Print configuration
-    tqdm.write(f"🧠  Inference on device: {device}")
+    tqdm.write(f"Inference on device: {device}")
     tqdm.write(
         f"Dataloader: {len(loader)} batches | batch_size={getattr(loader, 'batch_size', '?')}"
     )
@@ -1261,7 +1326,7 @@ def export_predictions(
     tqdm.write(f"Resize size (W,H): {resize_size} | NMS uses (H,W)={nms_image_size}")
     tqdm.write(f"Output scale: {output_scale}")
 
-    with tqdm(total=len(loader), desc="⚙️  Batches", unit="batch") as pbar_batches:
+    with tqdm(total=len(loader), desc="Batches", unit="batch") as pbar_batches:
         global_idx = 0
 
         for batch in loader:
@@ -1292,7 +1357,7 @@ def export_predictions(
 
             # Process each image in batch
             B = imgs.size(0)
-            with tqdm(total=B, desc="   Images", leave=False, unit="img") as pbar_imgs:
+            with tqdm(total=B, desc="Images", leave=False, unit="img") as pbar_imgs:
                 for b in range(B):
                     processed += 1
 

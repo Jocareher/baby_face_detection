@@ -374,7 +374,7 @@ def parse_args():
     parser.add_argument(
         "--aug_bin_strategy",
         type=str,
-        default="inverse_freq",
+        default="uniform",
         choices=["uniform", "inverse_freq"],
         help="Estrategia de muestreo de bins.",
     )

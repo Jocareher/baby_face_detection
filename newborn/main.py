@@ -48,8 +48,8 @@ def parse_args():
     parser.add_argument(
         "--sampler",
         type=str,
-        default="none",
-        choices=["weighted", "weighted", "batch"],
+        default="weighted",
+        choices=["none", "weighted", "batch"],
         help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
 
@@ -357,9 +357,9 @@ def parse_args():
     parser.add_argument("--bin_deg", type=int, default=10, help="Ancho de bin angular (grados).")
     parser.add_argument("--equalize_angle_bins", action="store_true", default=True,
                         help="Forzar distribución uniforme/inverse-freq de ángulos en train.")
-    parser.add_argument("--aug_bin_strategy", type=str, default="inverse_freq",
+    parser.add_argument("--aug_bin_strategy", type=str, default="uniform",
                         choices=["uniform","inverse_freq"], help="Estrategia de muestreo de bins.")
-    parser.add_argument("--max_rotate", type=float, default=60.0, help="Límite de rotación (grados).")
+    parser.add_argument("--max_rotate", type=float, default=180.0, help="Límite de rotación (grados).")
     parser.add_argument("--audit_aug_bins", action="store_true", default=True,
                         help="Guardar histogramas pre y post augmentation en train.")
 
@@ -451,15 +451,15 @@ def main():
 
     val_transform = config.get_val_transform(img_size, mean=norm_mean, std=norm_std)
     
-    if args.audit_aug_bins:
-        # crear un "dataset de auditoría" con las MISMAS transforms del train
-        audit_ds = BabyFacesDataset(args.root_dir, split="train", transform=train_transform)
-        post_stats = collect_deg_by_class_from_dataset(audit_ds, labels_map)
-        angles_dir = (output_dir / "angles"); angles_dir.mkdir(exist_ok=True)
-        plot_histograms_split(pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_POST")
+    # if args.audit_aug_bins:
+    #     # crear un "dataset de auditoría" con las MISMAS transforms del train
+    #     audit_ds = BabyFacesDataset(args.root_dir, split="train", transform=train_transform)
+    #     post_stats = collect_deg_by_class_from_dataset(audit_ds, labels_map)
+    #     angles_dir = (output_dir / "angles"); angles_dir.mkdir(exist_ok=True)
+    #     plot_histograms_split(pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_POST")
 
-    save_counts_csv(angles_dir / f"train_PRE_counts_bin{args.bin_deg}.csv", pre_stats, args.bin_deg)
-    save_counts_csv(angles_dir / f"train_POST_counts_bin{args.bin_deg}.csv", post_stats, args.bin_deg)
+    # save_counts_csv(angles_dir / f"train_PRE_counts_bin{args.bin_deg}.csv", pre_stats, args.bin_deg)
+    # save_counts_csv(angles_dir / f"train_POST_counts_bin{args.bin_deg}.csv", post_stats, args.bin_deg)
 
 
     # ------------------------------------------------------------------------

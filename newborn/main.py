@@ -360,7 +360,7 @@ def parse_args():
     parser.add_argument("--aug_bin_strategy", type=str, default="uniform",
                         choices=["uniform","inverse_freq"], help="Estrategia de muestreo de bins.")
     parser.add_argument("--max_rotate", type=float, default=180.0, help="Límite de rotación (grados).")
-    parser.add_argument("--audit_aug_bins", action="store_true", default=True,
+    parser.add_argument("--audit_aug_bins", action="store_true", default=False,
                         help="Guardar histogramas pre y post augmentation en train.")
 
 

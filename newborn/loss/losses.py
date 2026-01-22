@@ -1,5 +1,5 @@
 from typing import List, Tuple, Dict, Union, Optional
-import math 
+import math
 
 import torch
 import torch.nn as nn
@@ -544,7 +544,9 @@ class MultiTaskLoss(nn.Module):
             pos_weight=torch.tensor(face_pos_weight), reduction="mean"
         )
         self.child_loss_fn = nn.BCEWithLogitsLoss(reduction="mean")
-        self.obb_loss_fn = OBBRegressionLoss(loss_type=obb_loss_type, beta=2.0, reduction="mean")
+        self.obb_loss_fn = OBBRegressionLoss(
+            loss_type=obb_loss_type, beta=2.0, reduction="mean"
+        )
         self.rot_loss_fn = RotationLoss(mode=rot_loss_type)
 
         self.lambda_rect = lambda_rect  # keep fixed by default
@@ -565,18 +567,34 @@ class MultiTaskLoss(nn.Module):
             w = max(float(weight), 1e-8)
             return -math.log(w)
 
-        self.log_vars = nn.ParameterDict({
-            "cls": nn.Parameter(torch.tensor(init_log_var(lambda_cls), dtype=torch.float32)),
-            "face": nn.Parameter(torch.tensor(init_log_var(lambda_face), dtype=torch.float32)),
-            "child": nn.Parameter(torch.tensor(init_log_var(lambda_child), dtype=torch.float32)),
-            "obb": nn.Parameter(torch.tensor(init_log_var(lambda_obb), dtype=torch.float32)),
-            "rot": nn.Parameter(torch.tensor(init_log_var(lambda_rot), dtype=torch.float32)),
-        })
+        self.log_vars = nn.ParameterDict(
+            {
+                "cls": nn.Parameter(
+                    torch.tensor(init_log_var(lambda_cls), dtype=torch.float32)
+                ),
+                "face": nn.Parameter(
+                    torch.tensor(init_log_var(lambda_face), dtype=torch.float32)
+                ),
+                "child": nn.Parameter(
+                    torch.tensor(init_log_var(lambda_child), dtype=torch.float32)
+                ),
+                "obb": nn.Parameter(
+                    torch.tensor(init_log_var(lambda_obb), dtype=torch.float32)
+                ),
+                "rot": nn.Parameter(
+                    torch.tensor(init_log_var(lambda_rot), dtype=torch.float32)
+                ),
+            }
+        )
 
         if self.include_rect_in_uncertainty:
-            self.log_vars["rect"] = nn.Parameter(torch.tensor(init_log_var(lambda_rect), dtype=torch.float32))
+            self.log_vars["rect"] = nn.Parameter(
+                torch.tensor(init_log_var(lambda_rect), dtype=torch.float32)
+            )
 
-    def _weighted_task_term(self, loss_value: torch.Tensor, log_var: torch.Tensor, enabled: bool) -> torch.Tensor:
+    def _weighted_task_term(
+        self, loss_value: torch.Tensor, log_var: torch.Tensor, enabled: bool
+    ) -> torch.Tensor:
         """
         Compute exp(-s) * L + s for a single task, gated by enabled flag.
 
@@ -596,11 +614,13 @@ class MultiTaskLoss(nn.Module):
             s = torch.clamp(s, self.log_var_clamp[0], self.log_var_clamp[1])
 
         weight = torch.exp(-s)
-        return weight * loss_value + s
+        return weight * loss_value + 0.5 * s
 
     def forward(
         self,
-        preds: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        preds: Tuple[
+            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+        ],
         targets: Dict[str, torch.Tensor],
         anchors_xy: torch.Tensor,
         anchors_xywhr: torch.Tensor,
@@ -656,18 +676,26 @@ class MultiTaskLoss(nn.Module):
                     neg_logits_all, torch.zeros_like(neg_logits_all), reduction="none"
                 ).view(-1)
             _, hard_order = per_neg_loss.sort(descending=True)
-            num_hard = max(1, min(hard_order.numel(), pos_idx_1.numel() * self.neg_samples_ratio))
+            num_hard = max(
+                1, min(hard_order.numel(), pos_idx_1.numel() * self.neg_samples_ratio)
+            )
             hard_neg_idx = neg_idx_1[hard_order[:num_hard]]
             sel_idx_1 = torch.cat([pos_idx_1, hard_neg_idx], dim=0)
             tgt_face = pos_mask_1.float().unsqueeze(1)[sel_idx_1]
-            face_loss = face_loss + self.face_loss_fn(face_logits[b][sel_idx_1], tgt_face)
+            face_loss = face_loss + self.face_loss_fn(
+                face_logits[b][sel_idx_1], tgt_face
+            )
 
             # Child loss (only valid matched positives)
             valid_child_mask = best_gt_1[pos_idx_1] != -1
             if valid_child_mask.any():
                 pos_idx_1_valid = pos_idx_1[valid_child_mask]
-                tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1_valid]].to(device)
-                child_loss = child_loss + self.child_loss_fn(child_logits[b][pos_idx_1_valid], tgt_child)
+                tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1_valid]].to(
+                    device
+                )
+                child_loss = child_loss + self.child_loss_fn(
+                    child_logits[b][pos_idx_1_valid], tgt_child
+                )
                 child_batches += 1
                 baby_mask = tgt_child.squeeze(1).bool()
             else:
@@ -679,7 +707,9 @@ class MultiTaskLoss(nn.Module):
                 valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
                 if valid_cls_mask.any():
                     pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
-                    tgt_cls_baby = targets["class_idx"][b][best_gt_1[pos_idx_1_baby_valid]]
+                    tgt_cls_baby = targets["class_idx"][b][
+                        best_gt_1[pos_idx_1_baby_valid]
+                    ]
                     cls_loss = cls_loss + self.cls_loss_fn(
                         orient_logits[b][pos_idx_1_baby_valid], tgt_cls_baby
                     )
@@ -696,7 +726,9 @@ class MultiTaskLoss(nn.Module):
                 pred_deltas_1 = deltas[b][pos_mask_1_baby]
                 anc_xy_1 = anchors_xy[pos_mask_1_baby]
                 ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)
-                verts_1 = decode_vertices(pred_deltas_1, anc_xy_1, ang_1, image_sizes[b])
+                verts_1 = decode_vertices(
+                    pred_deltas_1, anc_xy_1, ang_1, image_sizes[b]
+                )
                 anc_xywhr_1 = verts_to_xywhr_with_theta(verts_1, ang_1)
 
             pos_mask_2, _, best_gt_2 = match_anchors_to_targets(
@@ -711,7 +743,9 @@ class MultiTaskLoss(nn.Module):
             if not valid_gt_mask_2.any():
                 continue
 
-            abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[pos_mask_2][valid_gt_mask_2]
+            abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[
+                pos_mask_2
+            ][valid_gt_mask_2]
             gt_idx_2 = best_gt_2[pos_mask_2][valid_gt_mask_2]
 
             pred_deltas_2 = deltas[b][abs_pos_idx_2]
@@ -727,9 +761,13 @@ class MultiTaskLoss(nn.Module):
             )
 
             pred_angle_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)
-            rot_loss = rot_loss + self.rot_loss_fn(pred_angle_2.unsqueeze(-1), gt_angle_2.unsqueeze(-1))
+            rot_loss = rot_loss + self.rot_loss_fn(
+                pred_angle_2.unsqueeze(-1), gt_angle_2.unsqueeze(-1)
+            )
 
-            verts_pred = decode_vertices(pred_deltas_2, anc_xy_2, pred_angle_2, image_sizes[b]).view(-1, 4, 2)
+            verts_pred = decode_vertices(
+                pred_deltas_2, anc_xy_2, pred_angle_2, image_sizes[b]
+            ).view(-1, 4, 2)
             rect_loss = rect_loss + orthogonality_loss(verts_pred)
 
             recon_loss = F.smooth_l1_loss(
@@ -762,10 +800,18 @@ class MultiTaskLoss(nn.Module):
         if self.use_uncertainty:
             total_loss = (
                 self._weighted_task_term(cls_loss, self.log_vars["cls"], cls_enabled)
-                + self._weighted_task_term(face_loss, self.log_vars["face"], face_enabled)
-                + self._weighted_task_term(child_loss, self.log_vars["child"], child_enabled)
-                + self._weighted_task_term(obb_loss, self.log_vars["obb"], stage2_enabled)
-                + self._weighted_task_term(rot_loss, self.log_vars["rot"], stage2_enabled)
+                + self._weighted_task_term(
+                    face_loss, self.log_vars["face"], face_enabled
+                )
+                + self._weighted_task_term(
+                    child_loss, self.log_vars["child"], child_enabled
+                )
+                + self._weighted_task_term(
+                    obb_loss, self.log_vars["obb"], stage2_enabled
+                )
+                + self._weighted_task_term(
+                    rot_loss, self.log_vars["rot"], stage2_enabled
+                )
             )
 
             if self.include_rect_in_uncertainty:
@@ -794,7 +840,7 @@ class MultiTaskLoss(nn.Module):
             float(rect_loss.detach().item()),
             float(child_loss.detach().item()),
         )
-    
+
     @torch.no_grad()
     def get_task_weights(self) -> Dict[str, float]:
         """
@@ -822,4 +868,6 @@ class MultiTaskLoss(nn.Module):
         if not hasattr(self, "log_vars"):
             return {}
 
-        return {name: float(v.detach().cpu().item()) for name, v in self.log_vars.items()}
+        return {
+            name: float(v.detach().cpu().item()) for name, v in self.log_vars.items()
+        }

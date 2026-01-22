@@ -58,9 +58,15 @@ def parse_args() -> argparse.Namespace:
     """
     p = argparse.ArgumentParser("Rotate baby dataset using model predictions.")
     p.add_argument("--root_dir", type=str, required=True, help="Dataset root.")
-    p.add_argument("--split", type=str, default="train", help="Split name (train/val/test).")
-    p.add_argument("--output_root", type=str, required=True, help="Output dataset root.")
-    p.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint.")
+    p.add_argument(
+        "--split", type=str, default="train", help="Split name (train/val/test)."
+    )
+    p.add_argument(
+        "--output_root", type=str, required=True, help="Output dataset root."
+    )
+    p.add_argument(
+        "--checkpoint", type=str, required=True, help="Path to model checkpoint."
+    )
     p.add_argument(
         "--backbone",
         type=str,
@@ -102,7 +108,10 @@ def get_default_device() -> torch.device:
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+    if (
+        getattr(torch.backends, "mps", None) is not None
+        and torch.backends.mps.is_available()
+    ):
         return torch.device("mps")
     return torch.device("cpu")
 
@@ -125,6 +134,7 @@ class SamplePaths:
     """
     Container for per-image paths in the dataset.
     """
+
     image_path: Path
     label_path: Path
 
@@ -220,6 +230,7 @@ class GTEntry:
     """
     Parsed GT entry with normalized polygon and angle.
     """
+
     cls_idx: int
     child_prob: int
     poly_norm_42: np.ndarray  # (4,2) float32 in [0,1]
@@ -246,11 +257,20 @@ def parse_gt_entries(gt_path: Path) -> List[GTEntry]:
         try:
             cls_idx = int(float(toks[0]))
             child_prob = int(float(toks[1]))
-            coords = np.array([float(x) for x in toks[2:10]], dtype=np.float32).reshape(4, 2)
+            coords = np.array([float(x) for x in toks[2:10]], dtype=np.float32).reshape(
+                4, 2
+            )
             angle = float(toks[10])
         except Exception:
             continue
-        out.append(GTEntry(cls_idx=cls_idx, child_prob=child_prob, poly_norm_42=coords, angle_rad=angle))
+        out.append(
+            GTEntry(
+                cls_idx=cls_idx,
+                child_prob=child_prob,
+                poly_norm_42=coords,
+                angle_rad=angle,
+            )
+        )
     return out
 
 
@@ -295,6 +315,7 @@ class RotationResult:
     """
     Result of an expanded-canvas rotation.
     """
+
     rotated_image_bgr: np.ndarray
     rotated_polys_42: np.ndarray
     affine_2x3: np.ndarray
@@ -353,7 +374,9 @@ def rotate_expand_and_transform_polys(
             [polys_42.astype(np.float32), np.ones((N, 4, 1), dtype=np.float32)],
             axis=2,
         )  # (N,4,3)
-        rot_polys = (M[None, :, :] @ poly_h.transpose(0, 2, 1)).transpose(0, 2, 1)[:, :, :2]
+        rot_polys = (M[None, :, :] @ poly_h.transpose(0, 2, 1)).transpose(0, 2, 1)[
+            :, :, :2
+        ]
 
     return RotationResult(
         rotated_image_bgr=rotated,
@@ -385,11 +408,19 @@ def draw_polygons_bgr(
 
     polys_int = np.round(polys_42).astype(np.int32)
     for p in polys_int:
-        cv2.polylines(out, [p.reshape(-1, 1, 2)], isClosed=True, color=(0, 255, 0), thickness=thickness)
+        cv2.polylines(
+            out,
+            [p.reshape(-1, 1, 2)],
+            isClosed=True,
+            color=(0, 255, 0),
+            thickness=thickness,
+        )
     return out
 
 
-def load_checkpoint_into_model(model: nn.Module, checkpoint_path: Path, device: torch.device) -> None:
+def load_checkpoint_into_model(
+    model: nn.Module, checkpoint_path: Path, device: torch.device
+) -> None:
     """
     Load a checkpoint with robust key handling.
 
@@ -402,7 +433,10 @@ def load_checkpoint_into_model(model: nn.Module, checkpoint_path: Path, device: 
     state = raw.get("model_state_dict", raw)
 
     if any(k.startswith("_orig_mod.") for k in state):
-        state = { (k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k): v for k, v in state.items() }
+        state = {
+            (k[len("_orig_mod.") :] if k.startswith("_orig_mod.") else k): v
+            for k, v in state.items()
+        }
 
     model.load_state_dict(state, strict=True)
 
@@ -418,7 +452,9 @@ def build_model(args: argparse.Namespace, device: torch.device) -> nn.Module:
     Returns:
         Loaded model in eval mode.
     """
-    model = NewBORN(backbone_name=args.backbone, out_channel=args.out_channel, pretrained=False).to(device)
+    model = NewBORN(
+        backbone_name=args.backbone, out_channel=args.out_channel, pretrained=False
+    ).to(device)
     load_checkpoint_into_model(model, Path(args.checkpoint), device)
     model.eval()
     return model
@@ -539,7 +575,9 @@ def main() -> None:
 
     model = build_model(args, device)
 
-    anchors_xy = torch.load(config.ANCHORS_CACHE_PATH, map_location="cpu")["anchors_xy"].to(device)
+    anchors_xy = torch.load(config.ANCHORS_CACHE_PATH, map_location="cpu")[
+        "anchors_xy"
+    ].to(device)
     nms_image_size_hw = (hr, wr)
 
     samples = list_dataset_samples(root_dir, split)
@@ -567,7 +605,9 @@ def main() -> None:
 
         # BG: no label file, copy only image, skip visualization
         if gt_kind == "BG":
-            copy_image_and_labels(img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=False)
+            copy_image_and_labels(
+                img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=False
+            )
             copied += 1
             continue
 
@@ -581,25 +621,39 @@ def main() -> None:
         gt_entries = parse_gt_entries(lbl_path)
 
         if gt_kind == "ADULT_ONLY":
-            copy_image_and_labels(img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True)
+            copy_image_and_labels(
+                img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True
+            )
             # Visualization for adult-only as well
             polys_pix = []
             for e in gt_entries:
                 polys_pix.append(poly_norm_to_pix(e.poly_norm_42, w0, h0))
-            polys_pix_np = np.stack(polys_pix, axis=0).astype(np.float32) if polys_pix else np.zeros((0, 4, 2), np.float32)
+            polys_pix_np = (
+                np.stack(polys_pix, axis=0).astype(np.float32)
+                if polys_pix
+                else np.zeros((0, 4, 2), np.float32)
+            )
             vis = draw_polygons_bgr(image_bgr, polys_pix_np)
             cv2.imwrite(str(dst_vis), vis)
             copied += 1
             continue
 
         # BABY case
-        baby_entries = [e for e in gt_entries if e.child_prob == 1 and (0 <= e.cls_idx <= 4)]
+        baby_entries = [
+            e for e in gt_entries if e.child_prob == 1 and (0 <= e.cls_idx <= 4)
+        ]
         if len(baby_entries) != 1:
-            copy_image_and_labels(img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True)
+            copy_image_and_labels(
+                img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True
+            )
             polys_pix = []
             for e in gt_entries:
                 polys_pix.append(poly_norm_to_pix(e.poly_norm_42, w0, h0))
-            polys_pix_np = np.stack(polys_pix, axis=0).astype(np.float32) if polys_pix else np.zeros((0, 4, 2), np.float32)
+            polys_pix_np = (
+                np.stack(polys_pix, axis=0).astype(np.float32)
+                if polys_pix
+                else np.zeros((0, 4, 2), np.float32)
+            )
             vis = draw_polygons_bgr(image_bgr, polys_pix_np)
             cv2.imwrite(str(dst_vis), vis)
             copied += 1
@@ -607,12 +661,16 @@ def main() -> None:
             continue
 
         # Prepare model input
-        x = preprocess_for_model_rgb(
-            image_bgr=image_bgr,
-            resize_wh=(wr, hr),
-            mean=config.IMAGENET_MEAN,
-            std=config.IMAGENET_STD,
-        ).unsqueeze(0).to(device)
+        x = (
+            preprocess_for_model_rgb(
+                image_bgr=image_bgr,
+                resize_wh=(wr, hr),
+                mean=config.IMAGENET_MEAN,
+                std=config.IMAGENET_STD,
+            )
+            .unsqueeze(0)
+            .to(device)
+        )
 
         # Inference
         outputs = infer_with_rotated_nms(
@@ -629,11 +687,17 @@ def main() -> None:
         out0 = outputs[0]
         pred_boxes = out0.get("boxes")  # (N,5) in resized coords (cx,cy,w,h,theta)
         if pred_boxes is None or pred_boxes.numel() == 0:
-            copy_image_and_labels(img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True)
+            copy_image_and_labels(
+                img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True
+            )
             polys_pix = []
             for e in gt_entries:
                 polys_pix.append(poly_norm_to_pix(e.poly_norm_42, w0, h0))
-            polys_pix_np = np.stack(polys_pix, axis=0).astype(np.float32) if polys_pix else np.zeros((0, 4, 2), np.float32)
+            polys_pix_np = (
+                np.stack(polys_pix, axis=0).astype(np.float32)
+                if polys_pix
+                else np.zeros((0, 4, 2), np.float32)
+            )
             vis = draw_polygons_bgr(image_bgr, polys_pix_np)
             cv2.imwrite(str(dst_vis), vis)
             copied += 1
@@ -654,8 +718,12 @@ def main() -> None:
         baby = baby_entries[0]
         baby_poly_pix = poly_norm_to_pix(baby.poly_norm_42, w0, h0).reshape(1, 4, 2)
         baby_angle_wrapped = wrap_to_pi_float(float(baby.angle_rad))
-        gt_boxes_xy = torch.from_numpy(baby_poly_pix.reshape(1, 8).astype(np.float32)).to(device)
-        gt_angles = torch.tensor([baby_angle_wrapped], dtype=torch.float32, device=device)
+        gt_boxes_xy = torch.from_numpy(
+            baby_poly_pix.reshape(1, 8).astype(np.float32)
+        ).to(device)
+        gt_angles = torch.tensor(
+            [baby_angle_wrapped], dtype=torch.float32, device=device
+        )
 
         # Convert GT to xywhr via your helper
         gt_xywhr = xyxyxyxy2xywhr(gt_boxes_xy, gt_angles, (w0, h0))
@@ -669,11 +737,17 @@ def main() -> None:
 
         best_iou, best_idx = torch.max(ious_1d, dim=0)
         if float(best_iou.item()) < float(args.match_iou_thr):
-            copy_image_and_labels(img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True)
+            copy_image_and_labels(
+                img_path, lbl_path, dst_img, dst_lbl, write_empty_label_if_missing=True
+            )
             polys_pix = []
             for e in gt_entries:
                 polys_pix.append(poly_norm_to_pix(e.poly_norm_42, w0, h0))
-            polys_pix_np = np.stack(polys_pix, axis=0).astype(np.float32) if polys_pix else np.zeros((0, 4, 2), np.float32)
+            polys_pix_np = (
+                np.stack(polys_pix, axis=0).astype(np.float32)
+                if polys_pix
+                else np.zeros((0, 4, 2), np.float32)
+            )
             vis = draw_polygons_bgr(image_bgr, polys_pix_np)
             cv2.imwrite(str(dst_vis), vis)
             copied += 1
@@ -691,7 +765,11 @@ def main() -> None:
             all_polys_pix.append(poly_pix)
             all_angles_wrapped.append(wrap_to_pi_float(float(e.angle_rad)))
 
-        all_polys_pix_np = np.stack(all_polys_pix, axis=0).astype(np.float32) if all_polys_pix else np.zeros((0, 4, 2), np.float32)
+        all_polys_pix_np = (
+            np.stack(all_polys_pix, axis=0).astype(np.float32)
+            if all_polys_pix
+            else np.zeros((0, 4, 2), np.float32)
+        )
 
         rot_res = rotate_expand_and_transform_polys(
             image_bgr=image_bgr,

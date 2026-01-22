@@ -1292,9 +1292,7 @@ def export_predictions(
 
             # Process each image in batch
             B = imgs.size(0)
-            with tqdm(
-                total=B, desc="   Images", leave=False, unit="img"
-            ) as pbar_imgs:
+            with tqdm(total=B, desc="   Images", leave=False, unit="img") as pbar_imgs:
                 for b in range(B):
                     processed += 1
 

@@ -786,6 +786,7 @@ def create_optimizer(
         return RAdam(param_groups, lr=learning_rate)
     raise ValueError("which_optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', 'RAdam'")
 
+
 def create_scheduler(
     which_scheduler: Optional[str],
     optimizer: torch.optim.Optimizer,
@@ -942,11 +943,15 @@ def train_step(
 
     if clip_value is not None:
         if grad_clip_mode not in {"Norm", "Value"}:
-            raise ValueError("grad_clip_mode must be 'Norm' or 'Value' when clip_value is provided.")
+            raise ValueError(
+                "grad_clip_mode must be 'Norm' or 'Value' when clip_value is provided."
+            )
 
     anchors_xy, anchors_xywhr = anchors
 
-    bar = tqdm(train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True)
+    bar = tqdm(
+        train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True
+    )
 
     for batch in bar:
         images = batch["image"].to(device, non_blocking=True)
@@ -959,6 +964,7 @@ def train_step(
         if autocast_context is None:
             # Safe fallback: no autocast if not provided.
             from contextlib import nullcontext
+
             autocast_context = nullcontext()
 
         with autocast_context:
@@ -978,7 +984,9 @@ def train_step(
 
             if clip_value is not None:
                 scaler.unscale_(optimizer)
-                params_to_clip = itertools.chain(model.parameters(), loss_fn.parameters())
+                params_to_clip = itertools.chain(
+                    model.parameters(), loss_fn.parameters()
+                )
                 if grad_clip_mode == "Norm":
                     clip_grad_norm_(params_to_clip, clip_value)
                 else:  # "Value"
@@ -990,7 +998,9 @@ def train_step(
             loss.backward()
 
             if clip_value is not None:
-                params_to_clip = itertools.chain(model.parameters(), loss_fn.parameters())
+                params_to_clip = itertools.chain(
+                    model.parameters(), loss_fn.parameters()
+                )
                 if grad_clip_mode == "Norm":
                     clip_grad_norm_(params_to_clip, clip_value)
                 else:  # "Value"
@@ -998,7 +1008,9 @@ def train_step(
 
             optimizer.step()
 
-        if scheduler is not None and not isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+        if scheduler is not None and not isinstance(
+            scheduler, lr_scheduler.ReduceLROnPlateau
+        ):
             scheduler.step()
 
         total_loss_sum += float(loss.detach().item())
@@ -1102,7 +1114,7 @@ def val_step(
             targets = build_multitask_targets(targets_raw, device)  # Prepare targets
 
             anchors_xy, anchors_xywhr = anchors
-            #batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
+            # batch_anchors = anchors_xy.unsqueeze(0).repeat(images.size(0), 1, 1)
 
             preds = model(images)
 
@@ -1296,8 +1308,18 @@ def train(
         "test_mAP",
         "learning_rate",
         "epoch_time",
-        "w_face", "w_child", "w_cls", "w_obb", "w_rot", "w_rect",
-        "s_face", "s_child", "s_cls", "s_obb", "s_rot", "s_rect",
+        "w_face",
+        "w_child",
+        "w_cls",
+        "w_obb",
+        "w_rot",
+        "w_rect",
+        "s_face",
+        "s_child",
+        "s_cls",
+        "s_obb",
+        "s_rot",
+        "s_rect",
     ]
     with open(csv_filename, mode="w", newline="") as f:
         writer = csv.writer(f)
@@ -1324,7 +1346,7 @@ def train(
 
     model.to(device)  # Move model to the specified device.
     loss_fn.to(device)  # Move loss function to the specified device.
-    
+
     optimizer = create_optimizer(
         which_optimizer=which_optimizer,
         model=model,
@@ -1360,13 +1382,13 @@ def train(
         anchor_preview_path=anchor_preview_path,
         anchors_cache_path=anchors_cache_path,
     )
-    
+
     with torch.no_grad():
         anchors_xy = anchors_xy.to(device, dtype=torch.float32, non_blocking=True)
         anchors_xywhr = anchors_xywhr.to(device, dtype=torch.float32, non_blocking=True)
         anchors_xy.requires_grad_(False)
         anchors_xywhr.requires_grad_(False)
-        
+
     anchors_tuple = (anchors_xy, anchors_xywhr)
 
     # Enable Automatic Mixed Precision (AMP) if running on CUDA for faster training
@@ -1390,6 +1412,8 @@ def train(
     if record_metrics:
         wandb.init(project=project, name=run_name)  # Initialize Weights & Biases.
         wandb.watch(model, loss_fn, log="all")  # Watch model and loss function.
+        wandb.define_metric("epoch")
+        wandb.define_metric("*", step_metric="epoch")
 
     try:
         for epoch in tqdm(range(epochs), desc="Epochs", unit="epoch"):
@@ -1440,9 +1464,17 @@ def train(
                 class_thres=class_thres,
                 baby_thres=baby_thres,
             )
-            
-            task_weights = loss_fn.get_task_weights() if hasattr(loss_fn, "get_task_weights") else {}
-            task_log_vars = loss_fn.get_task_log_vars() if hasattr(loss_fn, "get_task_log_vars") else {}
+
+            task_weights = (
+                loss_fn.get_task_weights()
+                if hasattr(loss_fn, "get_task_weights")
+                else {}
+            )
+            task_log_vars = (
+                loss_fn.get_task_log_vars()
+                if hasattr(loss_fn, "get_task_log_vars")
+                else {}
+            )
 
             # Update scheduler if applicable
             if scheduler is not None:
@@ -1474,32 +1506,38 @@ def train(
             )
 
             if record_metrics:
-                wandb.log(
-                    {
-                        "epoch": epoch + 1,
-                        "train_total_loss": train_total_loss,
-                        "train_class_loss": train_class_loss,
-                        "train_child_loss": train_child_loss,
-                        "train_face_loss": train_face_loss,
-                        "train_obb_loss": train_obb_loss,
-                        "train_angular_loss": train_angular_loss,
-                        "train_rect_loss": train_rect_loss,
-                        "test_total_loss": test_total_loss,
-                        "test_class_loss": test_class_loss,
-                        "test_face_loss": test_face_loss,
-                        "test_obb_loss": test_obb_loss,
-                        "test_angular_loss": test_angular_loss,
-                        "test_rect_loss": test_rect_loss,
-                        "test_child_loss": test_child_loss,
-                        "test_mAP": test_mAP,
-                        "learning_rate": current_lr,
-                        "epoch_time": epoch_time,
-                    }
-                )  # Log metrics to Weights & Biases.
-            
-            if record_metrics and task_weights:
-                wandb.log({f"task_weight/{k}": v for k, v in task_weights.items()})
-                wandb.log({f"task_logvar/{k}": v for k, v in task_log_vars.items()})
+                log_dict = {
+                    "epoch": epoch + 1,
+                    "train_total_loss": train_total_loss,
+                    "train_class_loss": train_class_loss,
+                    "train_child_loss": train_child_loss,
+                    "train_face_loss": train_face_loss,
+                    "train_obb_loss": train_obb_loss,
+                    "train_angular_loss": train_angular_loss,
+                    "train_rect_loss": train_rect_loss,
+                    "test_total_loss": test_total_loss,
+                    "test_class_loss": test_class_loss,
+                    "test_face_loss": test_face_loss,
+                    "test_obb_loss": test_obb_loss,
+                    "test_angular_loss": test_angular_loss,
+                    "test_rect_loss": test_rect_loss,
+                    "test_child_loss": test_child_loss,
+                    "test_mAP": test_mAP,
+                    "learning_rate": current_lr,
+                    "epoch_time": epoch_time,
+                }
+                # Add task weights and log vars if available
+                if task_weights:
+                    log_dict.update(
+                        {f"task_weight/{k}": v for k, v in task_weights.items()}
+                    )
+                if task_log_vars:
+                    log_dict.update(
+                        {f"task_logvar/{k}": v for k, v in task_log_vars.items()}
+                    )
+
+                # Log metrics to Weights & Biases
+                wandb.log(log_dict, step=epoch + 1)
 
             # Update results dictionary
             results["train_total_loss"].append(train_total_loss)

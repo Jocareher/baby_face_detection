@@ -794,3 +794,32 @@ class MultiTaskLoss(nn.Module):
             float(rect_loss.detach().item()),
             float(child_loss.detach().item()),
         )
+    
+    @torch.no_grad()
+    def get_task_weights(self) -> Dict[str, float]:
+        """
+        Return the current effective weights for each task: w_i = exp(-log_var_i).
+
+        Returns:
+            Dictionary mapping task name -> scalar float weight.
+        """
+        if not hasattr(self, "log_vars"):
+            return {}
+
+        weights: Dict[str, float] = {}
+        for name, log_var in self.log_vars.items():
+            weights[name] = float(torch.exp(-log_var.detach()).cpu().item())
+        return weights
+
+    @torch.no_grad()
+    def get_task_log_vars(self) -> Dict[str, float]:
+        """
+        Return current log-variances (s_i) for each task.
+
+        Returns:
+            Dictionary mapping task name -> scalar float log variance.
+        """
+        if not hasattr(self, "log_vars"):
+            return {}
+
+        return {name: float(v.detach().cpu().item()) for name, v in self.log_vars.items()}

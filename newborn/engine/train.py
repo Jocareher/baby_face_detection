@@ -1296,6 +1296,8 @@ def train(
         "test_mAP",
         "learning_rate",
         "epoch_time",
+        "w_face", "w_child", "w_cls", "w_obb", "w_rot", "w_rect",
+        "s_face", "s_child", "s_cls", "s_obb", "s_rot", "s_rect",
     ]
     with open(csv_filename, mode="w", newline="") as f:
         writer = csv.writer(f)
@@ -1438,6 +1440,9 @@ def train(
                 class_thres=class_thres,
                 baby_thres=baby_thres,
             )
+            
+            task_weights = loss_fn.get_task_weights() if hasattr(loss_fn, "get_task_weights") else {}
+            task_log_vars = loss_fn.get_task_log_vars() if hasattr(loss_fn, "get_task_log_vars") else {}
 
             # Update scheduler if applicable
             if scheduler is not None:
@@ -1491,6 +1496,10 @@ def train(
                         "epoch_time": epoch_time,
                     }
                 )  # Log metrics to Weights & Biases.
+            
+            if record_metrics and task_weights:
+                wandb.log({f"task_weight/{k}": v for k, v in task_weights.items()})
+                wandb.log({f"task_logvar/{k}": v for k, v in task_log_vars.items()})
 
             # Update results dictionary
             results["train_total_loss"].append(train_total_loss)
@@ -1512,6 +1521,8 @@ def train(
             # Write metrics to CSV file
             with open(csv_filename, mode="a", newline="") as f:
                 writer = csv.writer(f)
+                w = task_weights
+                s = task_log_vars
                 writer.writerow(
                     [
                         epoch + 1,
@@ -1532,6 +1543,18 @@ def train(
                         f"{test_mAP:.4f}",
                         f"{current_lr:.5f}",
                         f"{epoch_time:.4f}",
+                        f"{w.get('face', float('nan')):.6f}",
+                        f"{w.get('child', float('nan')):.6f}",
+                        f"{w.get('cls', float('nan')):.6f}",
+                        f"{w.get('obb', float('nan')):.6f}",
+                        f"{w.get('rot', float('nan')):.6f}",
+                        f"{w.get('rect', float('nan')):.6f}",
+                        f"{s.get('face', float('nan')):.6f}",
+                        f"{s.get('child', float('nan')):.6f}",
+                        f"{s.get('cls', float('nan')):.6f}",
+                        f"{s.get('obb', float('nan')):.6f}",
+                        f"{s.get('rot', float('nan')):.6f}",
+                        f"{s.get('rect', float('nan')):.6f}",
                     ]
                 )
 

@@ -1,4 +1,5 @@
 from typing import List, Tuple, Dict, Union, Optional
+import math 
 
 import torch
 import torch.nn as nn
@@ -493,60 +494,17 @@ def orthogonality_loss(verts: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
 
 class MultiTaskLoss(nn.Module):
     """
-    Multi-task loss function for RetinaFace model.
-    This loss function combines the following components:
-        1. Binary cross-entropy loss for face classification.
-        2. Binary cross-entropy loss for child classification.
-        3. Focal loss or Least Square Loss for classification (multi-class).
-        4. Oriented bounding box regression loss.
-        5. Rotation angle regression loss.
-        6. Orthogonality loss for rectangle shape regularization.
+    Multi-task loss with optional homoscedastic-uncertainty weighting (Kendall et al., CVPR 2018).
 
-    The loss function is designed to handle multiple tasks simultaneously,
-    allowing the model to learn from all tasks at once.
-    The loss function is defined as:
-        L_cls  = CLSLoss(orient_logits, tgt_cls)
-        L_face = BCE(face_logits, tgt_face)
-        L_obb  = OBBRegressionLoss(pred_deltas, gt_xy, anc_xy)
-        L_rot  = RotationLoss(pred_angles, gt_angles)
-        L_rect = OrthogonalityLoss(pred_vertices)
-        L_child = BCE(child_logits, tgt_child)
+    If `use_uncertainty=True`, each task i has a learnable log-variance parameter s_i = log(sigma_i^2),
+    and the combined objective is:
 
-    The total loss is defined as:
-        L_total = λ_cls * L_cls + λ_face * L_face + λ_obb * L_obb + λ_rot * L_rot + λ_rect * L_rect + λ_child * L_child
+        L_total = sum_{i in enabled} exp(-s_i) * L_i + s_i
 
-    Args:
-        obb_loss_type (str): Type of OBB regression loss to use ("smooth_l1" or "l1").
-        rot_loss_type (str): Type of rotation loss to use ("cosine" or "vector").
-        cls_loss_type (str): Type of classification loss to use ("focal" or "ls").
-        lambda_cls (float): Weight for the classification loss.
-        lambda_obb (float): Weight for the oriented bounding box regression loss.
-        lambda_rot (float): Weight for the angle regression loss.
-        lambda_face (float): Weight for the face classification loss.
-        lambda_rect (float): Weight for the orthogonality loss.
-        lambda_child (float): Weight for the child classification loss.
-        pos_iou_thr_1 (float): IoU threshold to consider an anchor positive in stage 1.
-        neg_iou_thr_1 (float): IoU threshold to consider an anchor negative in stage 1.
-        pos_iou_thr_2 (float): IoU threshold to consider a provisional box positive in stage 2.
-        neg_iou_thr_2 (float): IoU threshold to consider a provisional box negative in stage 2.
-        alpha (List[float]): Class-balancing weights for focal loss.
-        gamma (float): Focusing parameter for focal loss.
-        neg_samples_ratio (int): Ratio of negative samples to positive samples for face classification.
-        face_pos_weight (float): Positive weight for the face classification loss.
-        sigma_l2_cls (float): Standard deviation for Gaussian label smoothing in L2Loss (if used).
-
-
-    Note:
-        - The loss function expects the model's output to be in the following format:
-            (orient_logits, face_logits, deltas, angles)
-        - The targets dictionary should contain the following keys:
-            "boxes":      Ground truth boxes in xyxyxyxy format.
-            "angle":      Ground truth angles in radians.
-            "class_idx":  Class indices for each object.
-            "valid_mask": Boolean mask indicating valid object positions.
-        - The anchors_xy tensor should contain the anchor boxes in xyxyxyxy format.
-        - The anchors_xywhr tensor should contain the anchor boxes in (cx, cy, w, h, θ) format.
-        - The image_sizes list should contain the sizes of each image in the batch.
+    Important:
+        - The +s_i term must only be added when the task loss L_i is computed (enabled),
+          otherwise s_i can be driven to -inf to reduce the loss without supervision.
+        - It is usually safer to keep pure regularizers (e.g., orthogonality) with fixed weights.
     """
 
     def __init__(
@@ -568,9 +526,13 @@ class MultiTaskLoss(nn.Module):
         gamma: float = config.GAMMA,
         neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
         face_pos_weight: float = config.FACE_POS_WEIGHT,
-        sigma_l2_cls: float = config.SIGMA_L2_CLS,  # For L2Loss, if used
+        sigma_l2_cls: float = config.SIGMA_L2_CLS,
+        use_uncertainty: bool = True,
+        include_rect_in_uncertainty: bool = False,
+        log_var_clamp: Optional[Tuple[float, float]] = (-10.0, 10.0),
     ) -> None:
         super().__init__()
+
         if cls_loss_type == "focal":
             self.cls_loss_fn = FocalLoss(alpha=alpha, gamma=gamma, reduction="mean")
         elif cls_loss_type == "ls":
@@ -578,71 +540,82 @@ class MultiTaskLoss(nn.Module):
         else:
             raise ValueError("cls_loss_type must be 'focal' or 'ls'")
 
-        self.face_loss = nn.BCEWithLogitsLoss(
+        self.face_loss_fn = nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor(face_pos_weight), reduction="mean"
         )
-        self.obb_loss = OBBRegressionLoss(
-            loss_type=obb_loss_type, beta=2.0, reduction="mean"
-        )
-        self.child_loss = nn.BCEWithLogitsLoss(reduction="mean")
-        self.rot_loss = RotationLoss(mode=rot_loss_type)
-        self.lambda_cls = lambda_cls
-        self.lambda_obb = lambda_obb
-        self.lambda_rot = lambda_rot
-        self.lambda_face = lambda_face
-        self.lambda_rect = lambda_rect
-        self.lambda_child = lambda_child
+        self.child_loss_fn = nn.BCEWithLogitsLoss(reduction="mean")
+        self.obb_loss_fn = OBBRegressionLoss(loss_type=obb_loss_type, beta=2.0, reduction="mean")
+        self.rot_loss_fn = RotationLoss(mode=rot_loss_type)
+
+        self.lambda_rect = lambda_rect  # keep fixed by default
+
         self.pos_iou_thr_1 = pos_iou_thr_1
         self.neg_iou_thr_1 = neg_iou_thr_1
         self.pos_iou_thr_2 = pos_iou_thr_2
         self.neg_iou_thr_2 = neg_iou_thr_2
         self.neg_samples_ratio = neg_samples_ratio
 
+        self.use_uncertainty = use_uncertainty
+        self.include_rect_in_uncertainty = include_rect_in_uncertainty
+        self.log_var_clamp = log_var_clamp
+
+        # Initialize learnable log-variances so that exp(-s) roughly matches your old lambdas.
+        # If weight w_i = lambda_i, then choose s_i = -log(w_i).
+        def init_log_var(weight: float) -> float:
+            w = max(float(weight), 1e-8)
+            return -math.log(w)
+
+        self.log_vars = nn.ParameterDict({
+            "cls": nn.Parameter(torch.tensor(init_log_var(lambda_cls), dtype=torch.float32)),
+            "face": nn.Parameter(torch.tensor(init_log_var(lambda_face), dtype=torch.float32)),
+            "child": nn.Parameter(torch.tensor(init_log_var(lambda_child), dtype=torch.float32)),
+            "obb": nn.Parameter(torch.tensor(init_log_var(lambda_obb), dtype=torch.float32)),
+            "rot": nn.Parameter(torch.tensor(init_log_var(lambda_rot), dtype=torch.float32)),
+        })
+
+        if self.include_rect_in_uncertainty:
+            self.log_vars["rect"] = nn.Parameter(torch.tensor(init_log_var(lambda_rect), dtype=torch.float32))
+
+    def _weighted_task_term(self, loss_value: torch.Tensor, log_var: torch.Tensor, enabled: bool) -> torch.Tensor:
+        """
+        Compute exp(-s) * L + s for a single task, gated by enabled flag.
+
+        Args:
+            loss_value: Scalar tensor loss for the task.
+            log_var: Learnable scalar tensor s = log(sigma^2).
+            enabled: Whether this task loss was computed on this forward pass.
+
+        Returns:
+            Scalar tensor contribution to total loss.
+        """
+        if not enabled:
+            return loss_value.new_tensor(0.0)
+
+        s = log_var
+        if self.log_var_clamp is not None:
+            s = torch.clamp(s, self.log_var_clamp[0], self.log_var_clamp[1])
+
+        weight = torch.exp(-s)
+        return weight * loss_value + s
+
     def forward(
         self,
-        preds: Tuple[
-            torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
-        ],
+        preds: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         targets: Dict[str, torch.Tensor],
-        anchors_xy: torch.Tensor,  # (B, N, 8)
-        anchors_xywhr: torch.Tensor,  # (N, 5)
+        anchors_xy: torch.Tensor,
+        anchors_xywhr: torch.Tensor,
         image_sizes: List[Tuple[int, int]],
     ):
         """
-        Forward pass for the multi-task loss computation.
-
-        Args:
-            preds (Tuple[torch.Tensor, ...]): Model predictions containing:
-                - orient_logits: Orientation classification logits, shape (B, N, num_classes).
-                - face_logits: Face classification logits, shape (B, N, 1).
-                - deltas: Predicted deltas for OBB regression, shape (B, N, 8).
-                - pred_angles: Predicted angles for OBB regression, shape (B, N, 1).
-                - child_logits: Child classification logits, shape (B, N, 1).
-            targets (Dict[str, torch.Tensor]): Ground truth targets containing:
-                - "boxes": Ground truth bounding boxes in xyxyxyxy format, shape (B, num_gt, 8).
-                - "angle": Ground truth angles in radians, shape (B, num_gt, 1).
-                - "class_idx": Class indices for each object, shape (B, num_gt).
-                - "child_prob": Child probabilities for each object, shape (B, num_gt, 1).
-                - "valid_mask": Boolean mask indicating valid object positions, shape (B, num_gt).
-            anchors_xy (torch.Tensor): Anchor boxes in xyxyxyxy format, shape (B, N, 8).
-            anchors_xywhr (torch.Tensor): Anchor boxes in (cx, cy, w, h, θ) format, shape (N, 5).
-            image_sizes (List[Tuple[int, int]]): List of image sizes (width, height) for each sample in the batch.
+        Compute multi-task loss.
 
         Returns:
-            Tuple: Total loss and individual loss components:
-                - total_loss: Combined loss value.
-                - cls_loss: Orientation classification loss.
-                - face_loss: Face classification loss.
-                - obb_loss: Oriented bounding box regression loss.
-                - rot_loss: Rotation angle regression loss.
-                - rect_loss: Orthogonality loss for rectangle regularization.
-                - child_loss: Child classification loss.
+            (total_loss, cls, face, obb, rot, rect, child) where components are Python floats.
         """
         orient_logits, face_logits, deltas, pred_angles, child_logits = preds
         B, N, _ = orient_logits.shape
         device = orient_logits.device
 
-        # Initialize accumulators for each loss component
         cls_loss = torch.tensor(0.0, device=device)
         face_loss = torch.tensor(0.0, device=device)
         obb_loss = torch.tensor(0.0, device=device)
@@ -650,22 +623,16 @@ class MultiTaskLoss(nn.Module):
         rect_loss = torch.tensor(0.0, device=device)
         child_loss = torch.tensor(0.0, device=device)
 
-        # Counters for normalization
-        face_batches = 0  # Images with at least one positive in stage 1
-        child_batches = (
-            0  # Images with positive anchors that are also classified as baby
-        )
-        cls_batches = 0  # Images where orientation classification loss is computed
-        stage2_batches = 0  # Images with valid positives in stage 2
-        
-        # 
+        face_batches = 0
+        child_batches = 0
+        cls_batches = 0
+        stage2_batches = 0
+
         pred_dtype = orient_logits.dtype
-        anchors_xy = anchors_xy.to(dtype=pred_dtype)
-        anchors_xywhr = anchors_xywhr.to(dtype=pred_dtype)
+        anchors_xy = anchors_xy.to(dtype=torch.float32)
+        anchors_xywhr = anchors_xywhr.to(dtype=torch.float32)
 
         for b in range(B):
-            # ---------- Stage 1: Anchor matching ----------
-            # Match anchors to ground truth boxes and angles using IoU thresholds
             pos_mask_1, neg_mask_1, best_gt_1 = match_anchors_to_targets(
                 anchors_xywhr,
                 targets["boxes"][b],
@@ -676,63 +643,49 @@ class MultiTaskLoss(nn.Module):
             )
             pos_idx_1 = pos_mask_1.nonzero(as_tuple=False).squeeze(1)
             neg_idx_1 = neg_mask_1.nonzero(as_tuple=False).squeeze(1)
-            num_pos_1 = pos_idx_1.numel()
 
-            if num_pos_1 > 0:
-                # At least one positive anchor for face classification
-                face_batches += 1
-
-                # ---------- Face classification loss with hard negative mining ----------
-                # Select hard negatives based on their loss values
-                neg_logits_all = face_logits[b][neg_idx_1]
-                with torch.no_grad():
-                    per_neg_loss = F.binary_cross_entropy_with_logits(
-                        neg_logits_all,
-                        torch.zeros_like(neg_logits_all),
-                        reduction="none",
-                    ).view(-1)
-                _, hard_order = per_neg_loss.sort(descending=True)
-                num_hard = max(1, min(hard_order.numel(), num_pos_1 * self.neg_samples_ratio))
-                hard_neg_idx = neg_idx_1[hard_order[:num_hard]]
-                sel_idx_1 = torch.cat([pos_idx_1, hard_neg_idx], dim=0)
-                tgt_face = pos_mask_1.float().unsqueeze(1)[sel_idx_1]
-                face_loss += self.face_loss(face_logits[b][sel_idx_1], tgt_face)
-
-                # ---------- Child classification loss ----------
-                valid_child_mask = best_gt_1[pos_idx_1] != -1
-                if valid_child_mask.any():
-                    pos_idx_1_valid = pos_idx_1[valid_child_mask]
-                    tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1_valid]].to(
-                        device
-                    )
-                    child_loss += self.child_loss(
-                        child_logits[b][pos_idx_1_valid], tgt_child
-                    )
-                    child_batches += 1  # Accumulated child loss for this image
-
-                    # Mask for anchors classified as baby
-                    baby_mask = tgt_child.squeeze(1).bool()
-                else:
-                    baby_mask = torch.zeros(0, dtype=torch.bool, device=device)
-
-                # ---------- Orientation classification loss (only for baby anchors) ----------
-                if baby_mask.numel() and baby_mask.any():
-                    pos_idx_1_baby = pos_idx_1_valid[baby_mask]
-                    valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
-                    if valid_cls_mask.any():
-                        pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
-                        tgt_cls_baby = targets["class_idx"][b][
-                            best_gt_1[pos_idx_1_baby_valid]
-                        ]
-                        cls_loss += self.cls_loss_fn(
-                            orient_logits[b][pos_idx_1_baby_valid], tgt_cls_baby
-                        )
-                        cls_batches += 1
-            else:
-                # No positive anchors in stage 1, skip to the next image
+            if pos_idx_1.numel() == 0:
                 continue
 
-            # ---------- Stage 2: Generate provisional OBBs ----------
+            face_batches += 1
+
+            # Face loss with hard negative mining
+            neg_logits_all = face_logits[b][neg_idx_1]
+            with torch.no_grad():
+                per_neg_loss = F.binary_cross_entropy_with_logits(
+                    neg_logits_all, torch.zeros_like(neg_logits_all), reduction="none"
+                ).view(-1)
+            _, hard_order = per_neg_loss.sort(descending=True)
+            num_hard = max(1, min(hard_order.numel(), pos_idx_1.numel() * self.neg_samples_ratio))
+            hard_neg_idx = neg_idx_1[hard_order[:num_hard]]
+            sel_idx_1 = torch.cat([pos_idx_1, hard_neg_idx], dim=0)
+            tgt_face = pos_mask_1.float().unsqueeze(1)[sel_idx_1]
+            face_loss = face_loss + self.face_loss_fn(face_logits[b][sel_idx_1], tgt_face)
+
+            # Child loss (only valid matched positives)
+            valid_child_mask = best_gt_1[pos_idx_1] != -1
+            if valid_child_mask.any():
+                pos_idx_1_valid = pos_idx_1[valid_child_mask]
+                tgt_child = targets["child_prob"][b][best_gt_1[pos_idx_1_valid]].to(device)
+                child_loss = child_loss + self.child_loss_fn(child_logits[b][pos_idx_1_valid], tgt_child)
+                child_batches += 1
+                baby_mask = tgt_child.squeeze(1).bool()
+            else:
+                baby_mask = torch.zeros(0, dtype=torch.bool, device=device)
+
+            # Orientation classification (only baby anchors)
+            if baby_mask.numel() and baby_mask.any():
+                pos_idx_1_baby = pos_idx_1_valid[baby_mask]
+                valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
+                if valid_cls_mask.any():
+                    pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
+                    tgt_cls_baby = targets["class_idx"][b][best_gt_1[pos_idx_1_baby_valid]]
+                    cls_loss = cls_loss + self.cls_loss_fn(
+                        orient_logits[b][pos_idx_1_baby_valid], tgt_cls_baby
+                    )
+                    cls_batches += 1
+
+            # Stage 2 requires baby anchors
             if not (baby_mask.numel() and baby_mask.any()):
                 continue
 
@@ -743,12 +696,9 @@ class MultiTaskLoss(nn.Module):
                 pred_deltas_1 = deltas[b][pos_mask_1_baby]
                 anc_xy_1 = anchors_xy[pos_mask_1_baby]
                 ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)
-                verts_1 = decode_vertices(
-                    pred_deltas_1, anc_xy_1, ang_1, image_sizes[b]
-                )
+                verts_1 = decode_vertices(pred_deltas_1, anc_xy_1, ang_1, image_sizes[b])
                 anc_xywhr_1 = verts_to_xywhr_with_theta(verts_1, ang_1)
 
-            # ---------- Stage 2: Matching provisional OBBs ----------
             pos_mask_2, _, best_gt_2 = match_anchors_to_targets(
                 anc_xywhr_1,
                 targets["boxes"][b],
@@ -761,76 +711,86 @@ class MultiTaskLoss(nn.Module):
             if not valid_gt_mask_2.any():
                 continue
 
-            abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[
-                pos_mask_2
-            ][valid_gt_mask_2]
+            abs_pos_idx_2 = pos_mask_1_baby.nonzero(as_tuple=False).squeeze(1)[pos_mask_2][valid_gt_mask_2]
             gt_idx_2 = best_gt_2[pos_mask_2][valid_gt_mask_2]
 
-            # ---------- OBB regression loss ----------
             pred_deltas_2 = deltas[b][abs_pos_idx_2]
             gt_boxes_2 = targets["boxes"][b][gt_idx_2]
             anc_xy_2 = anchors_xy[abs_pos_idx_2]
-            ga_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
+            gt_angle_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
 
-            # OBB regression loss in canonical space
-            obb_canonical_loss = self.obb_loss(
+            obb_canonical = self.obb_loss_fn(
                 pred_deltas_2.unsqueeze(0),
-                ga_2.unsqueeze(0).unsqueeze(-1),
+                gt_angle_2.unsqueeze(0).unsqueeze(-1),
                 gt_boxes_2.unsqueeze(0),
                 anc_xy_2.unsqueeze(0),
             )
 
-            # ---------- Rotation angle regression loss ----------
-            pa_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)
-            rot_loss += self.rot_loss(pa_2.unsqueeze(-1), ga_2.unsqueeze(-1))
+            pred_angle_2 = pred_angles[b][abs_pos_idx_2].squeeze(-1)
+            rot_loss = rot_loss + self.rot_loss_fn(pred_angle_2.unsqueeze(-1), gt_angle_2.unsqueeze(-1))
 
-            # ---------- Orthogonality loss ----------
-            verts_pred = decode_vertices(
-                pred_deltas_2, anc_xy_2, pa_2, image_sizes[b]
-            ).view(-1, 4, 2)
-            rect_loss += orthogonality_loss(verts_pred)
+            verts_pred = decode_vertices(pred_deltas_2, anc_xy_2, pred_angle_2, image_sizes[b]).view(-1, 4, 2)
+            rect_loss = rect_loss + orthogonality_loss(verts_pred)
 
-            # --- Reconstruction loss in vertex space (auxiliary) ---
-            # Helps stabilize training, but not used during inference
-            # as it requires GT boxes.
             recon_loss = F.smooth_l1_loss(
-                verts_pred.view(-1, 8),  # (N,8)
-                gt_boxes_2.view(-1, 8),  # (N,8)
+                verts_pred.view(-1, 8),
+                gt_boxes_2.view(-1, 8),
                 reduction="mean",
             )
 
-            obb_loss += 0.5 * obb_canonical_loss + 0.5 * recon_loss
+            obb_loss = obb_loss + 0.5 * obb_canonical + 0.5 * recon_loss
+            stage2_batches += 1
 
-            stage2_batches += 1  # Valid positives in stage 2 for this image
-
-        # ---------- Normalize losses by the number of valid batches ----------
+        # Normalize (keep your logic)
         if cls_batches:
-            cls_loss /= cls_batches
+            cls_loss = cls_loss / cls_batches
         if face_batches:
-            face_loss /= face_batches
+            face_loss = face_loss / face_batches
         if child_batches:
-            child_loss /= child_batches
+            child_loss = child_loss / child_batches
         if stage2_batches:
-            obb_loss /= stage2_batches
-            rot_loss /= stage2_batches
-            rect_loss /= stage2_batches
+            obb_loss = obb_loss / stage2_batches
+            rot_loss = rot_loss / stage2_batches
+            rect_loss = rect_loss / stage2_batches
 
-        # Combine all loss components with their respective weights
-        total_loss = (
-            self.lambda_cls * cls_loss
-            + self.lambda_face * face_loss
-            + self.lambda_child * child_loss
-            + self.lambda_obb * obb_loss
-            + self.lambda_rot * rot_loss
-            + self.lambda_rect * rect_loss
-        )
+        # Enable flags prevent +s_i when no supervision happened
+        cls_enabled = cls_batches > 0
+        face_enabled = face_batches > 0
+        child_enabled = child_batches > 0
+        stage2_enabled = stage2_batches > 0
+
+        if self.use_uncertainty:
+            total_loss = (
+                self._weighted_task_term(cls_loss, self.log_vars["cls"], cls_enabled)
+                + self._weighted_task_term(face_loss, self.log_vars["face"], face_enabled)
+                + self._weighted_task_term(child_loss, self.log_vars["child"], child_enabled)
+                + self._weighted_task_term(obb_loss, self.log_vars["obb"], stage2_enabled)
+                + self._weighted_task_term(rot_loss, self.log_vars["rot"], stage2_enabled)
+            )
+
+            if self.include_rect_in_uncertainty:
+                total_loss = total_loss + self._weighted_task_term(
+                    rect_loss, self.log_vars["rect"], stage2_enabled
+                )
+            else:
+                total_loss = total_loss + self.lambda_rect * rect_loss
+        else:
+            # Fallback to your fixed lambdas, if you want to compare.
+            total_loss = (
+                config.LAMBDA_CLS * cls_loss
+                + config.LAMBDA_FACE * face_loss
+                + config.LAMBDA_CHILD * child_loss
+                + config.LAMBDA_OBB * obb_loss
+                + config.LAMBDA_ROT * rot_loss
+                + self.lambda_rect * rect_loss
+            )
 
         return (
             total_loss,
-            cls_loss.item(),
-            face_loss.item(),
-            obb_loss.item(),
-            rot_loss.item(),
-            rect_loss.item(),
-            child_loss.item(),
+            float(cls_loss.detach().item()),
+            float(face_loss.detach().item()),
+            float(obb_loss.detach().item()),
+            float(rot_loss.detach().item()),
+            float(rect_loss.detach().item()),
+            float(child_loss.detach().item()),
         )

@@ -1,3 +1,4 @@
+import itertools
 import time
 import csv
 import os
@@ -741,56 +742,49 @@ def generate_anchors_for_training(
 
 
 def create_optimizer(
-    which_optimizer: str, model: nn.Module, learning_rate: float, weight_decay: float
+    which_optimizer: str,
+    model: nn.Module,
+    learning_rate: float,
+    weight_decay: float,
+    loss_module: Optional[nn.Module] = None,
 ) -> torch.optim.Optimizer:
     """
-    Creates and returns an optimizer for the model.
+    Create an optimizer with separate parameter groups for the model and (optionally) the loss module.
+
+    This is important when the loss module has learnable parameters (e.g., log-variances for uncertainty
+    weighting). In that case, we typically disable weight decay for the loss parameters.
 
     Args:
-        which_optimizer (str): The optimizer to use ('ADAM', 'SGD', 'ADAMW', or 'RAdam').
-        model (nn.Module): The model whose parameters will be optimized.
-        learning_rate (float): The learning rate for the optimizer.
-        weight_decay (float): The weight decay (L2 regularization).
+        which_optimizer: Optimizer name ('ADAM', 'SGD', 'ADAMW', 'RAdam').
+        model: Model to optimize.
+        learning_rate: Base learning rate.
+        weight_decay: Weight decay for model parameters.
+        loss_module: Optional module containing learnable loss parameters (e.g., MultiTaskLoss with log_vars).
 
     Returns:
-        torch.optim.Optimizer: Instantiated optimizer.
+        Instantiated optimizer.
 
     Raises:
-        ValueError: If the optimizer name is not recognized.
+        ValueError: If optimizer name is not recognized.
     """
-    # Select optimizer based on string identifier
-    if which_optimizer == "ADAM":
-        return Adam(
-            model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            amsgrad=True,
-        )
-    elif which_optimizer == "SGD":
-        return SGD(
-            model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            momentum=0.9,
-        )
-    elif which_optimizer == "ADAMW":
-        return AdamW(
-            model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-            amsgrad=True,
-        )
-    elif which_optimizer == "RAdam":
-        return RAdam(
-            model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-        )
-    else:
-        raise ValueError(
-            "The optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', or 'RAdam'"
-        )
+    param_groups = [{"params": list(model.parameters()), "weight_decay": weight_decay}]
 
+    if loss_module is not None:
+        loss_params = [p for p in loss_module.parameters() if p.requires_grad]
+        if len(loss_params) > 0:
+            param_groups.append({"params": loss_params, "weight_decay": 0.0})
+
+    which = which_optimizer.upper()
+
+    if which == "ADAM":
+        return Adam(param_groups, lr=learning_rate, amsgrad=True)
+    if which == "SGD":
+        return SGD(param_groups, lr=learning_rate, momentum=0.9)
+    if which == "ADAMW":
+        return AdamW(param_groups, lr=learning_rate, amsgrad=True)
+    if which == "RADAM":
+        return RAdam(param_groups, lr=learning_rate)
+    raise ValueError("which_optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', 'RAdam'")
 
 def create_scheduler(
     which_scheduler: Optional[str],
@@ -900,42 +894,43 @@ def train_step(
     train_dataloader: DataLoader,
     loss_fn: nn.Module,
     optimizer: torch.optim.Optimizer,
-    clip_value: float,
-    grad_clip_mode: str,
-    scheduler: lr_scheduler._LRScheduler,
+    clip_value: Optional[float],
+    grad_clip_mode: Optional[str],
+    scheduler: Optional[object],
     device: torch.device,
     anchors: Tuple[torch.Tensor, torch.Tensor],
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
-    autocast_context: Optional[torch.cuda.amp.autocast] = None,
-) -> Tuple[float, float, float, float, float]:
+    autocast_context: Optional[object] = None,
+) -> Tuple[float, float, float, float, float, float, float, float]:
     """
-    Performs a single training step for the model.
+    Run one training epoch (one full pass over train_dataloader).
+
+    This version correctly supports a loss module with learnable parameters (e.g., uncertainty log_vars):
+        - Gradients are computed for both model and loss_fn parameters.
+        - Gradient clipping applies to both model and loss_fn parameters.
+        - AMP is supported via scaler + autocast_context.
+        - Scheduler stepping is performed per-iteration for schedulers that require it
+          (and skipped for ReduceLROnPlateau, which should be stepped on validation loss).
 
     Args:
-        - model (nn.Module): The model to train.
-        - train_dataloader (DataLoader): DataLoader for the training dataset.
-        - loss_fn (nn.Module): Loss function for the model.
-        - optimizer (Optimizer): Optimizer for the model.
-        - clip_value (float): Value for gradient clipping.
-        - grad_clip_mode (str): Mode for gradient clipping ("Norm" or "Value").
-        - scheduler (lr_scheduler._LRScheduler): Learning rate scheduler.
-        - device (torch.device): Device to use for training.
-        - anchors (torch.Tensor): Anchor boxes tensor.
-        - scaler (Optional[torch.cuda.amp.GradScaler]): Scaler for mixed precision training.
-        - autocast_context (Optional[torch.cuda.amp.autocast]): Context manager for mixed precision.
+        model: Model to train.
+        train_dataloader: Training DataLoader.
+        loss_fn: Loss module (may include learnable parameters).
+        optimizer: Optimizer over model + loss parameters (ensure your optimizer includes loss_fn params).
+        clip_value: Gradient clipping value. If None, no clipping.
+        grad_clip_mode: "Norm" or "Value". Ignored if clip_value is None.
+        scheduler: LR scheduler or None. If ReduceLROnPlateau, do not step here.
+        device: Training device.
+        anchors: Tuple(anchors_xy, anchors_xywhr).
+        scaler: AMP GradScaler (CUDA) or None.
+        autocast_context: Autocast context manager or a nullcontext-like object.
 
     Returns:
-        Tuple[float, float, float, float, float, float]:
-        - Average total loss
-        - Average class loss
-        - Average face loss
-        - Average OBB loss
-        - Average angular loss
-        - Average child loss
-        - Average rectification loss
-        - And current learning rate.
+        (avg_total_loss, avg_class_loss, avg_face_loss, avg_obb_loss, avg_angular_loss,
+         avg_rect_loss, avg_child_loss, current_lr)
     """
-    model.train()  # Set the model to training mode.
+    model.train()
+
     total_loss_sum = 0.0
     face_loss_sum = 0.0
     class_loss_sum = 0.0
@@ -945,29 +940,29 @@ def train_step(
     rect_loss_sum = 0.0
     total_batches = 0
 
-    # Progress bar for training batches
-    bar = tqdm(
-        train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True
-    )
+    if clip_value is not None:
+        if grad_clip_mode not in {"Norm", "Value"}:
+            raise ValueError("grad_clip_mode must be 'Norm' or 'Value' when clip_value is provided.")
+
+    anchors_xy, anchors_xywhr = anchors
+
+    bar = tqdm(train_dataloader, desc="  Train", unit="batch", leave=False, dynamic_ncols=True)
 
     for batch in bar:
-        images = batch["image"].to(device)  # Move images to device (CPU/GPU)
-        targets_raw = batch["target"]
-        targets = build_multitask_targets(
-            targets_raw, device
-        )  # Prepare targets for loss
+        images = batch["image"].to(device, non_blocking=True)
+        targets = build_multitask_targets(batch["target"], device)
 
-        optimizer.zero_grad()  # Reset gradients before backward pass
-        anchors_xy, anchors_xywhr = anchors
-        # batch_anchors = anchors_xy.unsqueeze(0).repeat(
-        #     images.size(0), 1, 1
-        # )  # Expand anchors for batch
-        image_sizes = [(images.shape[3], images.shape[2])] * images.size(
-            0
-        )  # List of image sizes per batch
+        optimizer.zero_grad(set_to_none=True)
 
-        with autocast_context:  # Enable mixed precision if AMP is used
-            pred = model(images)  # Forward pass
+        image_sizes = [(images.shape[3], images.shape[2])] * images.size(0)
+
+        if autocast_context is None:
+            # Safe fallback: no autocast if not provided.
+            from contextlib import nullcontext
+            autocast_context = nullcontext()
+
+        with autocast_context:
+            preds = model(images)
             (
                 loss,
                 loss_class,
@@ -976,54 +971,52 @@ def train_step(
                 loss_angle,
                 loss_rect,
                 loss_child,
-            ) = loss_fn(pred, targets, anchors_xy, anchors_xywhr, image_sizes)
+            ) = loss_fn(preds, targets, anchors_xy, anchors_xywhr, image_sizes)
 
         if scaler is not None:
-            scaler.scale(loss).backward()  # Backward pass with gradient scaling
+            scaler.scale(loss).backward()
 
             if clip_value is not None:
-                scaler.unscale_(optimizer)  # Unscale gradients before clipping
+                scaler.unscale_(optimizer)
+                params_to_clip = itertools.chain(model.parameters(), loss_fn.parameters())
                 if grad_clip_mode == "Norm":
-                    clip_grad_norm_(model.parameters(), clip_value)  # Clip by norm
-                elif grad_clip_mode == "Value":
-                    clip_grad_value_(model.parameters(), clip_value)  # Clip by value
+                    clip_grad_norm_(params_to_clip, clip_value)
+                else:  # "Value"
+                    clip_grad_value_(params_to_clip, clip_value)
 
-            scaler.step(optimizer)  # Optimizer step with scaled gradients
-            scaler.update()  # Update the scaler for next iteration
+            scaler.step(optimizer)
+            scaler.update()
         else:
-            loss.backward()  # Standard backward pass
+            loss.backward()
 
             if clip_value is not None:
+                params_to_clip = itertools.chain(model.parameters(), loss_fn.parameters())
                 if grad_clip_mode == "Norm":
-                    clip_grad_norm_(model.parameters(), clip_value)  # Clip by norm
-                elif grad_clip_mode == "Value":
-                    clip_grad_value_(model.parameters(), clip_value)  # Clip by value
+                    clip_grad_norm_(params_to_clip, clip_value)
+                else:  # "Value"
+                    clip_grad_value_(params_to_clip, clip_value)
 
-            optimizer.step()  # Optimizer step
+            optimizer.step()
 
-        # Step the scheduler if it's not ReduceLROnPlateau
-        # ReduceLROnPlateau requires a separate step with validation loss
-        # scheduler.step(loss) is called in the validation step.
-        # For other schedulers, we step it here after optimizer step.
-        if scheduler is not None and not isinstance(
-            scheduler, lr_scheduler.ReduceLROnPlateau
-        ):
+        if scheduler is not None and not isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
             scheduler.step()
 
-        # Accumulate losses for reporting
-        total_loss_sum += loss.item()
-        class_loss_sum += loss_class
-        face_loss_sum += loss_face
-        obb_loss_sum += loss_obb
-        angular_loss_sum += loss_angle
-        child_loss_sum += loss_child
-        rect_loss_sum += loss_rect
+        total_loss_sum += float(loss.detach().item())
+        class_loss_sum += float(loss_class)
+        face_loss_sum += float(loss_face)
+        obb_loss_sum += float(loss_obb)
+        angular_loss_sum += float(loss_angle)
+        child_loss_sum += float(loss_child)
+        rect_loss_sum += float(loss_rect)
         total_batches += 1
 
     bar.close()
 
-    # Compute average losses and current learning rate for reporting
-    current_lr = optimizer.param_groups[0]["lr"]  # Get current learning rate.
+    if total_batches == 0:
+        raise RuntimeError("train_dataloader produced zero batches.")
+
+    current_lr = optimizer.param_groups[0]["lr"]
+
     avg_total_loss = total_loss_sum / total_batches
     avg_class_loss = class_loss_sum / total_batches
     avg_face_loss = face_loss_sum / total_batches
@@ -1328,11 +1321,14 @@ def train(
     }
 
     model.to(device)  # Move model to the specified device.
+    loss_fn.to(device)  # Move loss function to the specified device.
+    
     optimizer = create_optimizer(
         which_optimizer=which_optimizer,
         model=model,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
+        loss_module=loss_fn,
     )  # Create optimizer.
 
     scheduler = create_scheduler(
@@ -1364,9 +1360,8 @@ def train(
     )
     
     with torch.no_grad():
-        dtype = torch.bfloat16 if (device.type == "cuda") else torch.float32
-        anchors_xy    = anchors_xy.to(device, dtype=dtype, non_blocking=True)
-        anchors_xywhr = anchors_xywhr.to(device, dtype=dtype, non_blocking=True)
+        anchors_xy = anchors_xy.to(device, dtype=torch.float32, non_blocking=True)
+        anchors_xywhr = anchors_xywhr.to(device, dtype=torch.float32, non_blocking=True)
         anchors_xy.requires_grad_(False)
         anchors_xywhr.requires_grad_(False)
         

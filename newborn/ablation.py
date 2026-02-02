@@ -388,6 +388,43 @@ def parse_args():
         default=42,
         help="Random seed for reproducibility.",
     )
+        # Ablation mode
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Run an ablation over a list of lambda values, generating one run per value.",
+    )
+    parser.add_argument(
+        "--ablate_param",
+        type=str,
+        default="lambda_rot",
+        choices=["lambda_rot", "lambda_cls"],
+        help="Which lambda to vary during ablation.",
+    )
+    parser.add_argument(
+        "--ablate_values",
+        type=float,
+        nargs="+",
+        default=None,
+        help="List of values for the selected lambda (e.g. --ablate_values 2 4 8 16).",
+    )
+    parser.add_argument(
+        "--ablate_seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional list of seeds to run for each lambda (e.g. --ablate_seeds 0 1 2).",
+    )
+    parser.add_argument(
+        "--skip_inference",
+        action="store_true",
+        help="Skip inference stage after training (recommended for ablation).",
+    )
+    parser.add_argument(
+        "--skip_compile",
+        action="store_true",
+        help="Disable torch.compile even on CUDA (recommended for repeated ablation runs).",
+    )
 
     return parser.parse_args()
 

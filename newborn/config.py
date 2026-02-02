@@ -27,7 +27,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 # =======================
 # Default Hyperparameters
 # =======================
-DEFAULT_EPOCHS = 100
+DEFAULT_EPOCHS = 1
 DEFAULT_LR = 3e-4
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_WEIGHT_DECAY = 1e-4

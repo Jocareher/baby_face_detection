@@ -1300,7 +1300,11 @@ def train(
         "test_obb_loss",
         "test_angular_loss",
         "test_rect_loss",
-        "test_mAP",
+        "test_mAP_face_only",
+        "test_f1_child",
+        "test_macro_f1_view",
+        "test_mae_angle_deg",
+        "test_avg_matches",
         "learning_rate",
         "epoch_time",
     ]
@@ -1436,7 +1440,7 @@ def train(
                 anchors=anchors_tuple,
                 face_thres=face_thres,
                 iou_thres_nms=iou_thres,
-                chhild_thres=baby_thres,
+                child_thres=baby_thres,
             )
 
             test_total_loss = val_metrics["val_total_loss"]

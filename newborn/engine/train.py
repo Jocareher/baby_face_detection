@@ -3,7 +3,7 @@ import csv
 import os
 import random
 from contextlib import nullcontext
-from typing import Any, Iterable, List, Optional, Dict, Sequence, Sequence, Tuple, Union
+from typing import List, Optional, Dict, Tuple, Union
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +23,7 @@ tqdm = tqdm_auto.tqdm  # Use tqdm.auto for better compatibility with Jupyter not
 
 from models.anchors import AnchorGeneratorOBB, get_feature_map_shapes
 from data_setup.dataset import BabyFacesDataset, calculate_average_obb_dimensions
-from data_setup.augmentations import Resize
+from data_setup.augmentations import Resize, wrap_to_pi
 from loss.utils import (
     xyxyxyxy2xywhr,
     decode_vertices,
@@ -74,13 +74,7 @@ class EarlyStopping:
         self.fold = None
         self.filename = None
 
-    def __call__(
-        self,
-        val_loss: float,
-        model: nn.Module,
-        loss_fn: Optional[nn.Module],
-        fold: int = None,
-    ):
+    def __call__(self, val_loss: float, model: nn.Module, fold: int = None):
         """
         This method is called during the training process to monitor the validation loss and decide whether to stop
         the training process early or not.
@@ -88,7 +82,6 @@ class EarlyStopping:
         Args:
             val_loss: Validation loss of the model at the current epoch.
             model: The PyTorch model being trained.
-            loss_fn: The loss function used for training.
             fold: The current fold of the KFold cross-validation. Required if use_kfold is True.
         """
         if np.isnan(val_loss):
@@ -113,7 +106,7 @@ class EarlyStopping:
         # If the best score is None, sets it to the current score and saves the checkpoint
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, model, loss_fn)
+            self.save_checkpoint(val_loss, model)
 
         # If the score is less than the best score plus delta, increments the counter
         # and checks if the patience has been reached
@@ -128,27 +121,17 @@ class EarlyStopping:
         # If the score is better than the best score plus delta, saves the checkpoint and resets the counter
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, model, loss_fn)
+            self.save_checkpoint(val_loss, model)
             self.counter = 0
 
-    def save_checkpoint(
-        self, val_loss: float, model: nn.Module, loss_fn: Optional[nn.Module]
-    ):
+    def save_checkpoint(self, val_loss: float, model: nn.Module):
         """
         Saves the model when validation loss decreases and it's a numerical value.
 
         Args:
             val_loss: The current validation loss.
             model: The PyTorch model being trained.
-            loss_fn: The loss function used for training.
         """
-
-        checkpoint = {
-            "model_state_dict": model.state_dict(),
-            "val_loss": float(val_loss),
-        }
-        if loss_fn is not None:
-            checkpoint["loss_state_dict"] = loss_fn.state_dict()
         # If verbose mode is on, print a message about the validation loss decreasing and saving the model
         if self.verbose:
             self.trace_func(
@@ -157,9 +140,9 @@ class EarlyStopping:
 
         # Save the state of the model to the appropriate filename based on whether KFold is used or not
         if self.use_kfold:
-            torch.save(checkpoint, self.filename)
+            torch.save(model.state_dict(), self.filename)
         else:
-            torch.save(checkpoint, self.path)
+            torch.save(model.state_dict(), self.path)
 
         # Update the minimum validation loss seen so far to the current validation loss
         self.val_loss_min = val_loss
@@ -758,50 +741,55 @@ def generate_anchors_for_training(
 
 
 def create_optimizer(
-    which_optimizer: str,
-    parameters: Union[Iterable[nn.Parameter], Sequence[Dict[str, Any]]],
-    learning_rate: float,
+    which_optimizer: str, model: nn.Module, learning_rate: float, weight_decay: float
 ) -> torch.optim.Optimizer:
     """
     Creates and returns an optimizer for the model.
 
     Args:
-        which_optimizer (str): Optimizer type ('ADAM', 'SGD', 'ADAMW', 'RAdam').
-        parameters: Model parameters or param groups.
-        learning_rate (float): Learning rate.
+        which_optimizer (str): The optimizer to use ('ADAM', 'SGD', 'ADAMW', or 'RAdam').
+        model (nn.Module): The model whose parameters will be optimized.
+        learning_rate (float): The learning rate for the optimizer.
+        weight_decay (float): The weight decay (L2 regularization).
 
     Returns:
-        torch.optim.Optimizer
+        torch.optim.Optimizer: Instantiated optimizer.
+
+    Raises:
+        ValueError: If the optimizer name is not recognized.
     """
+    # Select optimizer based on string identifier
     if which_optimizer == "ADAM":
         return Adam(
-            parameters,
+            model.parameters(),
             lr=learning_rate,
+            weight_decay=weight_decay,
             amsgrad=True,
         )
-
     elif which_optimizer == "SGD":
         return SGD(
-            parameters,
+            model.parameters(),
             lr=learning_rate,
+            weight_decay=weight_decay,
             momentum=0.9,
         )
-
     elif which_optimizer == "ADAMW":
         return AdamW(
-            parameters,
+            model.parameters(),
             lr=learning_rate,
+            weight_decay=weight_decay,
             amsgrad=True,
         )
-
     elif which_optimizer == "RAdam":
         return RAdam(
-            parameters,
+            model.parameters(),
             lr=learning_rate,
+            weight_decay=weight_decay,
         )
-
     else:
-        raise ValueError("Optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', 'RAdam'")
+        raise ValueError(
+            "The optimizer must be one of: 'ADAM', 'SGD', 'ADAMW', or 'RAdam'"
+        )
 
 
 def create_scheduler(
@@ -1012,11 +1000,6 @@ def train_step(
                     clip_grad_value_(model.parameters(), clip_value)  # Clip by value
 
             optimizer.step()  # Optimizer step
-
-        if hasattr(loss_fn, "log_var_cls"):
-            with torch.no_grad():
-                loss_fn.log_var_cls.clamp_(loss_fn.log_var_min, loss_fn.log_var_max)
-                loss_fn.log_var_rot.clamp_(loss_fn.log_var_min, loss_fn.log_var_max)
 
         # Step the scheduler if it's not ReduceLROnPlateau
         # ReduceLROnPlateau requires a separate step with validation loss
@@ -1341,26 +1324,19 @@ def train(
         "test_obb_loss": [],
         "test_angular_loss": [],
         "test_rect_loss": [],
-        "test_mAP": [],
-        "log_var_cls": [],
-        "log_var_rot": [],
-        "lambda_cls_weight": [],
-        "lambda_rot_weight": [],
+        "test_mAP_face_only": [],
+        "test_f1_child": [],
+        "test_macro_f1_view": [],
+        "test_mae_angle_deg": [],
+        "test_avg_matches": [],
     }
 
     model.to(device)  # Move model to the specified device.
-    model_params = list(model.parameters())
-    loss_params = list(loss_fn.parameters())
-
-    param_groups = [
-        {"params": model_params, "weight_decay": weight_decay},
-        {"params": loss_params, "weight_decay": 0.0},
-    ]
-
     optimizer = create_optimizer(
         which_optimizer=which_optimizer,
-        parameters=param_groups,
+        model=model,
         learning_rate=learning_rate,
+        weight_decay=weight_decay,
     )  # Create optimizer.
 
     scheduler = create_scheduler(
@@ -1451,16 +1427,8 @@ def train(
             )
 
             # Perform a validation step
-            (
-                test_total_loss,
-                test_class_loss,
-                test_face_loss,
-                test_obb_loss,
-                test_angular_loss,
-                test_rect_loss,
-                test_child_loss,
-                test_mAP,
-            ) = val_step(
+
+            val_metrics = val_step_with_head_metrics(
                 model=model,
                 val_dataloader=val_dataloader,
                 loss_fn=loss_fn,
@@ -1472,9 +1440,19 @@ def train(
                 baby_thres=baby_thres,
             )
 
-            effective_weights = {}
-            if hasattr(loss_fn, "get_effective_weights"):
-                effective_weights = loss_fn.get_effective_weights()
+            test_total_loss = val_metrics["val_total_loss"]
+            test_class_loss = val_metrics["val_class_loss"]
+            test_face_loss = val_metrics["val_face_loss"]
+            test_child_loss = val_metrics["val_child_loss"]
+            test_obb_loss = val_metrics["val_obb_loss"]
+            test_angular_loss = val_metrics["val_angle_loss"]
+            test_rect_loss = val_metrics["val_rect_loss"]
+
+            test_mAP_face_only = val_metrics["val_map_face_only"]
+            test_f1_child = val_metrics["val_f1_child"]
+            test_macro_f1_view = val_metrics["val_macro_f1_view"]
+            test_mae_angle_deg = val_metrics["val_mae_angle_deg"]
+            test_avg_matches = val_metrics["val_avg_matches_baby"]
 
             # Update scheduler if applicable
             if scheduler is not None:
@@ -1500,7 +1478,11 @@ def train(
     │ OBB Loss           │ {train_obb_loss:10.4f} │ {test_obb_loss:10.4f} │
     │ Angle Loss         │ {train_angular_loss:10.4f} │ {test_angular_loss:10.4f} │
     │ Rect Loss          │ {train_rect_loss:10.4f} │ {test_rect_loss:10.4f} │
-    │ mAP (Val only)     │      ---   │ {test_mAP:10.4f} │
+    │ mAP Face Only      │      ---   │ {test_mAP_face_only:10.4f} │
+    │ F1 Child           │      ---   │ {test_f1_child:10.4f} │
+    │ Macro F1 View      │      ---   │ {test_macro_f1_view:10.4f} │
+    │ MAE Angle (deg)    │      ---   │ {test_mae_angle_deg:10.4f} │
+    │ Avg Matches Baby   │      ---   │ {test_avg_matches:10.4f} │
     └────────────────────┴────────────┴────────────┘
 """
             )
@@ -1523,14 +1505,15 @@ def train(
                         "test_angular_loss": test_angular_loss,
                         "test_rect_loss": test_rect_loss,
                         "test_child_loss": test_child_loss,
-                        "test_mAP": test_mAP,
+                        "test_mAP_face_only": test_mAP_face_only,
+                        "test_f1_child": test_f1_child,
+                        "test_macro_f1_view": test_macro_f1_view,
+                        "test_mae_angle_deg": test_mae_angle_deg,
+                        "test_avg_matches": test_avg_matches,
                         "learning_rate": current_lr,
                         "epoch_time": epoch_time,
                     }
                 )  # Log metrics to Weights & Biases.
-
-            if record_metrics and effective_weights:
-                wandb.log({**effective_weights})
 
             # Update results dictionary
             results["train_total_loss"].append(train_total_loss)
@@ -1547,11 +1530,11 @@ def train(
             results["test_obb_loss"].append(test_obb_loss)
             results["test_angular_loss"].append(test_angular_loss)
             results["test_rect_loss"].append(test_rect_loss)
-            results["test_mAP"].append(test_mAP)
-            if hasattr(loss_fn, "get_effective_weights"):
-                w = loss_fn.get_effective_weights()
-                results["lambda_cls_weight"].append(w.get("lambda_cls_eff", None))
-                results["lambda_rot_weight"].append(w.get("lambda_rot_eff", None))
+            results["test_mAP_face_only"].append(test_mAP_face_only)
+            results["test_f1_child"].append(test_f1_child)
+            results["test_macro_f1_view"].append(test_macro_f1_view)
+            results["test_mae_angle_deg"].append(test_mae_angle_deg)
+            results["test_avg_matches"].append(test_avg_matches)
 
             # Write metrics to CSV file
             with open(csv_filename, mode="a", newline="") as f:
@@ -1573,7 +1556,11 @@ def train(
                         f"{test_obb_loss:.4f}",
                         f"{test_angular_loss:.4f}",
                         f"{test_rect_loss:.4f}",
-                        f"{test_mAP:.4f}",
+                        f"{test_mAP_face_only:.4f}",
+                        f"{test_f1_child:.4f}",
+                        f"{test_macro_f1_view:.4f}",
+                        f"{test_mae_angle_deg:.4f}",
+                        f"{test_avg_matches:.4f}",
                         f"{current_lr:.5f}",
                         f"{epoch_time:.4f}",
                     ]
@@ -1594,7 +1581,7 @@ def train(
 
             # Check early stopping condition
             if early_stopping is not None:
-                early_stopping(test_total_loss, model, loss_fn)
+                early_stopping(test_total_loss, model)
                 if early_stopping.early_stop:
                     print("Early stopping")
                     break
@@ -1747,3 +1734,511 @@ def load_checkpoint_for_resuming(
 
     model.load_state_dict(state_dict)
     print("[INFO] Checkpoint successfully loaded into model. Ready to resume training.")
+
+
+# Ablation code
+def compute_binary_f1(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    eps: float = 1e-8,
+) -> float:
+    """
+    Compute binary F1 score.
+
+    Args:
+        y_true: Ground-truth binary labels, shape (N,), values in {0, 1}.
+        y_pred: Predicted binary labels, shape (N,), values in {0, 1}.
+        eps: Numerical stability constant.
+
+    Returns:
+        F1 score in [0, 1].
+    """
+    y_true = y_true.to(torch.int64).view(-1)
+    y_pred = y_pred.to(torch.int64).view(-1)
+
+    tp = torch.sum((y_true == 1) & (y_pred == 1)).item()
+    fp = torch.sum((y_true == 0) & (y_pred == 1)).item()
+    fn = torch.sum((y_true == 1) & (y_pred == 0)).item()
+
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    f1 = 2.0 * precision * recall / (precision + recall + eps)
+    return float(f1)
+
+
+def compute_macro_f1_multiclass(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    num_classes: int,
+    eps: float = 1e-8,
+) -> float:
+    """
+    Compute macro-F1 for a multi-class classification task.
+
+    Args:
+        y_true: Ground-truth class indices, shape (N,), values in [0, num_classes-1].
+        y_pred: Predicted class indices, shape (N,), values in [0, num_classes-1].
+        num_classes: Total number of classes.
+        eps: Numerical stability constant.
+
+    Returns:
+        Macro-F1 score in [0, 1].
+    """
+    y_true = y_true.to(torch.int64).view(-1)
+    y_pred = y_pred.to(torch.int64).view(-1)
+
+    f1_per_class: List[float] = []
+    for c in range(num_classes):
+        tp = torch.sum((y_true == c) & (y_pred == c)).item()
+        fp = torch.sum((y_true != c) & (y_pred == c)).item()
+        fn = torch.sum((y_true == c) & (y_pred != c)).item()
+
+        precision = tp / (tp + fp + eps)
+        recall = tp / (tp + fn + eps)
+        f1 = 2.0 * precision * recall / (precision + recall + eps)
+        f1_per_class.append(float(f1))
+
+    return float(np.mean(f1_per_class)) if f1_per_class else 0.0
+
+
+def circular_mae_deg(
+    pred_angles_rad: torch.Tensor,
+    gt_angles_rad: torch.Tensor,
+) -> float:
+    """
+    Compute circular MAE between predicted and GT angles.
+
+    Args:
+        pred_angles_rad: Predicted angles in radians, shape (N,).
+        gt_angles_rad: Ground-truth angles in radians, shape (N,).
+
+    Returns:
+        Mean absolute angular error in degrees.
+    """
+    pred_angles_rad = pred_angles_rad.view(-1)
+    gt_angles_rad = gt_angles_rad.view(-1)
+    if pred_angles_rad.numel() == 0:
+        return 0.0
+
+    delta = wrap_to_pi(pred_angles_rad - gt_angles_rad).abs()
+    mae_rad = torch.mean(delta).item()
+    mae_deg = mae_rad * (180.0 / float(np.pi))
+    return float(mae_deg)
+
+
+def greedy_match_predictions_to_gt(
+    pred_boxes_xywhr: torch.Tensor,
+    pred_scores: torch.Tensor,
+    gt_boxes_xywhr: torch.Tensor,
+    iou_thr: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Greedy one-to-one matching from predictions to GT using pIoU.
+
+    The matching is performed in descending order of prediction score. Each GT can be matched at most once.
+
+    Args:
+        pred_boxes_xywhr: Predicted boxes, shape (N_pred, 5), format (cx, cy, w, h, theta).
+        pred_scores: Prediction scores, shape (N_pred,).
+        gt_boxes_xywhr: Ground-truth boxes, shape (N_gt, 5), same format.
+        iou_thr: Minimum IoU required to count as a match.
+
+    Returns:
+        matched_pred_idx: Indices of matched predictions, shape (N_match,).
+        matched_gt_idx: Indices of matched GT, shape (N_match,).
+        unmatched_pred_idx: Indices of unmatched predictions, shape (N_unmatched,).
+    """
+    device = pred_boxes_xywhr.device
+    n_pred = int(pred_boxes_xywhr.shape[0])
+    n_gt = int(gt_boxes_xywhr.shape[0])
+
+    if n_pred == 0:
+        return (
+            torch.empty((0,), dtype=torch.long, device=device),
+            torch.empty((0,), dtype=torch.long, device=device),
+            torch.empty((0,), dtype=torch.long, device=device),
+        )
+
+    if n_gt == 0:
+        return (
+            torch.empty((0,), dtype=torch.long, device=device),
+            torch.empty((0,), dtype=torch.long, device=device),
+            torch.arange(n_pred, dtype=torch.long, device=device),
+        )
+
+    order = torch.argsort(pred_scores, descending=True)
+    pred_boxes_sorted = pred_boxes_xywhr[order]
+
+    iou_mat = batch_probiou(pred_boxes_sorted, gt_boxes_xywhr)  # (N_pred, N_gt)
+
+    gt_taken = torch.zeros((n_gt,), dtype=torch.bool, device=device)
+    matched_pred: List[int] = []
+    matched_gt: List[int] = []
+
+    for i in range(n_pred):
+        ious_i = iou_mat[i]
+        best_iou, best_gt = torch.max(ious_i, dim=0)
+        best_gt_i = int(best_gt.item())
+        if float(best_iou.item()) >= iou_thr and (not bool(gt_taken[best_gt_i].item())):
+            gt_taken[best_gt_i] = True
+            matched_pred.append(int(order[i].item()))
+            matched_gt.append(best_gt_i)
+
+    matched_pred_idx = torch.tensor(matched_pred, dtype=torch.long, device=device)
+    matched_gt_idx = torch.tensor(matched_gt, dtype=torch.long, device=device)
+
+    all_pred_idx = torch.arange(n_pred, dtype=torch.long, device=device)
+    if matched_pred_idx.numel() == 0:
+        unmatched_pred_idx = all_pred_idx
+    else:
+        mask = torch.ones((n_pred,), dtype=torch.bool, device=device)
+        mask[matched_pred_idx] = False
+        unmatched_pred_idx = all_pred_idx[mask]
+
+    return matched_pred_idx, matched_gt_idx, unmatched_pred_idx
+
+
+def infer_face_only_with_rotated_nms(
+    preds: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    images: torch.Tensor,
+    anchors_xy: torch.Tensor,
+    image_size: Tuple[int, int],
+    face_thres: float = 0.25,
+    iou_thres: float = 0.5,
+    pre_nms_topk: int = 500,
+    max_det: int = 300,
+) -> List[Dict[str, torch.Tensor]]:
+    """
+    Run face-only inference (score = face_prob) and apply rotated NMS.
+
+    This intentionally does NOT gate on child_prob or orientation confidence, to avoid cross-head coupling
+    in ablation studies.
+
+    Args:
+        preds: Model outputs (orient_logits, face_logits, deltas, pred_angles, child_logits).
+        images: Input images tensor, shape (B, C, H, W).
+        anchors_xy: Anchor vertices tensor, shape (N, 8).
+        image_size: (W, H).
+        face_thres: Face probability threshold.
+        iou_thres: IoU threshold for rotated NMS.
+        pre_nms_topk: Top-k filtering before NMS.
+        max_det: Maximum detections after NMS.
+
+    Returns:
+        List of per-image dicts with keys:
+            - boxes_xywhr: (N_det, 5)
+            - scores: (N_det,)
+            - sel_idx: (N_det,) indices in anchor space
+            - child_prob: (N_det,)
+            - view_probs: (N_det, C_view)
+            - pred_angles: (N_det,) radians
+    """
+    orient_logits, face_logits, deltas, pred_angles, child_logits = preds
+    device = images.device
+    batch_size = int(images.shape[0])
+
+    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # (B, N)
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
+    view_probs = F.softmax(orient_logits, dim=-1)  # (B, N, C_view)
+    pred_angles_1d = pred_angles.squeeze(-1)  # (B, N)
+
+    outputs: List[Dict[str, torch.Tensor]] = []
+    for b in range(batch_size):
+        keep = face_prob[b] >= face_thres
+        if not torch.any(keep):
+            outputs.append(
+                {
+                    "boxes_xywhr": torch.empty((0, 5), device=device),
+                    "scores": torch.empty((0,), device=device),
+                    "sel_idx": torch.empty((0,), dtype=torch.long, device=device),
+                    "child_prob": torch.empty((0,), device=device),
+                    "view_probs": torch.empty((0, view_probs.shape[-1]), device=device),
+                    "pred_angles": torch.empty((0,), device=device),
+                }
+            )
+            continue
+
+        idx = torch.nonzero(keep, as_tuple=False).squeeze(1)
+        scores = face_prob[b][idx]  # face-only score
+        k = min(pre_nms_topk, int(idx.numel()))
+        topk = torch.topk(scores, k=k, largest=True).indices
+        sel = idx[topk]
+
+        verts = decode_vertices(
+            deltas[b][sel],
+            anchors_xy[sel].to(device),
+            pred_angles_1d[b][sel],
+            image_size,
+        )
+        boxes_xywhr = verts_to_xywhr_with_theta(verts, pred_angles_1d[b][sel])
+
+        keep_nms = nms_rotated(boxes_xywhr, face_prob[b][sel], iou_thres)[:max_det]
+        sel_final = sel[keep_nms]
+
+        outputs.append(
+            {
+                "boxes_xywhr": boxes_xywhr[keep_nms],
+                "scores": face_prob[b][sel][keep_nms],
+                "sel_idx": sel_final,
+                "child_prob": child_prob[b][sel_final],
+                "view_probs": view_probs[b][sel_final],
+                "pred_angles": pred_angles_1d[b][sel_final],
+            }
+        )
+
+    return outputs
+
+
+def val_step_with_head_metrics(
+    model: nn.Module,
+    val_dataloader: DataLoader,
+    loss_fn: nn.Module,
+    device: torch.device,
+    anchors: Tuple[torch.Tensor, torch.Tensor],
+    face_thres: float = 0.25,
+    iou_thres_nms: float = 0.5,
+    iou_thr_match: float = 0.5,
+    child_thres: float = 0.5,
+    num_view_classes: int = 5,
+) -> Dict[str, float]:
+    """
+    Validation step that computes:
+      - loss components (as before)
+      - mAP for baby detection using face-only scoring (single class)
+      - child F1 (baby vs not-baby) computed on face-only detections
+      - view macro-F1 computed on matched baby detections
+      - angle MAE (deg) computed on matched baby detections
+      - average number of matched baby detections per image
+
+    Args:
+        model: Model to evaluate.
+        val_dataloader: Validation dataloader.
+        loss_fn: Multi-task loss.
+        device: Torch device.
+        anchors: (anchors_xy, anchors_xywhr).
+        face_thres: Face threshold for face-only detections.
+        iou_thres_nms: IoU threshold for rotated NMS (face-only detections).
+        iou_thr_match: IoU threshold to match detections to GT babies.
+        child_thres: Threshold to binarize child_prob for F1.
+        num_view_classes: Number of yaw-view classes.
+
+    Returns:
+        Dict with scalar metrics.
+    """
+    model.eval()
+
+    anchors_xy, anchors_xywhr = anchors
+    total_batches = 0
+
+    total_loss_sum = 0.0
+    class_loss_sum = 0.0
+    face_loss_sum = 0.0
+    obb_loss_sum = 0.0
+    angle_loss_sum = 0.0
+    rect_loss_sum = 0.0
+    child_loss_sum = 0.0
+
+    all_pred_boxes: List[torch.Tensor] = []
+    all_pred_scores: List[torch.Tensor] = []
+    all_pred_labels: List[torch.Tensor] = []
+    all_gt_boxes: List[torch.Tensor] = []
+    all_gt_labels: List[torch.Tensor] = []
+
+    child_y_true_list: List[torch.Tensor] = []
+    child_y_pred_list: List[torch.Tensor] = []
+
+    view_y_true_list: List[torch.Tensor] = []
+    view_y_pred_list: List[torch.Tensor] = []
+
+    angle_pred_list: List[torch.Tensor] = []
+    angle_gt_list: List[torch.Tensor] = []
+
+    matches_per_image: List[int] = []
+
+    with torch.inference_mode():
+        bar = tqdm(
+            val_dataloader, desc="   Val", unit="batch", leave=False, dynamic_ncols=True
+        )
+        for batch in bar:
+            images = batch["image"].to(device)
+            targets_raw = batch["target"]
+            targets = build_multitask_targets(targets_raw, device)
+
+            preds = model(images)
+
+            image_size = (int(images.shape[3]), int(images.shape[2]))
+            face_only_outputs = infer_face_only_with_rotated_nms(
+                preds=preds,
+                images=images,
+                anchors_xy=anchors_xy,
+                image_size=image_size,
+                face_thres=face_thres,
+                iou_thres=iou_thres_nms,
+            )
+
+            batch_size = int(images.shape[0])
+            for b in range(batch_size):
+                keep_gt_baby = (
+                    targets["valid_mask"][b]
+                    & targets["child_prob"][b].squeeze(-1).bool()
+                )
+
+                if torch.any(keep_gt_baby):
+                    gt_polygons = targets["boxes"][b][keep_gt_baby]  # (M, 8)
+                    gt_angles = targets["angle"][b][keep_gt_baby].squeeze(-1)  # (M,)
+                    gt_xywhr = xyxyxyxy2xywhr(
+                        gt_polygons,
+                        gt_angles.unsqueeze(-1),
+                        image_size,
+                    )
+                else:
+                    gt_xywhr = torch.zeros((0, 5), dtype=torch.float32, device=device)
+
+                det_boxes = face_only_outputs[b]["boxes_xywhr"]
+                det_scores = face_only_outputs[b]["scores"]
+
+                # Baby detection mAP (single class)
+                all_pred_boxes.append(det_boxes.detach().cpu())
+                all_pred_scores.append(det_scores.detach().cpu())
+                all_pred_labels.append(
+                    torch.zeros((det_boxes.shape[0],), dtype=torch.long).cpu()
+                )
+
+                all_gt_boxes.append(gt_xywhr.detach().cpu())
+                all_gt_labels.append(
+                    torch.zeros((gt_xywhr.shape[0],), dtype=torch.long).cpu()
+                )
+
+                # Head metrics via matching
+                (
+                    matched_pred_idx,
+                    matched_gt_idx,
+                    unmatched_pred_idx,
+                ) = greedy_match_predictions_to_gt(
+                    pred_boxes_xywhr=det_boxes,
+                    pred_scores=det_scores,
+                    gt_boxes_xywhr=gt_xywhr,
+                    iou_thr=iou_thr_match,
+                )
+                matches_per_image.append(int(matched_pred_idx.numel()))
+
+                # Child F1 on all detections (match -> 1 else 0)
+                if det_boxes.shape[0] > 0:
+                    gt_child = torch.zeros(
+                        (det_boxes.shape[0],), dtype=torch.long, device=device
+                    )
+                    if matched_pred_idx.numel() > 0:
+                        gt_child[matched_pred_idx] = 1
+
+                    pred_child = (face_only_outputs[b]["child_prob"] >= child_thres).to(
+                        torch.long
+                    )
+
+                    child_y_true_list.append(gt_child.detach().cpu())
+                    child_y_pred_list.append(pred_child.detach().cpu())
+
+                # View and angle only on matched detections
+                if matched_pred_idx.numel() > 0:
+                    gt_view = targets["class_idx"][b][keep_gt_baby][
+                        matched_gt_idx
+                    ]  # (N_match,)
+                    pred_view = torch.argmax(
+                        face_only_outputs[b]["view_probs"][matched_pred_idx], dim=-1
+                    )
+
+                    view_y_true_list.append(gt_view.detach().cpu())
+                    view_y_pred_list.append(pred_view.detach().cpu())
+
+                    gt_ang = targets["angle"][b][keep_gt_baby].squeeze(-1)[
+                        matched_gt_idx
+                    ]
+                    pred_ang = face_only_outputs[b]["pred_angles"][matched_pred_idx]
+
+                    angle_gt_list.append(gt_ang.detach().cpu())
+                    angle_pred_list.append(pred_ang.detach().cpu())
+
+            # Loss computation (as before)
+            image_sizes = [image_size] * int(images.size(0))
+            (
+                loss,
+                loss_class,
+                loss_face,
+                loss_obb,
+                loss_angle,
+                loss_rect,
+                loss_child,
+            ) = loss_fn(preds, targets, anchors_xy, anchors_xywhr, image_sizes)
+
+            total_loss_sum += float(loss.item())
+            class_loss_sum += float(loss_class)
+            face_loss_sum += float(loss_face)
+            obb_loss_sum += float(loss_obb)
+            angle_loss_sum += float(loss_angle)
+            rect_loss_sum += float(loss_rect)
+            child_loss_sum += float(loss_child)
+            total_batches += 1
+
+        bar.close()
+
+    # Average losses
+    avg_total_loss = total_loss_sum / max(1, total_batches)
+    avg_class_loss = class_loss_sum / max(1, total_batches)
+    avg_face_loss = face_loss_sum / max(1, total_batches)
+    avg_obb_loss = obb_loss_sum / max(1, total_batches)
+    avg_angle_loss = angle_loss_sum / max(1, total_batches)
+    avg_rect_loss = rect_loss_sum / max(1, total_batches)
+    avg_child_loss = child_loss_sum / max(1, total_batches)
+
+    # mAP baby detection (single class)
+    map_face_only = compute_map_rotated(
+        all_pred_boxes,
+        all_pred_scores,
+        all_pred_labels,
+        all_gt_boxes,
+        all_gt_labels,
+        iou_thr=iou_thr_match,
+        num_classes=1,
+    )
+
+    # Child F1
+    if child_y_true_list:
+        y_true_child = torch.cat(child_y_true_list, dim=0)
+        y_pred_child = torch.cat(child_y_pred_list, dim=0)
+        f1_child = compute_binary_f1(y_true_child, y_pred_child)
+    else:
+        f1_child = 0.0
+
+    # View macro-F1
+    if view_y_true_list:
+        y_true_view = torch.cat(view_y_true_list, dim=0)
+        y_pred_view = torch.cat(view_y_pred_list, dim=0)
+        macro_f1_view = compute_macro_f1_multiclass(
+            y_true_view, y_pred_view, num_classes=num_view_classes
+        )
+    else:
+        macro_f1_view = 0.0
+
+    # Angle MAE (deg)
+    if angle_gt_list:
+        gt_ang = torch.cat(angle_gt_list, dim=0)
+        pred_ang = torch.cat(angle_pred_list, dim=0)
+        mae_angle_deg = circular_mae_deg(pred_ang, gt_ang)
+    else:
+        mae_angle_deg = 0.0
+
+    avg_matches = float(np.mean(matches_per_image)) if matches_per_image else 0.0
+
+    return {
+        "val_total_loss": avg_total_loss,
+        "val_class_loss": avg_class_loss,
+        "val_face_loss": avg_face_loss,
+        "val_child_loss": avg_child_loss,
+        "val_obb_loss": avg_obb_loss,
+        "val_angle_loss": avg_angle_loss,
+        "val_rect_loss": avg_rect_loss,
+        "val_map_face_only": float(map_face_only),
+        "val_f1_child": float(f1_child),
+        "val_macro_f1_view": float(macro_f1_view),
+        "val_mae_angle_deg": float(mae_angle_deg),
+        "val_avg_matches_baby": float(avg_matches),
+    }

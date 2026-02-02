@@ -570,10 +570,6 @@ class MultiTaskLoss(nn.Module):
         neg_samples_ratio: int = config.NEG_SAMPLES_RATIO,
         face_pos_weight: float = config.FACE_POS_WEIGHT,
         sigma_l2_cls: float = config.SIGMA_L2_CLS,  # For L2Loss, if used
-        learn_cls_rot_weights: bool = True,
-        clamp_log_vars: bool = True,
-        log_var_min: float = -6.0,
-        log_var_max: float = 6.0,
     ) -> None:
         super().__init__()
         if cls_loss_type == "focal":
@@ -583,17 +579,17 @@ class MultiTaskLoss(nn.Module):
         else:
             raise ValueError("cls_loss_type must be 'focal' or 'ls'")
 
-        # self.face_loss = nn.BCEWithLogitsLoss(
-        #     pos_weight=torch.tensor(face_pos_weight), reduction="mean"
-        # )
+        self.face_loss = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor(face_pos_weight), reduction="mean"
+        )
         self.obb_loss = OBBRegressionLoss(
             loss_type=obb_loss_type, beta=2.0, reduction="mean"
         )
         self.child_loss = nn.BCEWithLogitsLoss(reduction="mean")
         self.rot_loss = RotationLoss(mode=rot_loss_type)
-        # self.lambda_cls = lambda_cls
+        self.lambda_cls = lambda_cls
         self.lambda_obb = lambda_obb
-        # self.lambda_rot = lambda_rot
+        self.lambda_rot = lambda_rot
         self.lambda_face = lambda_face
         self.lambda_rect = lambda_rect
         self.lambda_child = lambda_child
@@ -602,33 +598,6 @@ class MultiTaskLoss(nn.Module):
         self.pos_iou_thr_2 = pos_iou_thr_2
         self.neg_iou_thr_2 = neg_iou_thr_2
         self.neg_samples_ratio = neg_samples_ratio
-        self.learn_cls_rot_weights = learn_cls_rot_weights
-        self.clamp_log_vars = clamp_log_vars
-        self.log_var_min = float(log_var_min)
-        self.log_var_max = float(log_var_max)
-
-        if self.learn_cls_rot_weights:
-            # Initialize log variances based on initial lambda values
-            init_log_var_cls = -math.log(max(lambda_cls, 1e-8))
-            init_log_var_rot = -math.log(max(lambda_rot, 1e-8))
-            # Learnable parameters for log variances
-            self.log_var_cls = nn.Parameter(
-                torch.tensor(init_log_var_cls, dtype=torch.float32)
-            )
-            self.log_var_rot = nn.Parameter(
-                torch.tensor(init_log_var_rot, dtype=torch.float32)
-            )
-        else:
-            self.lambda_cls = float(lambda_cls)
-            self.lambda_rot = float(lambda_rot)
-
-        # Register face_pos_weight as buffer to ensure it's on the correct device
-        self.register_buffer(
-            "face_pos_weight_tensor", torch.tensor(face_pos_weight, dtype=torch.float32)
-        )
-        self.face_loss = nn.BCEWithLogitsLoss(
-            pos_weight=self.face_pos_weight_tensor, reduction="mean"
-        )
 
     def forward(
         self,
@@ -826,14 +795,14 @@ class MultiTaskLoss(nn.Module):
 
             # --- Reconstruction loss in vertex space (auxiliary) ---
             # Helps stabilize training, but not used during inference
-            # as it requires GT boxes.
-            recon_loss = F.smooth_l1_loss(
-                verts_pred.view(-1, 8),  # (N,8)
-                gt_boxes_2.view(-1, 8),  # (N,8)
-                reduction="mean",
-            )
+            # # as it requires GT boxes.
+            # recon_loss = F.smooth_l1_loss(
+            #     verts_pred.view(-1, 8),  # (N,8)
+            #     gt_boxes_2.view(-1, 8),  # (N,8)
+            #     reduction="mean",
+            # )
 
-            obb_loss += 0.5 * obb_canonical_loss + 0.5 * recon_loss
+            obb_loss += obb_canonical_loss  # + 0.5 * recon_loss
 
             stage2_batches += 1  # Valid positives in stage 2 for this image
 
@@ -850,39 +819,15 @@ class MultiTaskLoss(nn.Module):
             rect_loss /= stage2_batches
 
         # Combine all loss components with their respective weights
-        if self.learn_cls_rot_weights:
-            log_var_cls = self.log_var_cls
-            log_var_rot = self.log_var_rot
-            if self.clamp_log_vars:
-                log_var_cls = torch.clamp(
-                    log_var_cls, self.log_var_min, self.log_var_max
-                )
-                log_var_rot = torch.clamp(
-                    log_var_rot, self.log_var_min, self.log_var_max
-                )
+        total_loss = (
+            self.lambda_cls * cls_loss
+            + self.lambda_face * face_loss
+            + self.lambda_child * child_loss
+            + self.lambda_obb * obb_loss
+            + self.lambda_rot * rot_loss
+            + self.lambda_rect * rect_loss
+        )
 
-            w_cls = torch.exp(-log_var_cls)
-            w_rot = torch.exp(-log_var_rot)
-
-            total_loss = (
-                w_cls * cls_loss
-                + log_var_cls
-                + w_rot * rot_loss
-                + log_var_rot
-                + self.lambda_face * face_loss
-                + self.lambda_child * child_loss
-                + self.lambda_obb * obb_loss
-                + self.lambda_rect * rect_loss
-            )
-        else:
-            total_loss = (
-                self.lambda_cls * cls_loss
-                + self.lambda_face * face_loss
-                + self.lambda_child * child_loss
-                + self.lambda_obb * obb_loss
-                + self.lambda_rot * rot_loss
-                + self.lambda_rect * rect_loss
-            )
         return (
             total_loss,
             cls_loss.item(),
@@ -892,27 +837,3 @@ class MultiTaskLoss(nn.Module):
             rect_loss.item(),
             child_loss.item(),
         )
-
-    @torch.no_grad()
-    def get_effective_weights(self) -> dict:
-        """
-        Returns the effective weights used for cls/rot when uncertainty weighting is enabled.
-        """
-        if not self.learn_cls_rot_weights:
-            return {
-                "lambda_cls": float(self.lambda_cls),
-                "lambda_rot": float(self.lambda_rot),
-            }
-
-        log_var_cls = self.log_var_cls.detach()
-        log_var_rot = self.log_var_rot.detach()
-        if self.clamp_log_vars:
-            log_var_cls = torch.clamp(log_var_cls, self.log_var_min, self.log_var_max)
-            log_var_rot = torch.clamp(log_var_rot, self.log_var_min, self.log_var_max)
-
-        return {
-            "log_var_cls": float(log_var_cls.item()),
-            "log_var_rot": float(log_var_rot.item()),
-            "lambda_cls_eff": float(torch.exp(-log_var_cls).item()),
-            "lambda_rot_eff": float(torch.exp(-log_var_rot).item()),
-        }

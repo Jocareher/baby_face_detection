@@ -381,6 +381,8 @@ def parse_args():
     parser.add_argument(
         "--max_rotate", type=float, default=180.0, help="Límite de rotación (grados)."
     )
+    parser.add_argument("--audit_aug_bins", action="store_true", default=False,
+                        help="Guardar histogramas pre y post augmentation en train.")
     # Reproducibility
     parser.add_argument(
         "--seed",

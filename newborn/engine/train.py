@@ -1435,9 +1435,8 @@ def train(
                 device=device,
                 anchors=anchors_tuple,
                 face_thres=face_thres,
-                iou_thres=iou_thres,
-                class_thres=class_thres,
-                baby_thres=baby_thres,
+                iou_thres_nms=iou_thres,
+                chhild_thres=baby_thres,
             )
 
             test_total_loss = val_metrics["val_total_loss"]

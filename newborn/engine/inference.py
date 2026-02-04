@@ -547,7 +547,8 @@ def run_evaluation(
             per_true[cls].append(0)
             # If no predictions for this class, set score to 0.0
             per_score[cls].append(0.0)
-
+    # Finalize head-level metrics
+    print("[INFO] Finalizing head-level metrics...")
     head_metrics = head_buf.compute()
 
     print(f"[INFO] Inference completed on {global_idx} samples.")

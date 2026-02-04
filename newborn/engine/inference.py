@@ -1834,7 +1834,7 @@ def plot_confusion_matrix_figure(
     Plots a confusion matrix.
 
     Args:
-        cm: Confusion matrix of shape (K, K).
+        cm: Confusion matrix of shape (K, K). Can be int or float.
         class_names: List of class names (length K).
         title: Plot title.
         normalize: If True, normalizes rows to sum to 1 (recall-normalized).
@@ -1843,11 +1843,24 @@ def plot_confusion_matrix_figure(
     Returns:
         Matplotlib figure.
     """
-    cm_plot = cm.astype(np.float64)
+    if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
+        raise ValueError(f"Confusion matrix must be square, got shape={cm.shape}")
+
+    if len(class_names) != cm.shape[0]:
+        raise ValueError(
+            f"class_names length ({len(class_names)}) must match cm size ({cm.shape[0]})"
+        )
+
     if normalize:
+        cm_plot = cm.astype(np.float64)
         row_sums = cm_plot.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0.0] = 1.0
         cm_plot = cm_plot / row_sums
+        fmt = ".2f"
+    else:
+        # Keep integer values for raw CM (or cast safely)
+        cm_plot = cm.astype(np.int64)
+        fmt = "d"
 
     fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111)
@@ -1857,13 +1870,15 @@ def plot_confusion_matrix_figure(
     ax.set_title(title)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Ground truth")
+
     ax.set_xticks(np.arange(len(class_names)))
     ax.set_yticks(np.arange(len(class_names)))
     ax.set_xticklabels(class_names, rotation=45, ha="right")
     ax.set_yticklabels(class_names)
 
-    fmt = ".2f" if normalize else "d"
-    thresh = cm_plot.max() * 0.5 if cm_plot.size else 0.0
+    # Choose text color thresholding based on displayed matrix
+    vmax = float(np.max(cm_plot)) if cm_plot.size else 0.0
+    thresh = 0.5 * vmax
 
     for i in range(cm_plot.shape[0]):
         for j in range(cm_plot.shape[1]):
@@ -1874,11 +1889,13 @@ def plot_confusion_matrix_figure(
                 format(val, fmt),
                 ha="center",
                 va="center",
+                color="white" if float(val) > thresh else "black",
             )
 
     fig.tight_layout()
 
     if save_path is not None:
+        save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(str(save_path), dpi=200, bbox_inches="tight")
         plt.close(fig)

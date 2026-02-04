@@ -1834,59 +1834,46 @@ def plot_confusion_matrix_figure(
     cm: np.ndarray,
     class_names: List[str],
     title: str,
-    normalize: bool,
-    save_path: Optional[Path] = None,
+    normalize: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
 ) -> plt.Figure:
     """
-    Plots a confusion matrix with a classic blue colormap.
+    Plots a confusion matrix.
 
     Args:
-        cm: (K, K) confusion matrix, integers recommended for raw.
-        class_names: names length K
-        title: figure title
-        normalize: if True, row-normalize (recall-normalized)
-        save_path: optional path to save
-
-    Returns:
-        Matplotlib figure.
+        cm: Confusion matrix of shape (K, K).
+        class_names: List of class names (length K).
+        title: Plot title.
+        normalize: If True, normalizes rows to sum to 1 (recall-normalized).
+        save_path: If provided, saves the figure.
     """
-    cm_arr = np.array(cm, dtype=np.float64 if normalize else np.int64)
+    if save_path is not None:
+        save_path = Path(save_path)
 
+    cm_plot = cm.astype(np.float64)
     if normalize:
-        row_sums = cm_arr.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1
-        cm_plot = cm_arr / row_sums
-        fmt = "{:.2f}"
-    else:
-        cm_plot = cm_arr
-        fmt = "{:d}"
+        row_sums = cm_plot.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0.0] = 1.0
+        cm_plot = cm_plot / row_sums
 
     fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111)
-
     im = ax.imshow(cm_plot, interpolation="nearest", cmap="Blues")
     fig.colorbar(im, ax=ax)
 
     ax.set_title(title)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Ground truth")
-
-    ticks = np.arange(len(class_names))
-    ax.set_xticks(ticks)
-    ax.set_yticks(ticks)
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_yticks(np.arange(len(class_names)))
     ax.set_xticklabels(class_names, rotation=45, ha="right")
     ax.set_yticklabels(class_names)
 
-    thresh = float(cm_plot.max()) * 0.5 if cm_plot.size else 0.0
+    fmt = ".2f" if normalize else "d"
     for i in range(cm_plot.shape[0]):
         for j in range(cm_plot.shape[1]):
             val = cm_plot[i, j]
-            text = fmt.format(int(val) if not normalize else float(val))
-            ax.text(
-                j, i, text,
-                ha="center", va="center",
-                color="white" if val > thresh else "black",
-            )
+            ax.text(j, i, format(val, fmt), ha="center", va="center")
 
     fig.tight_layout()
 
@@ -1896,3 +1883,5 @@ def plot_confusion_matrix_figure(
         plt.close(fig)
 
     return fig
+
+

@@ -259,17 +259,6 @@ def run_evaluation(
                     strict_yaw_as_system=True,
                 )
 
-            # 3) Your existing final detections (one call)
-            outputs = infer_with_rotated_nms(
-                (orient_logits, face_logits, deltas, pred_angles, child_logits),
-                imgs,
-                anchors_xy,
-                resize_size,
-                face_thres=face_thres,
-                baby_thres=baby_thres,
-                iou_thres=iou_thres,
-                class_thres=class_thres,
-            )
             # Process each image in the batch
             batch_size = imgs.size(0)
             for b in range(batch_size):

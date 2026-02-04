@@ -221,11 +221,16 @@ def run_evaluation(
 
             orient_logits, face_logits, deltas, pred_angles, child_logits = model(imgs)
 
-            face_prob = torch.sigmoid(face_logits.squeeze(-1))  # (B, N)
-            child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
-            orient_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
-
-            anchors_xywhr = anchors_xywhr.to(device)
+            outputs = infer_with_rotated_nms(
+                (orient_logits, face_logits, deltas, pred_angles, child_logits),
+                imgs,
+                anchors_xy,
+                resize_size,
+                face_thres=face_thres,
+                baby_thres=baby_thres,
+                class_thres=class_thres,
+                iou_thres=iou_thres,
+            )
 
             # 2) Per-head evaluation (anchor-level, correctly conditioned via GT matching)
             B = imgs.size(0)

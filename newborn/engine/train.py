@@ -365,6 +365,11 @@ def infer_with_rotated_nms(
                     "is_baby": torch.empty((0,), dtype=torch.bool, device=images.device),
                     "is_yaw_conf": torch.empty((0,), dtype=torch.bool, device=images.device),
                     "is_system_valid": torch.empty((0,), dtype=torch.bool, device=images.device),
+                    "scores": torch.empty((0,), device=images.device),          # used by your old code as confidence
+                    "labels": torch.empty((0,), dtype=torch.float32, device=images.device),  # old code expects labels
+                    "child_score": torch.empty((0,), device=images.device),     # old code uses this
+                    "is_child": torch.empty((0,), dtype=torch.bool, device=images.device),    # old code uses this
+                    
                 }
             )
             continue

@@ -1838,19 +1838,23 @@ def plot_confusion_matrix_figure(
     save_path: Optional[Union[str, Path]] = None,
 ) -> plt.Figure:
     """
-    Plots a confusion matrix.
+    Plot a confusion matrix with robust formatting.
 
     Args:
-        cm: Confusion matrix of shape (K, K).
-        class_names: List of class names (length K).
-        title: Plot title.
-        normalize: If True, normalizes rows to sum to 1 (recall-normalized).
-        save_path: If provided, saves the figure.
+        cm: Confusion matrix of shape (K, K). Can be int or float.
+        class_names: Class labels (length K).
+        title: Figure title.
+        normalize: If True, normalize rows (recall-normalized).
+        save_path: If provided, save the figure to this path.
+
+    Returns:
+        Matplotlib Figure object.
     """
     if save_path is not None:
         save_path = Path(save_path)
 
-    cm_plot = cm.astype(np.float64)
+    cm_plot = np.asarray(cm, dtype=np.float64)
+
     if normalize:
         row_sums = cm_plot.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0.0] = 1.0
@@ -1869,11 +1873,22 @@ def plot_confusion_matrix_figure(
     ax.set_xticklabels(class_names, rotation=45, ha="right")
     ax.set_yticklabels(class_names)
 
-    fmt = ".2f" if normalize else "d"
+    # Choose format dynamically:
+    # - if normalize=True -> float
+    # - else: if values are very close to integers -> print as int, otherwise float
+    if normalize:
+        fmt = ".2f"
+        printer = lambda x: format(float(x), fmt)
+    else:
+        is_int_like = np.allclose(cm_plot, np.round(cm_plot), atol=1e-9)
+        if is_int_like:
+            printer = lambda x: str(int(round(float(x))))
+        else:
+            printer = lambda x: format(float(x), ".2f")
+
     for i in range(cm_plot.shape[0]):
         for j in range(cm_plot.shape[1]):
-            val = cm_plot[i, j]
-            ax.text(j, i, format(val, fmt), ha="center", va="center")
+            ax.text(j, i, printer(cm_plot[i, j]), ha="center", va="center")
 
     fig.tight_layout()
 

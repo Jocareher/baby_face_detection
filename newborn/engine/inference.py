@@ -211,7 +211,7 @@ def run_evaluation(
     dataset = loader.dataset
     global_idx = 0
 
-    head_buf = HeadEvalBuffer()
+    head_buf = DetectionHeadEvalBuffer()
 
     model.eval()  # Set model to evaluation mode
     with torch.inference_mode():
@@ -242,21 +242,16 @@ def run_evaluation(
                 gt_class = gt_class_all[valid_mask]      # (M,)
                 gt_child = gt_child_all[valid_mask]      # (M,)
 
-                update_head_metrics_single_image(
+                update_head_metrics_from_detections_single_image(
                     buffer=head_buf,
-                    anchors_xywhr=anchors_xywhr,
+                    pred=outputs[b],
                     gt_boxes_xy=gt_boxes,
                     gt_angles=gt_angles,
                     gt_class_idx=gt_class,
                     gt_child_prob=gt_child,
-                    face_prob=face_prob[b],
-                    child_prob=child_prob[b],
-                    orient_probs=orient_probs[b],
                     image_size=resize_size,
-                    face_thres=face_thres,
-                    baby_thres=baby_thres,
-                    pos_iou_thr=pos_iou_thr_head,
-                    neg_iou_thr=neg_iou_thr_head,
+                    match_iou_thr=iou_thres,
+                    strict_yaw_as_system=True,
                 )
 
             # 3) Your existing final detections (one call)
@@ -1663,21 +1658,20 @@ def export_predictions(
 
 
 @dataclass
-class HeadEvalBuffer:
+class DetectionHeadEvalBuffer:
     """
-    Accumulates predictions/targets for per-head evaluation.
+    Detection-level evaluation, conditioned by the cascade.
 
     FaceHead:
-        - Binary classification on anchors with defined labels (pos or neg).
-        - Ignores anchors in the band-of-ignore.
+        - evaluate face detection (binary) using matched/unmatched detections and unmatched GTs.
 
     ChildHead:
-        - Binary classification on anchors matched to GT faces only.
+        - evaluate baby/adult (binary) only for detections matched to a GT face.
 
-    Yaw ClassHead:
-        - Multiclass classification (0..4) on anchors matched to GT baby faces only.
+    ClassHead (Yaw):
+        - evaluate yaw (multiclass) only for detections matched to a GT baby face.
+        - strict mode: only if the system would output yaw (pred_baby AND yaw_conf).
     """
-
     face_y_true: List[int]
     face_y_pred: List[int]
 
@@ -1687,216 +1681,222 @@ class HeadEvalBuffer:
     yaw_y_true: List[int]
     yaw_y_pred: List[int]
 
+    yaw_eligible_gt_babies: int
+    yaw_evaluated: int
+
     def __init__(self) -> None:
         self.face_y_true, self.face_y_pred = [], []
         self.child_y_true, self.child_y_pred = [], []
         self.yaw_y_true, self.yaw_y_pred = [], []
+        self.yaw_eligible_gt_babies = 0
+        self.yaw_evaluated = 0
 
     def compute(self) -> Dict[str, object]:
-        """
-        Computes F1-scores and confusion matrices.
-
-        Returns:
-            Dict[str, object]: Metrics as scalars and confusion matrices as numpy arrays.
-        """
         out: Dict[str, object] = {}
 
-        # FaceHead (binary)
-        if len(self.face_y_true) > 0:
-            out["face_f1"] = float(
-                f1_score(self.face_y_true, self.face_y_pred, zero_division=0)
-            )
-            out["face_cm"] = confusion_matrix(
-                self.face_y_true, self.face_y_pred, labels=[0, 1]
-            )
+        # Face detection (binary), TN is not well-defined in detection metrics, but CM still useful.
+        if self.face_y_true:
+            out["face_f1"] = float(f1_score(self.face_y_true, self.face_y_pred, labels=[0, 1], zero_division=0))
+            out["face_cm"] = confusion_matrix(self.face_y_true, self.face_y_pred, labels=[0, 1])
         else:
             out["face_f1"] = 0.0
             out["face_cm"] = np.zeros((2, 2), dtype=int)
 
-        # ChildHead (binary)
-        if len(self.child_y_true) > 0:
-            out["child_f1"] = float(
-                f1_score(self.child_y_true, self.child_y_pred, zero_division=0)
-            )
-            out["child_cm"] = confusion_matrix(
-                self.child_y_true, self.child_y_pred, labels=[0, 1]
-            )
+        # Child (binary)
+        if self.child_y_true:
+            out["child_f1"] = float(f1_score(self.child_y_true, self.child_y_pred, labels=[0, 1], zero_division=0))
+            out["child_cm"] = confusion_matrix(self.child_y_true, self.child_y_pred, labels=[0, 1])
         else:
             out["child_f1"] = 0.0
             out["child_cm"] = np.zeros((2, 2), dtype=int)
 
-        # Yaw (multiclass, macro-F1 on 5 classes)
-        if len(self.yaw_y_true) > 0:
+        # Yaw (macro F1 on 5 classes)
+        if self.yaw_y_true:
             out["yaw_f1_macro"] = float(
-                f1_score(
-                    self.yaw_y_true,
-                    self.yaw_y_pred,
-                    labels=[0, 1, 2, 3, 4],
-                    average="macro",
-                    zero_division=0,
-                )
+                f1_score(self.yaw_y_true, self.yaw_y_pred, labels=[0, 1, 2, 3, 4], average="macro", zero_division=0)
             )
-            out["yaw_cm"] = confusion_matrix(
-                self.yaw_y_true, self.yaw_y_pred, labels=[0, 1, 2, 3, 4]
-            )
+            out["yaw_cm"] = confusion_matrix(self.yaw_y_true, self.yaw_y_pred, labels=[0, 1, 2, 3, 4])
         else:
             out["yaw_f1_macro"] = 0.0
             out["yaw_cm"] = np.zeros((5, 5), dtype=int)
 
+        out["yaw_coverage"] = float(self.yaw_evaluated / max(1, self.yaw_eligible_gt_babies))
+
         return out
 
 
-def update_head_metrics_single_image(
-    buffer: HeadEvalBuffer,
-    anchors_xywhr: torch.Tensor,
+def update_head_metrics_from_detections_single_image(
+    buffer: DetectionHeadEvalBuffer,
+    pred: Dict[str, torch.Tensor],
     gt_boxes_xy: torch.Tensor,
     gt_angles: torch.Tensor,
     gt_class_idx: torch.Tensor,
     gt_child_prob: torch.Tensor,
-    face_prob: torch.Tensor,
-    child_prob: torch.Tensor,
-    orient_probs: torch.Tensor,
     image_size: Tuple[int, int],
-    face_thres: float,
-    baby_thres: float,
-    pos_iou_thr: float,
-    neg_iou_thr: float,
+    match_iou_thr: float,
+    strict_yaw_as_system: bool = True,
 ) -> None:
     """
-    Updates head evaluation buffers for a single image.
+    Update per-head metrics using FINAL detections (post face-NMS) and GT matching.
 
     Args:
-        buffer: Accumulator of predictions/targets.
-        anchors_xywhr: (N, 5) anchors.
-        gt_boxes_xy: (M, 8) GT OBB vertices normalized (as in your dataset).
-        gt_angles: (M,) GT angles (radians).
-        gt_class_idx: (M,) class index, adults are -1.
-        gt_child_prob: (M,) 0/1 child label.
-        face_prob: (N,) sigmoid(face_logits).
-        child_prob: (N,) sigmoid(child_logits).
-        orient_probs: (N, 5) softmax(orient_logits).
-        image_size: (W, H).
-        face_thres: threshold for predicted face.
-        baby_thres: threshold for predicted baby.
-        pos_iou_thr: positive IoU threshold.
-        neg_iou_thr: negative IoU threshold.
+        buffer: accumulator
+        pred: output dict from infer_with_rotated_nms for this image
+        gt_boxes_xy: (M, 8) normalized vertices
+        gt_angles: (M,) radians
+        gt_class_idx: (M,) yaw class, adults are -1
+        gt_child_prob: (M,) 0/1
+        image_size: (W, H)
+        match_iou_thr: IoU threshold to consider a detection matched to a GT
+        strict_yaw_as_system: if True, evaluate yaw only when pred is baby and yaw_conf
     """
-    pos_mask, neg_mask, best_gt = match_anchors_to_targets(
-        anchors_xywhr=anchors_xywhr,
-        gt_boxes_xy=gt_boxes_xy,
-        gt_angles=gt_angles,
-        image_size=image_size,
-        pos_iou_thr=pos_iou_thr,
-        neg_iou_thr=neg_iou_thr,
-    )
+    num_gt = int(gt_boxes_xy.size(0))
+    num_pred = int(pred["boxes"].size(0))
 
-    # FaceHead: evaluate only where label is defined (pos or neg). Ignore "in-between".
-    eval_mask_face = pos_mask | neg_mask
-    if eval_mask_face.any():
-        face_true = pos_mask[eval_mask_face].to(torch.int64)  # pos=1, neg=0
-        face_pred = (face_prob[eval_mask_face] >= face_thres).to(torch.int64)
+    gt_is_face = torch.ones((num_gt,), dtype=torch.bool, device=gt_boxes_xy.device)  # all GT entries are faces (adult or baby)
+    gt_is_baby = gt_child_prob > 0.5
 
-        buffer.face_y_true.extend(face_true.detach().cpu().tolist())
-        buffer.face_y_pred.extend(face_pred.detach().cpu().tolist())
+    # Convert GT to xywhr for IoU
+    gt_xywhr = xyxyxyxy2xywhr(gt_boxes_xy, gt_angles.unsqueeze(-1), image_size)  # stays on same device as gt_boxes_xy
+    pred_xywhr = pred["boxes"]
 
-    # ChildHead: evaluate only on positives (matched to a GT face)
-    if pos_mask.any():
-        gt_idx_pos = best_gt[pos_mask].to(torch.long)
-        child_true = (gt_child_prob[gt_idx_pos] > 0.5).to(torch.int64)
-        child_pred = (child_prob[pos_mask] >= baby_thres).to(torch.int64)
+    # If no GT faces: all detections are FP for face detection
+    if num_gt == 0:
+        if num_pred > 0:
+            buffer.face_y_true.extend([0] * num_pred)   # background
+            buffer.face_y_pred.extend([1] * num_pred)   # predicted face
+        return
 
-        buffer.child_y_true.extend(child_true.detach().cpu().tolist())
-        buffer.child_y_pred.extend(child_pred.detach().cpu().tolist())
+    # If no detections: all GTs are FN for face detection
+    if num_pred == 0:
+        buffer.face_y_true.extend([1] * num_gt)         # face exists
+        buffer.face_y_pred.extend([0] * num_gt)         # missed
+        buffer.yaw_eligible_gt_babies += int(gt_is_baby.sum().item())
+        return
 
-        # Yaw: only on positives whose GT is baby
-        baby_pos_mask = pos_mask.clone()
-        baby_pos_mask[pos_mask] = gt_child_prob[gt_idx_pos] > 0.5
+    # IoU matrix (GT x Pred)
+    iou = batch_probiou(gt_xywhr, pred_xywhr)  # (M, N)
+    gt_matched = torch.zeros((num_gt,), dtype=torch.bool, device=gt_boxes_xy.device)
 
-        if baby_pos_mask.any():
-            gt_idx_baby = best_gt[baby_pos_mask].to(torch.long)
-            yaw_true = gt_class_idx[gt_idx_baby].to(torch.int64)
+    # Greedy match by descending face_prob (post-NMS already, but still sort)
+    scores = pred["face_prob"]
+    order = torch.argsort(scores, descending=True)
 
-            # Safety: keep only valid yaw labels (0..4). Adults are -1 and should not appear here, but guard anyway.
-            valid = (yaw_true >= 0) & (yaw_true <= 4)
-            if valid.any():
-                yaw_pred = orient_probs[baby_pos_mask].argmax(dim=-1).to(torch.int64)
-                buffer.yaw_y_true.extend(yaw_true[valid].detach().cpu().tolist())
-                buffer.yaw_y_pred.extend(yaw_pred[valid].detach().cpu().tolist())
+    for j in order.tolist():
+        ious_j = iou[:, j].clone()
+        ious_j[gt_matched] = -1.0
+        best_iou, best_i = torch.max(ious_j, dim=0)
+        best_iou_val = float(best_iou.item())
+        best_i_idx = int(best_i.item())
+
+        if best_iou_val >= match_iou_thr and not gt_matched[best_i_idx]:
+            gt_matched[best_i_idx] = True
+
+            # FaceHead detection: matched => TP instance
+            buffer.face_y_true.append(1)
+            buffer.face_y_pred.append(1)
+
+            # ChildHead: only if matched to a GT face
+            true_baby = int(gt_is_baby[best_i_idx].item())
+            pred_baby = int(pred["is_baby"][j].item())
+            buffer.child_y_true.append(true_baby)
+            buffer.child_y_pred.append(pred_baby)
+
+            # Yaw: only for GT baby
+            if true_baby == 1:
+                buffer.yaw_eligible_gt_babies += 1
+
+                if strict_yaw_as_system:
+                    if bool(pred["is_system_valid"][j].item()):
+                        yaw_true = int(gt_class_idx[best_i_idx].item())
+                        yaw_pred = int(pred["yaw_pred"][j].item())
+                        if 0 <= yaw_true <= 4:
+                            buffer.yaw_y_true.append(yaw_true)
+                            buffer.yaw_y_pred.append(yaw_pred)
+                            buffer.yaw_evaluated += 1
+                else:
+                    yaw_true = int(gt_class_idx[best_i_idx].item())
+                    yaw_pred = int(pred["yaw_pred"][j].item())
+                    if 0 <= yaw_true <= 4:
+                        buffer.yaw_y_true.append(yaw_true)
+                        buffer.yaw_y_pred.append(yaw_pred)
+                        buffer.yaw_evaluated += 1
+        else:
+            # Unmatched prediction => FP for FaceHead detection
+            buffer.face_y_true.append(0)
+            buffer.face_y_pred.append(1)
+
+    # Unmatched GT => FN for FaceHead detection
+    fn_count = int((~gt_matched).sum().item())
+    if fn_count > 0:
+        buffer.face_y_true.extend([1] * fn_count)
+        buffer.face_y_pred.extend([0] * fn_count)
+
+    # Count eligible GT babies among the unmatched ones too (for coverage denominator)
+    buffer.yaw_eligible_gt_babies += int(gt_is_baby[~gt_matched].sum().item())
 
 
 def plot_confusion_matrix_figure(
     cm: np.ndarray,
     class_names: List[str],
     title: str,
-    normalize: bool = False,
+    normalize: bool,
     save_path: Optional[Path] = None,
 ) -> plt.Figure:
     """
-    Plots a confusion matrix.
+    Plots a confusion matrix with a classic blue colormap.
 
     Args:
-        cm: Confusion matrix of shape (K, K). Can be int or float.
-        class_names: List of class names (length K).
-        title: Plot title.
-        normalize: If True, normalizes rows to sum to 1 (recall-normalized).
-        save_path: If provided, saves the figure.
+        cm: (K, K) confusion matrix, integers recommended for raw.
+        class_names: names length K
+        title: figure title
+        normalize: if True, row-normalize (recall-normalized)
+        save_path: optional path to save
 
     Returns:
         Matplotlib figure.
     """
-    if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
-        raise ValueError(f"Confusion matrix must be square, got shape={cm.shape}")
-
-    if len(class_names) != cm.shape[0]:
-        raise ValueError(
-            f"class_names length ({len(class_names)}) must match cm size ({cm.shape[0]})"
-        )
+    cm_arr = np.array(cm, dtype=np.float64 if normalize else np.int64)
 
     if normalize:
-        cm_plot = cm.astype(np.float64)
-        row_sums = cm_plot.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0.0] = 1.0
-        cm_plot = cm_plot / row_sums
-        fmt = ".2f"
+        row_sums = cm_arr.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1
+        cm_plot = cm_arr / row_sums
+        fmt = "{:.2f}"
     else:
-        # Keep integer values for raw CM (or cast safely)
-        cm_plot = cm.astype(np.int64)
-        fmt = "d"
+        cm_plot = cm_arr
+        fmt = "{:d}"
 
     fig = plt.figure(figsize=(7, 6))
     ax = fig.add_subplot(111)
-    im = ax.imshow(cm_plot, interpolation="nearest")
+
+    im = ax.imshow(cm_plot, interpolation="nearest", cmap="Blues")
     fig.colorbar(im, ax=ax)
 
     ax.set_title(title)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Ground truth")
 
-    ax.set_xticks(np.arange(len(class_names)))
-    ax.set_yticks(np.arange(len(class_names)))
+    ticks = np.arange(len(class_names))
+    ax.set_xticks(ticks)
+    ax.set_yticks(ticks)
     ax.set_xticklabels(class_names, rotation=45, ha="right")
     ax.set_yticklabels(class_names)
 
-    # Choose text color thresholding based on displayed matrix
-    vmax = float(np.max(cm_plot)) if cm_plot.size else 0.0
-    thresh = 0.5 * vmax
-
+    thresh = float(cm_plot.max()) * 0.5 if cm_plot.size else 0.0
     for i in range(cm_plot.shape[0]):
         for j in range(cm_plot.shape[1]):
             val = cm_plot[i, j]
+            text = fmt.format(int(val) if not normalize else float(val))
             ax.text(
-                j,
-                i,
-                format(val, fmt),
-                ha="center",
-                va="center",
-                color="white" if float(val) > thresh else "black",
+                j, i, text,
+                ha="center", va="center",
+                color="white" if val > thresh else "black",
             )
 
     fig.tight_layout()
 
     if save_path is not None:
-        save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(str(save_path), dpi=200, bbox_inches="tight")
         plt.close(fig)

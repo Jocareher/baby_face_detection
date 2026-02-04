@@ -291,121 +291,122 @@ def nms_rotated(
 
 
 def infer_with_rotated_nms(
-    model_or_preds,
+    model_or_preds: Any,
     images: torch.Tensor,
     anchors_xy: torch.Tensor,
     image_size: Tuple[int, int],
-    face_thres: float = 0.5,  # Face detection confidence threshold
-    baby_thres: float = 0.5,  # Baby detection confidence threshold
-    iou_thres: float = 0.45,  # IoU threshold for NMS
-    class_thres: float = 0.60,  # Orientation class confidence threshold
-    pre_nms_topk: int = 500,  # Number of top predictions to keep before NMS
-    max_det: int = 300,  # Maximum detections after NMS
+    face_thres: float = 0.5,
+    baby_thres: float = 0.5,
+    class_thres: float = 0.60,
+    iou_thres: float = 0.45,
+    pre_nms_topk: int = 500,
+    max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference on images and applies rotated NMS to filter predictions.
+    Runs inference and applies rotated NMS using ONLY face probability as the NMS score.
 
-    This function handles both model forward pass and direct prediction inputs.
-    It filters predictions based on face, baby and orientation confidence thresholds,
-    then applies rotated NMS to remove redundant detections.
+    Returns post-NMS face detections with attached ChildHead and ClassHead outputs.
+    The system final predicate can be derived as:
+        is_face AND is_baby AND is_yaw_conf
 
     Args:
-        model_or_preds: Either a model to run inference, or tuple of predictions
-        images: Input images tensor of shape (B, C, H, W)
-        anchors_xy: Anchor boxes in vertex format (N, 8)
-        image_size: Target image size as (width, height)
-        face_thres: Minimum confidence for face detection (default: 0.5)
-        baby_thres: Minimum confidence for baby detection (default: 0.5)
-        iou_thres: IoU threshold for NMS (default: 0.45)
-        class_thres: Minimum confidence for orientation class (default: 0.60)
-        pre_nms_topk: Maximum predictions to consider before NMS (default: 500)
-        max_det: Maximum detections to return after NMS (default: 300)
+        model_or_preds: model or tuple (orient_logits, face_logits, deltas, pred_angles, child_logits)
+        images: (B, C, H, W)
+        anchors_xy: anchors in vertex format used by decode_vertices
+        image_size: (W, H)
+        face_thres: threshold for face_prob to even be considered a detection
+        baby_thres: threshold for child_prob
+        class_thres: threshold for orient_conf
+        iou_thres: rotated NMS IoU threshold
+        pre_nms_topk: top K by face_prob before NMS
+        max_det: max detections after NMS
 
     Returns:
-        List of dictionaries containing filtered predictions for each image:
-            - boxes: Rotated boxes in (cx, cy, w, h, angle) format
-            - scores: Confidence scores
-            - labels: Orientation class labels
-            - polygons: Box vertices in (x1,y1,x2,y2,x3,y3,x4,y4) format
-            - child_score: Baby detection confidence
-            - is_child: Boolean mask indicating baby detections
+        List[Dict[str, torch.Tensor]] per image:
+            boxes: (N, 5) xywhr
+            polygons: (N, 8)
+            face_prob: (N,)
+            child_prob: (N,)
+            orient_conf: (N,)
+            yaw_pred: (N,) int64 in [0..4]
+            is_baby: (N,) bool
+            is_yaw_conf: (N,) bool
+            is_system_valid: (N,) bool = is_baby & is_yaw_conf
     """
-    # Run model if needed, otherwise use provided predictions
     if isinstance(model_or_preds, nn.Module):
-        orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds(
-            images
-        )
+        orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds(images)
     else:
         orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds
 
-    B = images.size(0)  # Batch size
-    # Convert logits to probabilities
-    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # Face detection probabilities
-    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # Baby detection probabilities
-    orientation_probs = F.softmax(
-        orient_logits, dim=-1
-    )  # Orientation class probabilities
+    face_prob_all = torch.sigmoid(face_logits.squeeze(-1))          # (B, A)
+    child_prob_all = torch.sigmoid(child_logits.squeeze(-1))        # (B, A)
+    orient_probs_all = F.softmax(orient_logits, dim=-1)             # (B, A, 5)
 
-    outputs = []
-    for b in range(B):
-        # Get most likely orientation class and confidence
-        orient_conf, orient_labels = orientation_probs[b].max(-1)
+    outputs: List[Dict[str, torch.Tensor]] = []
+    batch_size = images.size(0)
 
-        # Filter predictions based on confidence thresholds
-        keep = (
-            (face_prob[b] >= face_thres)
-            & (child_prob[b] >= baby_thres)
-            & (orient_conf >= class_thres)
-        )
+    for b in range(batch_size):
+        face_prob = face_prob_all[b]                                # (A,)
+        child_prob = child_prob_all[b]                              # (A,)
+        orient_probs = orient_probs_all[b]                          # (A, 5)
 
-        # Handle case with no valid detections
+        orient_conf, yaw_pred = orient_probs.max(dim=-1)            # (A,), (A,)
+
+        keep = face_prob >= face_thres
         if not keep.any():
             outputs.append(
-                dict(
-                    boxes=torch.empty(0, 5, device=images.device),
-                    scores=torch.empty(0, device=images.device),
-                    labels=torch.empty(0, device=images.device),
-                    polygons=torch.empty(0, 8, device=images.device),
-                    child_score=torch.empty(0, device=images.device),
-                    is_child=torch.empty(0, dtype=torch.bool, device=images.device),
-                )
+                {
+                    "boxes": torch.empty((0, 5), device=images.device),
+                    "polygons": torch.empty((0, 8), device=images.device),
+                    "face_prob": torch.empty((0,), device=images.device),
+                    "child_prob": torch.empty((0,), device=images.device),
+                    "orient_conf": torch.empty((0,), device=images.device),
+                    "yaw_pred": torch.empty((0,), dtype=torch.long, device=images.device),
+                    "is_baby": torch.empty((0,), dtype=torch.bool, device=images.device),
+                    "is_yaw_conf": torch.empty((0,), dtype=torch.bool, device=images.device),
+                    "is_system_valid": torch.empty((0,), dtype=torch.bool, device=images.device),
+                }
             )
             continue
 
-        # Get indices of kept predictions and apply top-k filtering
-        idx = keep.nonzero().squeeze(1)
-        K = min(pre_nms_topk, idx.numel())
-        score = face_prob[b] * child_prob[b] * orient_conf  # Combined score
-        topk = score[idx].topk(K).indices
-        sel = idx[topk]
+        idx = keep.nonzero(as_tuple=False).squeeze(1)
+        topk = min(pre_nms_topk, idx.numel())
+        sel = idx[face_prob[idx].topk(topk).indices]
 
-        # Decode prediction boxes from deltas
         verts = decode_vertices(
             deltas[b][sel],
             anchors_xy[sel].to(images.device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
         )
-        # Convert vertices to (cx,cy,w,h,angle) format for NMS
         xywhr = verts_to_xywhr_with_theta(verts, pred_angles[b][sel].squeeze(-1))
 
-        # Apply rotated NMS and limit detections
-        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
-        sel_final = sel[keep_nms]
-        child_scores = child_prob[b][sel][keep_nms]
-        is_child = child_scores >= baby_thres
+        nms_keep = nms_rotated(xywhr, face_prob[sel], iou_thres)[:max_det]
+        sel_final = sel[nms_keep]
 
-        # Store filtered predictions
+        face_p = face_prob[sel_final]
+        child_p = child_prob[sel_final]
+        orient_c = orient_conf[sel_final]
+        yaw_p = yaw_pred[sel_final].to(torch.long)
+
+        is_baby = child_p >= baby_thres
+        is_yaw_conf = orient_c >= class_thres
+        is_system_valid = is_baby & is_yaw_conf
+
         outputs.append(
-            dict(
-                boxes=xywhr[keep_nms],
-                scores=score[sel][keep_nms],
-                labels=orient_labels[sel_final].float(),
-                polygons=verts[keep_nms],
-                child_score=child_scores,
-                is_child=is_child,
-            )
+            {
+                "boxes": xywhr[nms_keep],
+                "polygons": verts[nms_keep],
+                "face_prob": face_p,
+                "child_prob": child_p,
+                "orient_conf": orient_c,
+                "yaw_pred": yaw_p,
+                "is_baby": is_baby,
+                "is_yaw_conf": is_yaw_conf,
+                "is_system_valid": is_system_valid,
+            }
         )
+
     return outputs
 
 

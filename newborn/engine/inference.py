@@ -231,10 +231,16 @@ def run_evaluation(
             B = imgs.size(0)
             for b in range(B):
                 valid_mask = targets["valid_mask"][b].to(device)
-                gt_boxes = targets["boxes"][b][valid_mask].to(device)  # (M, 8)
-                gt_angles = targets["angles"][b][valid_mask].view(-1).to(device)
-                gt_class = targets["class_idx"][b][valid_mask].view(-1).to(device)
-                gt_child = targets["child_prob"][b][valid_mask].view(-1).to(device)
+
+                gt_boxes_all = targets["boxes"][b].to(device)
+                gt_angles_all = targets["angles"][b].to(device).view(-1)
+                gt_class_all = targets["class_idx"][b].to(device).view(-1)
+                gt_child_all = targets["child_prob"][b].to(device).view(-1)
+
+                gt_boxes = gt_boxes_all[valid_mask]      # (M, 8)
+                gt_angles = gt_angles_all[valid_mask]    # (M,)
+                gt_class = gt_class_all[valid_mask]      # (M,)
+                gt_child = gt_child_all[valid_mask]      # (M,)
 
                 update_head_metrics_single_image(
                     buffer=head_buf,

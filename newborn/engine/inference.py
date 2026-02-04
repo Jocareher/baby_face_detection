@@ -1,6 +1,7 @@
 import math
 import logging
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Tuple, List, Dict, Any, Union, Optional, Callable
 
 import torch
@@ -12,10 +13,7 @@ from matplotlib import patches
 from torch.utils.data import DataLoader
 from torch.nn import functional as F
 from tqdm import tqdm
-from sklearn.metrics import (
-    average_precision_score,
-    confusion_matrix,
-)
+from sklearn.metrics import average_precision_score, confusion_matrix, f1_score
 
 from engine.train import (
     infer_with_rotated_nms,
@@ -24,6 +22,8 @@ from engine.train import (
     xyxyxyxy2xywhr,
     batch_probiou,
 )
+
+from loss.utils import match_anchors_to_targets
 
 from utils.helpers import (
     to_numpy,
@@ -128,6 +128,7 @@ def run_evaluation(
     model: torch.nn.Module,
     loader: DataLoader,
     anchors_xy: torch.Tensor,
+    anchors_xywhr: torch.Tensor,
     resize_size: Tuple[int, int],
     face_thres: float,
     iou_thres: float,
@@ -136,6 +137,8 @@ def run_evaluation(
     device: torch.device,
     labels_map: Dict[int, str],
     render_original: bool = False,
+    pos_iou_thr_head: float = 0.5,
+    neg_iou_thr_head: float = 0.4,
 ) -> Dict[str, Any]:
     """
     Runs inference on a dataset and collects predictions, ground truths, and metrics.
@@ -208,24 +211,59 @@ def run_evaluation(
     dataset = loader.dataset
     global_idx = 0
 
+    head_buf = HeadEvalBuffer()
+
     model.eval()  # Set model to evaluation mode
     with torch.inference_mode():
         for batch in tqdm(loader, desc="Inference"):
             imgs = batch["image"].to(device)
             targets = batch["target"]
 
-            # Perform inference with rotated NMS
+            orient_logits, face_logits, deltas, pred_angles, child_logits = model(imgs)
+
+            face_prob = torch.sigmoid(face_logits.squeeze(-1))  # (B, N)
+            child_prob = torch.sigmoid(child_logits.squeeze(-1))  # (B, N)
+            orient_probs = F.softmax(orient_logits, dim=-1)  # (B, N, 5)
+
+            anchors_xywhr = anchors_xywhr.to(device)
+
+            # 2) Per-head evaluation (anchor-level, correctly conditioned via GT matching)
+            B = imgs.size(0)
+            for b in range(B):
+                valid_mask = targets["valid_mask"][b].to(device)
+                gt_boxes = targets["boxes"][b][valid_mask].to(device)  # (M, 8)
+                gt_angles = targets["angles"][b][valid_mask].view(-1).to(device)
+                gt_class = targets["class_idx"][b][valid_mask].view(-1).to(device)
+                gt_child = targets["child_prob"][b][valid_mask].view(-1).to(device)
+
+                update_head_metrics_single_image(
+                    buffer=head_buf,
+                    anchors_xywhr=anchors_xywhr,
+                    gt_boxes_xy=gt_boxes,
+                    gt_angles=gt_angles,
+                    gt_class_idx=gt_class,
+                    gt_child_prob=gt_child,
+                    face_prob=face_prob[b],
+                    child_prob=child_prob[b],
+                    orient_probs=orient_probs[b],
+                    image_size=resize_size,
+                    face_thres=face_thres,
+                    baby_thres=baby_thres,
+                    pos_iou_thr=pos_iou_thr_head,
+                    neg_iou_thr=neg_iou_thr_head,
+                )
+
+            # 3) Your existing final detections (one call)
             outputs = infer_with_rotated_nms(
-                model,
+                (orient_logits, face_logits, deltas, pred_angles, child_logits),
                 imgs,
                 anchors_xy,
                 resize_size,
-                face_thres,
-                baby_thres,
-                iou_thres,
-                class_thres,
+                face_thres=face_thres,
+                baby_thres=baby_thres,
+                iou_thres=iou_thres,
+                class_thres=class_thres,
             )
-
             # Process each image in the batch
             batch_size = imgs.size(0)
             for b in range(batch_size):
@@ -504,6 +542,8 @@ def run_evaluation(
             # If no predictions for this class, set score to 0.0
             per_score[cls].append(0.0)
 
+    head_metrics = head_buf.compute()
+
     print(f"[INFO] Inference completed on {global_idx} samples.")
     return {
         "per_true": per_true,
@@ -523,6 +563,7 @@ def run_evaluation(
         "angle_errs_by_gtbin_global": angle_errs_by_gtbin_global,
         "angle_errs_by_gtbin_per_cls": angle_errs_by_gtbin_per_cls,
         "bin_degs": bin_degs,
+        "head_metrics": head_metrics,
     }
 
 
@@ -879,7 +920,7 @@ def inference(
         d.mkdir(parents=True, exist_ok=True)
 
     print("[STEP 1] Preparing anchors...")
-    resize_size, anchors_xy, _ = prepare_anchors(
+    resize_size, anchors_xy, anchors_xywhr = prepare_anchors(
         model=model,
         loader=test_loader,
         device=device,
@@ -893,6 +934,7 @@ def inference(
         model=model,
         loader=test_loader,
         anchors_xy=anchors_xy,
+        anchors_xywhr=anchors_xywhr,
         resize_size=resize_size,
         face_thres=face_thres,
         iou_thres=iou_thres,
@@ -1003,6 +1045,57 @@ def inference(
     save_figure(
         plot_qualitative_grid(results["samples"], labels_map, grid_shape, mean, std),
         "grid_examples.png",
+    )
+
+    head = results["head_metrics"]
+
+    # FaceHead
+    plot_confusion_matrix_figure(
+        cm=head["face_cm"],
+        class_names=["background", "face"],
+        title="FaceHead Confusion Matrix (raw)",
+        normalize=False,
+        save_path=figures_dir / "cm_face_raw.png",
+    )
+    plot_confusion_matrix_figure(
+        cm=head["face_cm"],
+        class_names=["background", "face"],
+        title="FaceHead Confusion Matrix (normalized)",
+        normalize=True,
+        save_path=figures_dir / "cm_face_norm.png",
+    )
+
+    # ChildHead
+    plot_confusion_matrix_figure(
+        cm=head["child_cm"],
+        class_names=["adult", "baby"],
+        title="ChildHead Confusion Matrix (raw)",
+        normalize=False,
+        save_path=figures_dir / "cm_child_raw.png",
+    )
+    plot_confusion_matrix_figure(
+        cm=head["child_cm"],
+        class_names=["adult", "baby"],
+        title="ChildHead Confusion Matrix (normalized)",
+        normalize=True,
+        save_path=figures_dir / "cm_child_norm.png",
+    )
+
+    # Yaw
+    yaw_names = ["Left", "3/4 Left", "Frontal", "3/4 Right", "Right"]
+    plot_confusion_matrix_figure(
+        cm=head["yaw_cm"],
+        class_names=yaw_names,
+        title="Yaw ClassHead Confusion Matrix (raw)",
+        normalize=False,
+        save_path=figures_dir / "cm_yaw_raw.png",
+    )
+    plot_confusion_matrix_figure(
+        cm=head["yaw_cm"],
+        class_names=yaw_names,
+        title="Yaw ClassHead Confusion Matrix (normalized)",
+        normalize=True,
+        save_path="cm_yaw_norm.png",
     )
 
     print("[STEP 4] Exporting metrics and confusion matrix CSV...")
@@ -1121,6 +1214,17 @@ def export_metrics_and_confusion_csv(
     df_cm_raw = pd.DataFrame(cm_raw, index=mat_names, columns=mat_names)
     df_cm_norm = pd.DataFrame(cm_norm, index=mat_names, columns=mat_names)
 
+    head = results["head_metrics"]
+    df_head = pd.DataFrame(
+        [
+            {
+                "face_f1": head["face_f1"],
+                "child_f1": head["child_f1"],
+                "yaw_f1_macro": head["yaw_f1_macro"],
+            }
+        ]
+    )
+
     # ---------- Write all tables to a single CSV file --------------------------
     with open(csv_path, "w", newline="") as f:
         f.write(
@@ -1135,6 +1239,11 @@ def export_metrics_and_confusion_csv(
             "\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------\n"
         )
         df_cm_norm.to_csv(f, float_format="%.4f")
+
+        f.write(
+            "\n# --- HEAD METRICS --------------------------------------------------------\n"
+        )
+        df_head.to_csv(f, index=False, float_format="%.4f")
 
     print(f"[INFO] Metrics and confusion matrices saved to {csv_path}")
     return csv_path
@@ -1544,3 +1653,228 @@ def export_predictions(
     tqdm.write(f"Images: {out_imgs}")
     tqdm.write(f"Labels: {out_lbls}")
     tqdm.write(f"Crops : {out_crops}")
+
+
+@dataclass
+class HeadEvalBuffer:
+    """
+    Accumulates predictions/targets for per-head evaluation.
+
+    FaceHead:
+        - Binary classification on anchors with defined labels (pos or neg).
+        - Ignores anchors in the band-of-ignore.
+
+    ChildHead:
+        - Binary classification on anchors matched to GT faces only.
+
+    Yaw ClassHead:
+        - Multiclass classification (0..4) on anchors matched to GT baby faces only.
+    """
+
+    face_y_true: List[int]
+    face_y_pred: List[int]
+
+    child_y_true: List[int]
+    child_y_pred: List[int]
+
+    yaw_y_true: List[int]
+    yaw_y_pred: List[int]
+
+    def __init__(self) -> None:
+        self.face_y_true, self.face_y_pred = [], []
+        self.child_y_true, self.child_y_pred = [], []
+        self.yaw_y_true, self.yaw_y_pred = [], []
+
+    def compute(self) -> Dict[str, object]:
+        """
+        Computes F1-scores and confusion matrices.
+
+        Returns:
+            Dict[str, object]: Metrics as scalars and confusion matrices as numpy arrays.
+        """
+        out: Dict[str, object] = {}
+
+        # FaceHead (binary)
+        if len(self.face_y_true) > 0:
+            out["face_f1"] = float(
+                f1_score(self.face_y_true, self.face_y_pred, zero_division=0)
+            )
+            out["face_cm"] = confusion_matrix(
+                self.face_y_true, self.face_y_pred, labels=[0, 1]
+            )
+        else:
+            out["face_f1"] = 0.0
+            out["face_cm"] = np.zeros((2, 2), dtype=int)
+
+        # ChildHead (binary)
+        if len(self.child_y_true) > 0:
+            out["child_f1"] = float(
+                f1_score(self.child_y_true, self.child_y_pred, zero_division=0)
+            )
+            out["child_cm"] = confusion_matrix(
+                self.child_y_true, self.child_y_pred, labels=[0, 1]
+            )
+        else:
+            out["child_f1"] = 0.0
+            out["child_cm"] = np.zeros((2, 2), dtype=int)
+
+        # Yaw (multiclass, macro-F1 on 5 classes)
+        if len(self.yaw_y_true) > 0:
+            out["yaw_f1_macro"] = float(
+                f1_score(
+                    self.yaw_y_true,
+                    self.yaw_y_pred,
+                    labels=[0, 1, 2, 3, 4],
+                    average="macro",
+                    zero_division=0,
+                )
+            )
+            out["yaw_cm"] = confusion_matrix(
+                self.yaw_y_true, self.yaw_y_pred, labels=[0, 1, 2, 3, 4]
+            )
+        else:
+            out["yaw_f1_macro"] = 0.0
+            out["yaw_cm"] = np.zeros((5, 5), dtype=int)
+
+        return out
+
+
+def update_head_metrics_single_image(
+    buffer: HeadEvalBuffer,
+    anchors_xywhr: torch.Tensor,
+    gt_boxes_xy: torch.Tensor,
+    gt_angles: torch.Tensor,
+    gt_class_idx: torch.Tensor,
+    gt_child_prob: torch.Tensor,
+    face_prob: torch.Tensor,
+    child_prob: torch.Tensor,
+    orient_probs: torch.Tensor,
+    image_size: Tuple[int, int],
+    face_thres: float,
+    baby_thres: float,
+    pos_iou_thr: float,
+    neg_iou_thr: float,
+) -> None:
+    """
+    Updates head evaluation buffers for a single image.
+
+    Args:
+        buffer: Accumulator of predictions/targets.
+        anchors_xywhr: (N, 5) anchors.
+        gt_boxes_xy: (M, 8) GT OBB vertices normalized (as in your dataset).
+        gt_angles: (M,) GT angles (radians).
+        gt_class_idx: (M,) class index, adults are -1.
+        gt_child_prob: (M,) 0/1 child label.
+        face_prob: (N,) sigmoid(face_logits).
+        child_prob: (N,) sigmoid(child_logits).
+        orient_probs: (N, 5) softmax(orient_logits).
+        image_size: (W, H).
+        face_thres: threshold for predicted face.
+        baby_thres: threshold for predicted baby.
+        pos_iou_thr: positive IoU threshold.
+        neg_iou_thr: negative IoU threshold.
+    """
+    pos_mask, neg_mask, best_gt = match_anchors_to_targets(
+        anchors_xywhr=anchors_xywhr,
+        gt_boxes_xy=gt_boxes_xy,
+        gt_angles=gt_angles,
+        image_size=image_size,
+        pos_iou_thr=pos_iou_thr,
+        neg_iou_thr=neg_iou_thr,
+    )
+
+    # FaceHead: evaluate only where label is defined (pos or neg). Ignore "in-between".
+    eval_mask_face = pos_mask | neg_mask
+    if eval_mask_face.any():
+        face_true = pos_mask[eval_mask_face].to(torch.int64)  # pos=1, neg=0
+        face_pred = (face_prob[eval_mask_face] >= face_thres).to(torch.int64)
+
+        buffer.face_y_true.extend(face_true.detach().cpu().tolist())
+        buffer.face_y_pred.extend(face_pred.detach().cpu().tolist())
+
+    # ChildHead: evaluate only on positives (matched to a GT face)
+    if pos_mask.any():
+        gt_idx_pos = best_gt[pos_mask].to(torch.long)
+        child_true = (gt_child_prob[gt_idx_pos] > 0.5).to(torch.int64)
+        child_pred = (child_prob[pos_mask] >= baby_thres).to(torch.int64)
+
+        buffer.child_y_true.extend(child_true.detach().cpu().tolist())
+        buffer.child_y_pred.extend(child_pred.detach().cpu().tolist())
+
+        # Yaw: only on positives whose GT is baby
+        baby_pos_mask = pos_mask.clone()
+        baby_pos_mask[pos_mask] = gt_child_prob[gt_idx_pos] > 0.5
+
+        if baby_pos_mask.any():
+            gt_idx_baby = best_gt[baby_pos_mask].to(torch.long)
+            yaw_true = gt_class_idx[gt_idx_baby].to(torch.int64)
+
+            # Safety: keep only valid yaw labels (0..4). Adults are -1 and should not appear here, but guard anyway.
+            valid = (yaw_true >= 0) & (yaw_true <= 4)
+            if valid.any():
+                yaw_pred = orient_probs[baby_pos_mask].argmax(dim=-1).to(torch.int64)
+                buffer.yaw_y_true.extend(yaw_true[valid].detach().cpu().tolist())
+                buffer.yaw_y_pred.extend(yaw_pred[valid].detach().cpu().tolist())
+
+
+def plot_confusion_matrix_figure(
+    cm: np.ndarray,
+    class_names: List[str],
+    title: str,
+    normalize: bool = False,
+    save_path: Optional[Path] = None,
+) -> plt.Figure:
+    """
+    Plots a confusion matrix.
+
+    Args:
+        cm: Confusion matrix of shape (K, K).
+        class_names: List of class names (length K).
+        title: Plot title.
+        normalize: If True, normalizes rows to sum to 1 (recall-normalized).
+        save_path: If provided, saves the figure.
+
+    Returns:
+        Matplotlib figure.
+    """
+    cm_plot = cm.astype(np.float64)
+    if normalize:
+        row_sums = cm_plot.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0.0] = 1.0
+        cm_plot = cm_plot / row_sums
+
+    fig = plt.figure(figsize=(7, 6))
+    ax = fig.add_subplot(111)
+    im = ax.imshow(cm_plot, interpolation="nearest")
+    fig.colorbar(im, ax=ax)
+
+    ax.set_title(title)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Ground truth")
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_yticks(np.arange(len(class_names)))
+    ax.set_xticklabels(class_names, rotation=45, ha="right")
+    ax.set_yticklabels(class_names)
+
+    fmt = ".2f" if normalize else "d"
+    thresh = cm_plot.max() * 0.5 if cm_plot.size else 0.0
+
+    for i in range(cm_plot.shape[0]):
+        for j in range(cm_plot.shape[1]):
+            val = cm_plot[i, j]
+            ax.text(
+                j,
+                i,
+                format(val, fmt),
+                ha="center",
+                va="center",
+            )
+
+    fig.tight_layout()
+
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(save_path), dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    return fig

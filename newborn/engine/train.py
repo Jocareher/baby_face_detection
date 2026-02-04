@@ -404,7 +404,12 @@ def infer_with_rotated_nms(
                 "is_baby": is_baby,
                 "is_yaw_conf": is_yaw_conf,
                 "is_system_valid": is_system_valid,
+                "scores": face_p,                          # used by your old code as confidence
+                "labels": yaw_p.to(torch.float32),         # old code expects labels
+                "child_score": child_p,                    # old code uses this
+                "is_child": is_baby,                       # old code uses this
             }
+
         )
 
     return outputs

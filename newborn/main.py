@@ -23,7 +23,7 @@ from torchinfo import summary
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
 from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sampler
-from newborn.data_setup.augmentations import (
+from data_setup.augmentations import (
     build_bin_weights_from_degrees,
     collect_degrees_by_class,
 )

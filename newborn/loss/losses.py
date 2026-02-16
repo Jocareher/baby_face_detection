@@ -1,4 +1,5 @@
 from typing import List, Tuple, Dict, Union, Optional
+import math
 
 import torch
 import torch.nn as nn
@@ -658,6 +659,11 @@ class MultiTaskLoss(nn.Module):
         cls_batches = 0  # Images where orientation classification loss is computed
         stage2_batches = 0  # Images with valid positives in stage 2
 
+        # Convert anchors to the same dtype as predictions for consistent computations
+        pred_dtype = orient_logits.dtype
+        anchors_xy = anchors_xy.to(dtype=pred_dtype)
+        anchors_xywhr = anchors_xywhr.to(dtype=pred_dtype)
+
         for b in range(B):
             # ---------- Stage 1: Anchor matching ----------
             # Match anchors to ground truth boxes and angles using IoU thresholds
@@ -687,7 +693,9 @@ class MultiTaskLoss(nn.Module):
                         reduction="none",
                     ).view(-1)
                 _, hard_order = per_neg_loss.sort(descending=True)
-                num_hard = min(hard_order.numel(), num_pos_1 * self.neg_samples_ratio)
+                num_hard = max(
+                    1, min(hard_order.numel(), num_pos_1 * self.neg_samples_ratio)
+                )
                 hard_neg_idx = neg_idx_1[hard_order[:num_hard]]
                 sel_idx_1 = torch.cat([pos_idx_1, hard_neg_idx], dim=0)
                 tgt_face = pos_mask_1.float().unsqueeze(1)[sel_idx_1]
@@ -712,7 +720,7 @@ class MultiTaskLoss(nn.Module):
 
                 # ---------- Orientation classification loss (only for baby anchors) ----------
                 if baby_mask.numel() and baby_mask.any():
-                    pos_idx_1_baby = pos_idx_1[baby_mask]
+                    pos_idx_1_baby = pos_idx_1_valid[baby_mask]
                     valid_cls_mask = best_gt_1[pos_idx_1_baby] != -1
                     if valid_cls_mask.any():
                         pos_idx_1_baby_valid = pos_idx_1_baby[valid_cls_mask]
@@ -736,7 +744,7 @@ class MultiTaskLoss(nn.Module):
 
             with torch.no_grad():
                 pred_deltas_1 = deltas[b][pos_mask_1_baby]
-                anc_xy_1 = anchors_xy[b][pos_mask_1_baby]
+                anc_xy_1 = anchors_xy[pos_mask_1_baby]
                 ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)
                 verts_1 = decode_vertices(
                     pred_deltas_1, anc_xy_1, ang_1, image_sizes[b]
@@ -764,7 +772,7 @@ class MultiTaskLoss(nn.Module):
             # ---------- OBB regression loss ----------
             pred_deltas_2 = deltas[b][abs_pos_idx_2]
             gt_boxes_2 = targets["boxes"][b][gt_idx_2]
-            anc_xy_2 = anchors_xy[b][abs_pos_idx_2]
+            anc_xy_2 = anchors_xy[abs_pos_idx_2]
             ga_2 = wrap_to_pi(targets["angle"][b][gt_idx_2].squeeze(-1))
 
             # OBB regression loss in canonical space
@@ -785,16 +793,7 @@ class MultiTaskLoss(nn.Module):
             ).view(-1, 4, 2)
             rect_loss += orthogonality_loss(verts_pred)
 
-            # --- Reconstruction loss in vertex space (auxiliary) ---
-            # Helps stabilize training, but not used during inference
-            # as it requires GT boxes.
-            recon_loss = F.smooth_l1_loss(
-                verts_pred.view(-1, 8),  # (N,8)
-                gt_boxes_2.view(-1, 8),  # (N,8)
-                reduction="mean",
-            )
-
-            obb_loss += 0.5 * obb_canonical_loss + 0.5 * recon_loss
+            obb_loss += obb_canonical_loss
 
             stage2_batches += 1  # Valid positives in stage 2 for this image
 

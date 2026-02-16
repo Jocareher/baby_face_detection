@@ -468,7 +468,7 @@ def main():
         )
 
         # Build bin weights for augmentation (required if using inverse frequency strategy) and print them
-        bin_weights = build_bin_weights_from_degrees(pre_stats, args.bin_deg)
+        bin_weights = build_bin_weights_from_degrees(pre_stats["all"], args.bin_deg)
         print(f"[INFO] Bin weights for angle equalization: {bin_weights}")
     else:
         bin_weights = None

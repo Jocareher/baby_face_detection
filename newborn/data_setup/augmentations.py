@@ -796,7 +796,7 @@ def angles_rad_to_deg_0_180(angles_rad: torch.Tensor) -> np.ndarray:
     return torch.clamp(deg, max=180.0 - 1e-6).cpu().numpy()
 
 
-class RandomRotateObbEqualizeBins:
+class RandomRotateOBBEqualizeBins:
     """
     Rotate an image so that a chosen ground-truth (GT) OBB angle is moved toward a target bin.
 

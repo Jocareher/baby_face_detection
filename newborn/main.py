@@ -23,12 +23,17 @@ from torchinfo import summary
 from data_setup.dataset import BabyFacesDataset
 from data_setup.collate import custom_collate
 from data_setup.samplers import make_stratified_batch_sampler, make_weighted_sampler
+from newborn.data_setup.augmentations import (
+    build_bin_weights_from_degrees,
+    collect_degrees_by_class,
+)
 from models.newborn import NewBORN, reset_heads, set_backbone_frozen
 from utils.helpers import set_seed, get_default_device, seed_worker
 from engine.train import train, EarlyStopping, load_checkpoint_for_resuming
 from engine.inference import inference
 from loss.losses import MultiTaskLoss
 from utils.visualize import (
+    plot_histograms_split,
     visualize_and_save_dataset_in_script,
     plot_training_curves_from_csv,
 )
@@ -50,7 +55,7 @@ def parse_args():
     parser.add_argument(
         "--sampler",
         type=str,
-        default="weighted",
+        default=config.DEFAULT_SAMPLER,
         choices=["none", "weighted", "batch"],
         help="Sampling strategy for train loader: 'none' (shuffle), 'weighted' (per-image inverse freq), or 'batch' (stratified quotas per batch).",
     )
@@ -111,25 +116,25 @@ def parse_args():
         "--epochs",
         type=int,
         default=config.DEFAULT_EPOCHS,
-        help=f"Number of training epochs (default: {config.DEFAULT_EPOCHS}).",
+        help=f"Number of training epochs.",
     )
     parser.add_argument(
         "--lr",
         type=float,
         default=config.DEFAULT_LR,
-        help=f"Initial learning rate (default: {config.DEFAULT_LR}).",
+        help=f"Initial learning rate.",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=config.DEFAULT_BATCH_SIZE,
-        help=f"Batch size for training and validation (default: {config.DEFAULT_BATCH_SIZE}).",
+        help=f"Batch size for training and validation.",
     )
     parser.add_argument(
         "--weight_decay",
         type=float,
         default=config.DEFAULT_WEIGHT_DECAY,
-        help=f"Weight decay (L2) regularization coefficient (default: {config.DEFAULT_WEIGHT_DECAY}).",
+        help=f"Weight decay (L2) regularization coefficient.",
     )
     parser.add_argument(
         "--optimizer",
@@ -162,7 +167,7 @@ def parse_args():
         "--patience",
         type=int,
         default=config.DEFAULT_PATIENCE,
-        help=f"EarlyStopping patience in epochs (default: {config.DEFAULT_PATIENCE}).",
+        help=f"EarlyStopping patience in epochs.",
     )
 
     # Loss weighting
@@ -171,27 +176,27 @@ def parse_args():
         type=str,
         default=config.OBB_LOSS_TYPE,
         choices=["l1", "smooth_l1"],
-        help="Type of loss to use for oriented bounding box regression (default: L1)",
+        help="Type of loss to use for OBB regression",
     )
     parser.add_argument(
         "--rot_loss_type",
         type=str,
         default=config.ROT_LOSS_TYPE,
         choices=["cosine", "vector"],
-        help="Type of loss to use for rotation angle regression (default: cosine)",
+        help="Type of loss to use for rotation angle regression",
     )
     parser.add_argument(
         "--cls_loss_type",
         type=str,
         default=config.CLS_LOSS_TYPE,
         choices=["focal", "ls"],
-        help="Type of loss to use for orientation classification (default: focal)",
+        help="Type of loss to use for orientation classification",
     )
     parser.add_argument(
         "--lambda_cls",
         type=float,
         default=config.LAMBDA_CLS,
-        help="Weight for the orientation classification (focal) loss.",
+        help="Weight for the yaw rotation classification loss.",
     )
     parser.add_argument(
         "--lambda_face",
@@ -203,7 +208,7 @@ def parse_args():
         "--lambda_obb",
         type=float,
         default=config.LAMBDA_OBB,
-        help="Weight for the oriented bounding box regression loss.",
+        help="Weight for the OBB regression loss.",
     )
     parser.add_argument(
         "--lambda_rot",
@@ -215,56 +220,56 @@ def parse_args():
         "--lambda_rect",
         type=float,
         default=config.LAMBDA_RECT,
-        help="Weight for the rectangle loss (default: 0.1).",
+        help="Weight for the rectangle loss.",
     )
     parser.add_argument(
         "--lambda_child",
         type=float,
         default=config.LAMBDA_CHILD,
-        help="Weight for the child face classification loss (default: 1).",
+        help="Weight for the child face classification loss.",
     )
     parser.add_argument(
         "--face_pos_weight",
         type=float,
         default=config.FACE_POS_WEIGHT,
-        help="Weight for positive face samples in the loss function (default: 2.0).",
+        help="Weight for positive face samples in the loss function.",
     )
     parser.add_argument(
         "--pos_iou_thr_1",
         type=float,
         default=config.POS_IOU_THRESH_1,
-        help="Positive IoU threshold for 1-stage anchor matching (default: 0.7).",
+        help="Positive IoU threshold for 1-stage anchor matching.",
     )
     parser.add_argument(
         "--neg_iou_thr_1",
         type=float,
         default=config.NEG_IOU_THRESH_1,
-        help="Negative IoU threshold (band-of-ignore) for 1-stage anchor matching (default: 0.3).",
+        help="Negative IoU threshold (band-of-ignore) for 1-stage anchor matching.",
     )
     parser.add_argument(
         "--pos_iou_thr_2",
         type=float,
         default=config.POS_IOU_THRESH_2,
-        help="Positive IoU threshold for 2-stage anchor matching (default: 0.5).",
+        help="Positive IoU threshold for 2-stage anchor matching.",
     )
     parser.add_argument(
         "--neg_iou_thr_2",
         type=float,
         default=config.NEG_IOU_THRESH_2,
-        help="Negative IoU threshold (band-of-ignore) for 2-stage anchor matching (default: 0.4).",
+        help="Negative IoU threshold (band-of-ignore) for 2-stage anchor matching.",
     )
     parser.add_argument(
         "--neg_samples_ratio",
         type=int,
         default=config.NEG_SAMPLES_RATIO,
-        help="Hard negative mining ratio: negatives per positive (default: 3).",
+        help="Hard negative mining ratio: negatives per positive.",
     )
     parser.add_argument(
         "--alpha",
         type=float,
         nargs="+",
         default=config.ALPHA,
-        help="Alpha class weights for Focal Loss, one per orientation class.",
+        help="Alpha class weights for yaw rotation classification loss, one per orientation class.",
     )
     parser.add_argument(
         "--gamma",
@@ -276,7 +281,7 @@ def parse_args():
         "--sigma_l2_cls",
         type=float,
         default=config.SIGMA_L2_CLS,
-        help="Sigma for L2 Loss, if used (default: None).",
+        help="Sigma for L2 Loss, if used.",
     )
 
     # Data augmentation
@@ -303,13 +308,13 @@ def parse_args():
         "--project",
         type=str,
         default=config.PROJECT_NAME,
-        help=f"Weights & Biases project name (default: {config.PROJECT_NAME}).",
+        help=f"Weights & Biases project name.",
     )
     parser.add_argument(
         "--run_name",
         type=str,
         default=config.RUN_NAME,
-        help=f"Weights & Biases run name (default: {config.RUN_NAME}).",
+        help=f"Weights & Biases run name.",
     )
 
     # Inference
@@ -323,25 +328,25 @@ def parse_args():
         "--face_thres",
         type=float,
         default=config.FACE_THRESH,
-        help=f"Face confidence threshold for inference (default: {config.FACE_THRESH}).",
+        help=f"Face confidence threshold for inference.",
     )
     parser.add_argument(
         "--iou_thres",
         type=float,
         default=config.IOU_THRESH,
-        help=f"IoU threshold for rotated NMS (default: {config.IOU_THRESH}).",
+        help=f"IoU threshold for rotated NMS.",
     )
     parser.add_argument(
         "--class_thres",
         type=float,
         default=config.CLASS_THRESH,
-        help=f"Orientation confidence threshold for inference (default: {config.CLASS_THRESH}).",
+        help=f"Orientation confidence threshold for inference.",
     )
     parser.add_argument(
         "--baby_thres",
         type=float,
         default=config.BABY_THRESH,
-        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
+        help=f"Baby face confidence threshold for inference.",
     )
     parser.add_argument(
         "--grid_rows",
@@ -355,7 +360,36 @@ def parse_args():
         default=3,
         help="Number of columns in the qualitative mosaic grid.",
     )
-
+    parser.add_argument(
+        "--bin_deg",
+        type=float,
+        default=config.DEFAULT_BIN_DEG,
+        help="Bin width in degrees for angle equalization augmentation.",
+    )
+    parser.add_argument(
+        "--equalize_angle_bins",
+        action="store_true",
+        default=config.DEFAULT_EQUALIZE_ANGLE_BINS,
+        help="Enable angle equalization augmentation.",
+    )
+    parser.add_argument(
+        "--equalize_strategy",
+        type=str,
+        default=config.DEFAULT_EQUALIZE_STRATEGY,
+        choices=["inverse_freq", "uniform"],
+        help="Strategy for angle equalization: 'inverse_freq' or 'uniform'.",
+    )
+    parser.add_argument(
+        "--max_rotate",
+        type=float,
+        default=config.DEFAULT_MAX_ROTATE,
+        help="Maximum rotation angle in degrees for augmentation (default: 180).",
+    )
+    parser.add_argument(
+        "--audit_aug_bins",
+        action="store_true",
+        help="Visualize angle distribution before and after augmentation to audit the effect of angle equalization.",
+    )
     return parser.parse_args()
 
 
@@ -415,11 +449,56 @@ def main():
     # Define image size tuple
     img_size = tuple(args.img_size)
 
+    # Define label mapping for inference
+    labels_map = {
+        0: "Leftside",
+        1: "3/4 Leftside",
+        2: "Frontal",
+        3: "3/4 Rightside",
+        4: "Rightside",
+    }
+
+    if args.audit_aug_bins:
+        raw_train = BabyFacesDataset(args.root_dir, split="train", transform=None)
+        pre_stats = collect_degrees_by_class(raw_train, labels_map)
+        angles_dir = output_dir / "angles"
+        angles_dir.mkdir(exist_ok=True)
+        plot_histograms_split(
+            pre_stats, labels_map, args.bin_deg, angles_dir, tag="train_PRE"
+        )
+
+        # Build bin weights for augmentation (required if using inverse frequency strategy) and print them
+        bin_weights = build_bin_weights_from_degrees(pre_stats, args.bin_deg)
+        print(f"[INFO] Bin weights for angle equalization: {bin_weights}")
+    else:
+        bin_weights = None
+
     # Configure data augmentation and normalization transforms for training and validation
     train_transform = config.get_train_transform(
-        img_size, args.use_augmentation, mean=norm_mean, std=norm_std
+        img_size=img_size,
+        use_augmentation=args.use_augmentation,
+        mean=norm_mean,
+        std=norm_std,
+        equalize=args.equalize_angle_bins,
+        bin_deg=args.bin_deg,
+        strategy=args.equalize_strategy,
+        max_rotate=args.max_rotate,
+        bin_weights=bin_weights,
     )
+
     val_transform = config.get_val_transform(img_size, mean=norm_mean, std=norm_std)
+
+    if args.audit_aug_bins:
+        # Create a temporary dataset with augmentation to audit the effect on angle distribution
+        aug_audit_dataset = BabyFacesDataset(
+            args.root_dir, split="train", transform=train_transform
+        )
+        post_stats = collect_degrees_by_class(aug_audit_dataset, labels_map)
+        angles_dir = output_dir / "angles"
+        angles_dir.mkdir(exist_ok=True)
+        plot_histograms_split(
+            post_stats, labels_map, args.bin_deg, angles_dir, tag="train_POST"
+        )
 
     # ------------------------------------------------------------------------
     # III. Datasets and loaders
@@ -434,15 +513,6 @@ def main():
     print(
         f"[INFO] Loaded {len(train_dataset)} training and {len(val_dataset)} validation samples."
     )
-
-    # Define label mapping for inference
-    labels_map = {
-        0: "Leftside",
-        1: "3/4 Leftside",
-        2: "Frontal",
-        3: "3/4 Rightside",
-        4: "Rightside",
-    }
 
     # Optional: visualize datasets and save sample grids
     visualize_and_save_dataset_in_script(

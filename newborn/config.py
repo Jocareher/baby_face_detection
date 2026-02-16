@@ -4,7 +4,7 @@ from torchvision import transforms
 from data_setup.augmentations import (
     RandomHorizontalFlipOBB,
     RandomRotateOBB,
-    RandomScaleTranslateOBB,
+    RandomRotateOBBEqualizeBins,
     RandomGrayOBB,
     ColorJitterOBB,
     RandomNoiseOBB,
@@ -38,6 +38,11 @@ DEFAULT_PATIENCE = 20
 DEFAULT_OUT_CHANNELS = 128
 DEFAULT_BACKBONE_MODE = "train_all"
 DEFAULT_BACKBONE = "densenet121"
+DEFAULT_BIN_DEG = 10.0
+DEFAULT_EQUALIZE_STRATEGY = "uniform"
+DEFAULT_MAX_ROTATE = 180.0
+DEFAULT_EQUALIZE_ANGLE_BINS = True
+DEFAULT_SAMPLER = "weighted"
 
 # =======================
 # Precomputed OBB Statistics
@@ -148,48 +153,62 @@ RUN_NAME = "run_1"  # Default run name, can be overridden in the main script
 # Data Transforms
 # =======================
 def get_train_transform(
-    img_size=(640, 640), use_augmentation=True, mean=IMAGENET_MEAN, std=IMAGENET_STD
+    img_size,
+    use_augmentation,
+    mean,
+    std,
+    equalize,
+    bin_deg,
+    strategy,
+    max_rotate,
+    bin_weights,
 ):
-    """
-    Returns a composition of training transforms. Normalization stats can be overridden.
-    """
     norm = ToTensorNormalize(mean=mean, std=std)
-    if use_augmentation:
-        return transforms.Compose(
-            [
-                RandomHorizontalFlipOBB(prob=0.5),
-                RandomRotateOBB(max_angle=15, prob=0.3),
-                # RandomScaleTranslateOBB(
-                #     scale_range=(0.85, 1.15),
-                #     translate_range=(-0.1, 0.1),
-                #     prob=0.3,
-                # ),
-                RandomOcclusionOBB(max_size_ratio=0.5, prob=0.5),
-                RandomNoiseOBB(std=10, prob=0.7),
-                RandomBlurOBB(ksize=(5, 5), prob=0.7),
-                RandomGrayOBB(prob=0.3),
-                ColorJitterOBB(
-                    brightness=0.2,
-                    contrast=0.2,
-                    saturation=0.2,
-                    prob=0.7,
-                    hue=0.05,
-                    gamma=0.1,
-                ),
-                Resize(img_size),
-                norm,
-            ]
+    if not use_augmentation:
+        return transforms.Compose([Resize(img_size), norm])
+
+    rot = (
+        RandomRotateOBBEqualizeBins(
+            bin_deg=bin_deg,
+            max_angle=max_rotate,
+            prob=0.5,
+            strategy=(
+                "inverse_freq"
+                if (equalize and strategy == "inverse_freq")
+                else "uniform"
+            ),
+            bin_weights=(
+                bin_weights if (equalize and strategy == "inverse_freq") else None
+            ),
+            ref_policy="random",
         )
-    else:
-        return transforms.Compose(
-            [
-                Resize(img_size),
-                norm,
-            ]
-        )
+        if equalize
+        else RandomRotateOBB(max_angle=15, prob=0.3)
+    )
+
+    return transforms.Compose(
+        [
+            RandomHorizontalFlipOBB(prob=0.5),
+            rot,
+            RandomOcclusionOBB(max_size_ratio=0.5, prob=0.5),
+            RandomNoiseOBB(std=10, prob=0.7),
+            RandomBlurOBB(ksize=(5, 5), prob=0.7),
+            RandomGrayOBB(prob=0.3),
+            ColorJitterOBB(
+                brightness=0.2,
+                contrast=0.2,
+                saturation=0.2,
+                prob=0.7,
+                hue=0.05,
+                gamma=0.1,
+            ),
+            Resize(img_size),
+            norm,
+        ]
+    )
 
 
-def get_val_transform(img_size=(640, 640), mean=IMAGENET_MEAN, std=IMAGENET_STD):
+def get_val_transform(img_size=(640, 640), mean=MEAN, std=STD):
     """
     Returns a composition of validation transforms. Normalization stats can be overridden.
     """

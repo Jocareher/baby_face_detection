@@ -405,7 +405,9 @@ def main():
     # Determine normalization statistics based on backbone mode
     if args.backbone_mode == "train_all":
         norm_mean, norm_std = config.MEAN, config.STD
-        print("[INFO] Using dataset-specific normalization stats for training all layers.")
+        print(
+            "[INFO] Using dataset-specific normalization stats for training all layers."
+        )
     else:
         norm_mean, norm_std = config.IMAGENET_MEAN, config.IMAGENET_STD
         print("[INFO] Using ImageNet normalization stats for pretrained backbone.")

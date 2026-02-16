@@ -1,9 +1,11 @@
 import cv2
 import math
+from pathlib import Path
+import csv
 import random
 import numpy as np
 import torch
-from typing import Tuple
+from typing import Tuple, List, Optional, Sequence, Any, Dict
 
 
 class Resize(object):
@@ -771,3 +773,395 @@ def wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
 
     """
     return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def angles_rad_to_deg_0_180(angles_rad: torch.Tensor) -> np.ndarray:
+    """
+    Convert angles in radians to degrees in [0, 180).
+
+    The conversion:
+      1) Wrap to [-pi, pi]
+      2) Take absolute value to map to [0, pi]
+      3) Convert to degrees
+      4) Clamp to < 180 to avoid falling on the right edge of histogram bins
+
+    Args:
+        angles_rad: Tensor of angles in radians.
+
+    Returns:
+        NumPy array of angles in degrees in [0, 180).
+    """
+    wrapped = wrap_to_pi(angles_rad).abs()
+    deg = wrapped * (180.0 / math.pi)
+    return torch.clamp(deg, max=180.0 - 1e-6).cpu().numpy()
+
+
+class RandomRotateObbEqualizeBins:
+    """
+    Rotate an image so that a chosen ground-truth (GT) OBB angle is moved toward a target bin.
+
+    The target bin is sampled either:
+      - uniformly across bins ("uniform"), or
+      - inversely proportional to observed bin counts ("inverse_freq").
+
+    Notes:
+      - Angles are assumed to be in radians.
+      - The transform updates both OBB corner coordinates and `target["angles"]`.
+
+    Args:
+        bin_deg: Bin width in degrees over [0, 180].
+        max_angle: Maximum absolute rotation angle allowed (in degrees).
+        prob: Probability of applying the transform.
+        strategy: "uniform" or "inverse_freq".
+        bin_weights: Bin counts used when strategy="inverse_freq" (length = 180/bin_deg).
+        ref_policy: How to choose the reference GT among N boxes: "random", "largest", or "first".
+        max_tries: Maximum attempts to find a bin rotation within the allowed max rotation.
+    """
+
+    def __init__(
+        self,
+        bin_deg: int = 10,
+        max_angle: float = 30.0,
+        prob: float = 0.8,
+        strategy: str = "uniform",
+        bin_weights: Optional[Sequence[int]] = None,
+        ref_policy: str = "random",
+        max_tries: int = 20,
+    ) -> None:
+        if not (0 < bin_deg <= 180):
+            raise ValueError("bin_deg must be in (0, 180].")
+        if strategy not in ("uniform", "inverse_freq"):
+            raise ValueError("strategy must be 'uniform' or 'inverse_freq'.")
+        if ref_policy not in ("random", "largest", "first"):
+            raise ValueError("ref_policy must be 'random', 'largest', or 'first'.")
+        if max_tries <= 0:
+            raise ValueError("max_tries must be > 0.")
+
+        self.bin_deg = int(bin_deg)
+        self.max_angle = float(max_angle)
+        self.prob = float(prob)
+        self.strategy = strategy
+        self.ref_policy = ref_policy
+        self.max_tries = int(max_tries)
+
+        edges = np.arange(0, 180 + self.bin_deg, self.bin_deg, dtype=np.float32)
+        self.bin_edges_deg = edges
+        self.bin_centers_deg = (edges[:-1] + edges[1:]) * 0.5
+        self.num_bins = int(len(self.bin_centers_deg))
+
+        self.prob_bins = self.build_bin_probabilities(bin_weights=bin_weights)
+
+    def build_bin_probabilities(
+        self, bin_weights: Optional[Sequence[int]]
+    ) -> np.ndarray:
+        """
+        Build the categorical distribution over bins.
+
+        Args:
+            bin_weights: Observed counts per bin, used only if strategy="inverse_freq".
+
+        Returns:
+            NumPy array of probabilities with shape [num_bins].
+        """
+        if self.strategy == "inverse_freq" and bin_weights is not None:
+            w = np.asarray(bin_weights, dtype=np.float64)
+            if w.shape[0] != self.num_bins:
+                raise ValueError(
+                    f"bin_weights length must be {self.num_bins}, got {w.shape[0]}."
+                )
+            w = np.maximum(w, 1e-8)
+            p = 1.0 / w
+            p = p / p.sum()
+            return p.astype(np.float64)
+
+        return (np.ones(self.num_bins, dtype=np.float64) / self.num_bins).astype(
+            np.float64
+        )
+
+    def choose_reference_index(self, boxes: torch.Tensor, policy: str) -> int:
+        """
+        Choose a GT box index to use as reference for deciding the rotation.
+
+        Args:
+            boxes: Tensor [N, 8] with OBB corners.
+            policy: "first", "random", or "largest" (largest AABB area of the OBB).
+
+        Returns:
+            The selected index in [0, N-1], or -1 if N == 0.
+        """
+        num = int(boxes.shape[0])
+        if num == 0:
+            return -1
+
+        if policy == "first":
+            return 0
+        if policy == "random":
+            return int(np.random.randint(0, num))
+
+        pts = boxes.view(num, 4, 2).detach().cpu().numpy()
+        widths = pts[..., 0].max(axis=1) - pts[..., 0].min(axis=1)
+        heights = pts[..., 1].max(axis=1) - pts[..., 1].min(axis=1)
+        areas = widths * heights
+        return int(np.argmax(areas))
+
+    def delta_to_bin_center(self, theta_rad: float, center_deg: float) -> float:
+        """
+        Compute a rotation delta (radians) that moves a reference angle close to a target bin center.
+
+        Because your histogram is built over [0, 180) using |angle|, there are two equivalent
+        target directions (+center and -center). We choose the delta that minimizes absolute rotation.
+
+        Args:
+            theta_rad: Reference GT angle in radians.
+            center_deg: Target bin center in degrees.
+
+        Returns:
+            Rotation delta in radians (wrapped to [-pi, pi]) that is smallest in magnitude.
+        """
+        target = math.radians(center_deg)
+
+        cand1 = wrap_to_pi(theta_rad - target)
+        cand2 = wrap_to_pi(theta_rad + target)
+
+        return cand1 if abs(cand1) <= abs(cand2) else cand2
+
+    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Apply the transform to a sample with probability `self.prob`.
+
+        Args:
+            sample: A dict containing "image" and "target".
+
+        Returns:
+            The (possibly) rotated sample dict.
+        """
+        if float(np.random.rand()) > self.prob:
+            return sample
+
+        image = sample["image"]
+        target = sample["target"]
+
+        boxes = target.get("boxes", None)
+        angles = target.get("angles", None)
+
+        if boxes is None or angles is None or boxes.numel() == 0:
+            random_phi = math.radians(
+                float(np.random.uniform(-self.max_angle, self.max_angle))
+            )
+            return self.apply_rotation(sample=sample, angle_rad=random_phi)
+
+        ref_idx = self.choose_reference_index(boxes=boxes, policy=self.ref_policy)
+        if ref_idx < 0:
+            random_phi = math.radians(
+                float(np.random.uniform(-self.max_angle, self.max_angle))
+            )
+            return self.apply_rotation(sample=sample, angle_rad=random_phi)
+
+        theta_ref = float(angles[ref_idx].item())
+        limit = math.radians(self.max_angle) + 1e-6
+
+        for _ in range(self.max_tries):
+            k = int(np.random.choice(self.num_bins, p=self.prob_bins))
+            delta = self.delta_to_bin_center(
+                theta_rad=theta_ref, center_deg=float(self.bin_centers_deg[k])
+            )
+            if abs(delta) <= limit:
+                return self.apply_rotation(sample=sample, angle_rad=delta)
+
+        random_phi = math.radians(
+            float(np.random.uniform(-self.max_angle, self.max_angle))
+        )
+        return self.apply_rotation(sample=sample, angle_rad=random_phi)
+
+    def apply_rotation(
+        self, sample: Dict[str, Any], angle_rad: float
+    ) -> Dict[str, Any]:
+        """
+        Rotate the image and update OBB corners and angles in the target.
+
+        Rotation is applied around the image center, with canvas expansion to fit the rotated image.
+
+        Args:
+            sample: Sample dict with keys "image" and "target".
+            angle_rad: Rotation angle in radians (positive is CCW in OpenCV degrees convention).
+
+        Returns:
+            Updated sample dict with rotated image and updated target.
+        """
+        image = sample["image"]
+        target = sample["target"]
+
+        height, width = image.shape[:2]
+        angle_deg = math.degrees(angle_rad)
+
+        cos_a, sin_a = abs(math.cos(angle_rad)), abs(math.sin(angle_rad))
+        new_w = int(height * sin_a + width * cos_a)
+        new_h = int(height * cos_a + width * sin_a)
+
+        rot = cv2.getRotationMatrix2D(
+            (width / 2.0, height / 2.0), angle_deg, 1.0
+        ).astype(np.float32)
+        rot[0, 2] += (new_w - width) / 2.0
+        rot[1, 2] += (new_h - height) / 2.0
+
+        rotated_image = cv2.warpAffine(
+            image, rot, (new_w, new_h), flags=cv2.INTER_LINEAR
+        )
+
+        boxes = target.get("boxes", None)
+        angles = target.get("angles", None)
+
+        num = int(boxes.shape[0]) if isinstance(boxes, torch.Tensor) else 0
+        if boxes is not None and isinstance(boxes, torch.Tensor) and num > 0:
+            device = boxes.device
+            pts = boxes.view(num, 4, 2).detach().cpu().numpy().astype(np.float32)
+            hom = np.concatenate([pts, np.ones((num, 4, 1), dtype=np.float32)], axis=2)
+            pts_rot = hom @ rot.T  # [N, 4, 2]
+
+            target["boxes"] = torch.tensor(
+                pts_rot.reshape(num, 8), dtype=torch.float32, device=device
+            )
+
+            if (
+                angles is not None
+                and isinstance(angles, torch.Tensor)
+                and angles.numel() == num
+            ):
+                target["angles"] = wrap_to_pi(angles - float(angle_rad))
+
+        sample["image"] = rotated_image
+        sample["target"] = target
+
+        boxes_after = target.get("boxes", None)
+        if isinstance(boxes_after, torch.Tensor) and boxes_after.numel() > 0:
+            n_after = int(boxes_after.shape[0])
+            sample["target"]["valid_mask"] = torch.ones(
+                n_after, dtype=torch.bool, device=boxes_after.device
+            )
+        else:
+            sample["target"]["valid_mask"] = torch.zeros(0, dtype=torch.bool)
+
+        return sample
+
+
+def collect_degrees_by_class(
+    dataset: Any,
+    labels_map: Dict[int, str],
+) -> Dict[str, Any]:
+    """
+    Iterate over a dataset and collect GT angles (in degrees) for all samples and per class.
+
+    The dataset is expected to return a dict sample with:
+      sample["target"]["angles"]     Tensor [N]
+      sample["target"]["class_idx"]  Tensor [N]
+      sample["target"]["valid_mask"] Optional[Tensor [N]] boolean
+
+    Args:
+        dataset: Any indexable dataset with __len__ and __getitem__.
+        labels_map: Mapping class_idx -> class name.
+
+    Returns:
+        Dict with:
+            - "all": List[float] of degrees for all valid GTs
+            - "per_cls": Dict[int, List[float]] of degrees per class
+            - "counts": Dict[int, int] number of entries per class
+    """
+    per_cls: Dict[int, List[float]] = {c: [] for c in labels_map.keys()}
+    all_deg: List[float] = []
+
+    for i in range(len(dataset)):
+        sample = dataset[i]
+        target = sample["target"]
+
+        angles = target["angles"]
+        classes = target["class_idx"]
+
+        if angles.numel() == 0:
+            continue
+
+        valid_mask = target.get(
+            "valid_mask", torch.ones_like(classes, dtype=torch.bool)
+        )
+        angles = angles[valid_mask]
+        classes = classes[valid_mask]
+
+        deg = angles_rad_to_deg_0_180(angles)
+        all_deg.extend([float(x) for x in deg.tolist()])
+
+        for d, c in zip(deg.tolist(), classes.tolist()):
+            if int(c) in per_cls:
+                per_cls[int(c)].append(float(d))
+
+    counts = {c: len(per_cls[c]) for c in labels_map.keys()}
+    return {"all": all_deg, "per_cls": per_cls, "counts": counts}
+
+
+def build_bin_weights_from_degrees(all_deg: List[float], bin_deg: int) -> List[int]:
+    """
+    Build histogram bin counts over [0, 180] degrees.
+
+    Args:
+        all_deg: List of degrees values in [0, 180).
+        bin_deg: Bin width in degrees.
+
+    Returns:
+        List[int] with length 180/bin_deg containing counts per bin.
+    """
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+    counts, _ = np.histogram(all_deg, bins=bins)
+    return counts.tolist()
+
+
+def save_counts_csv(
+    path: Path,
+    stats: Dict[str, Any],
+    bin_deg: int,
+    labels_map: Dict[int, str],
+) -> None:
+    """
+    Save histogram bin counts to CSV for all classes and per-class breakdown.
+
+    Output rows contain:
+      scope, class_idx, class_name, bin_left, bin_right, count
+
+    Args:
+        path: Output CSV path.
+        stats: Output of `collect_degrees_by_class`.
+        bin_deg: Bin width in degrees.
+        labels_map: Mapping class_idx -> class name.
+    """
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+    rows: List[Dict[str, Any]] = []
+
+    counts_all, edges = np.histogram(stats["all"], bins=bins)
+    for i, cnt in enumerate(counts_all):
+        rows.append(
+            {
+                "scope": "ALL",
+                "class_idx": "ALL",
+                "class_name": "ALL",
+                "bin_left": int(edges[i]),
+                "bin_right": int(edges[i + 1]),
+                "count": int(cnt),
+            }
+        )
+
+    for class_idx, class_name in labels_map.items():
+        counts_c, _ = np.histogram(stats["per_cls"][class_idx], bins=bins)
+        for i, cnt in enumerate(counts_c):
+            rows.append(
+                {
+                    "scope": "PERCLASS",
+                    "class_idx": int(class_idx),
+                    "class_name": str(class_name),
+                    "bin_left": int(edges[i]),
+                    "bin_right": int(edges[i + 1]),
+                    "count": int(cnt),
+                }
+            )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)

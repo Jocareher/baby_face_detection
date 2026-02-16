@@ -2453,3 +2453,65 @@ def plot_qualitative_grid(
     fig.tight_layout(pad=0.5)
     print("[INFO] Grid of qualitative predictions plotted.")
     return fig
+
+
+def plot_histograms_split(
+    data: Dict[str, Any],
+    labels_map: Dict[int, str],
+    bin_deg: int,
+    out_dir: Path,
+    tag: str,
+) -> None:
+    """
+    Plot and save histograms of GT angles (degrees) for all samples and per class.
+
+    Args:
+        data: Output of `collect_degrees_by_class`.
+        labels_map: Mapping class_idx -> class name.
+        bin_deg: Histogram bin width in degrees.
+        out_dir: Output directory for images.
+        tag: Prefix tag for output filenames and titles.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bins = np.arange(0, 180 + bin_deg, bin_deg)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.hist(data["all"], bins=bins, edgecolor="black")
+    ax.set_title(f"{tag}: GT angle histogram (ALL), bin={bin_deg} deg")
+    ax.set_xlabel("GT angle [deg]")
+    ax.set_ylabel("Count")
+    ax.grid(axis="y", linestyle=":", alpha=0.6)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(out_dir / f"{tag}_ALL_bin{bin_deg}.png", dpi=200)
+    plt.close(fig)
+
+    classes = list(labels_map.keys())
+    n_cls = len(classes)
+    n_cols = min(3, n_cls)
+    n_rows = int(math.ceil(n_cls / n_cols))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.8 * n_rows))
+    axes = np.atleast_2d(axes)
+
+    for i, c in enumerate(classes):
+        r, col = divmod(i, n_cols)
+        ax = axes[r, col]
+        values = data["per_cls"][c]
+        ax.hist(values, bins=bins, edgecolor="black")
+        ax.set_title(f"{labels_map[c]} (n={len(values)}), bin={bin_deg} deg")
+        ax.set_xlabel("GT angle [deg]")
+        ax.set_ylabel("Count")
+        ax.grid(axis="y", linestyle=":", alpha=0.6)
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+
+    for k in range(n_cls, n_rows * n_cols):
+        r, col = divmod(k, n_cols)
+        axes[r, col].axis("off")
+
+    fig.suptitle(f"{tag}: GT angle histogram per class, bin={bin_deg} deg")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(out_dir / f"{tag}_perclass_bin{bin_deg}.png", dpi=200)
+    plt.close(fig)

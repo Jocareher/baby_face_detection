@@ -55,31 +55,31 @@ def parse_args():
         "--batch_size",
         type=int,
         default=config.DEFAULT_BATCH_SIZE,
-        help="Batch size for inference (default: 32).",
+        help="Batch size for inference.",
     )
     parser.add_argument(
         "--face_thres",
         type=float,
         default=config.FACE_THRESH,
-        help="Confidence threshold for detections (default: 0.5).",
+        help="Confidence threshold for detections.",
     )
     parser.add_argument(
         "--iou_thres",
         type=float,
         default=config.IOU_THRESH,
-        help="IoU threshold for matching (default: 0.3).",
+        help="IoU threshold for matching.",
     )
     parser.add_argument(
         "--class_thres",
         type=float,
         default=config.CLASS_THRESH,
-        help="Classification confidence threshold (default: 0.5).",
+        help="Classification confidence threshold.",
     )
     parser.add_argument(
         "--baby_thres",
         type=float,
         default=config.BABY_THRESH,
-        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
+        help=f"Baby face confidence threshold for inference.",
     )
     parser.add_argument(
         "--output_scale",
@@ -110,7 +110,6 @@ def main():
     # === Model Input Size Configuration ===
     # Get resize dimensions (W,H) from config - should match training settings
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
-    print(f"Model input size (W,H): {resize_size}")
 
     # === Dataset/DataLoader Setup ===
     # Configure image transformations (resize, normalize)
@@ -118,7 +117,7 @@ def main():
         [
             T.Resize(resize_size),
             T.ToTensor(),
-            T.Normalize(mean=config.IMAGENET_MEAN, std=config.IMAGENET_STD),
+            T.Normalize(mean=config.MEAN, std=config.STD),
         ]
     )
 

@@ -50,7 +50,7 @@ def parse_args():
         "--split",
         type=str,
         default="test",
-        help="Dataset split to use (default: test).",
+        help="Dataset split to use.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -62,31 +62,31 @@ def parse_args():
         "--batch_size",
         type=int,
         default=config.DEFAULT_BATCH_SIZE,
-        help="Batch size for inference (default: 32).",
+        help="Batch size for inference.",
     )
     parser.add_argument(
         "--face_thres",
         type=float,
         default=config.FACE_THRESH,
-        help="Confidence threshold for detections (default: 0.5).",
+        help="Confidence threshold for detections.",
     )
     parser.add_argument(
         "--iou_thres",
         type=float,
         default=config.IOU_THRESH,
-        help="IoU threshold for matching (default: 0.3).",
+        help="IoU threshold for matching.",
     )
     parser.add_argument(
         "--class_thres",
         type=float,
         default=config.CLASS_THRESH,
-        help="Class confidence threshold for matching (default: 0.6).",
+        help="Class confidence threshold for matching.",
     )
     parser.add_argument(
         "--baby_thres",
         type=float,
         default=config.BABY_THRESH,
-        help=f"Baby face confidence threshold for inference (default: {config.BABY_THRESH}).",
+        help=f"Baby face confidence threshold for inference.",
     )
     parser.add_argument(
         "--grid_rows",
@@ -136,10 +136,11 @@ def main():
 
     # 1. Load test dataset and dataloader
     resize_size = list(config.PRECOMPUTED_OBB_STATS.keys())[0]
-    val_transform = config.get_val_transform(img_size=resize_size)
-
-    norm_mean = config.IMAGENET_MEAN
-    norm_std = config.IMAGENET_STD
+    norm_mean = config.MEAN
+    norm_std = config.STD
+    val_transform = config.get_val_transform(
+        img_size=resize_size, mean=norm_mean, std=norm_std
+    )
 
     test_dataset = BabyFacesDataset(
         root_dir=args.root_dir,

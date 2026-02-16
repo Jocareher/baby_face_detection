@@ -972,16 +972,16 @@ def inference(
             fig_box_all, fig_box_filter = plot_error_box_by_gt_bins(
                 buckets, bd, title="Angular error by GT angle bin"
             )
-            save_figure(fig_box_all, f"box_angle_error_per_bin_all_{bd}.png")
-            save_figure(fig_box_filter, f"box_angle_error_per_bin_filter_{bd}.png")
+            save_figure(fig_box_all, f"box_angle_error_per_bin_filter_{bd}.png")
+            save_figure(fig_box_filter, f"box_angle_error_per_bin_all_{bd}.png")
 
             fig_bar_all, fig_bar_filter = plot_error_bar_mean_std_by_gt_bins(
                 buckets, bd, title="Angular error mean±std by GT angle bin"
             )
-            save_figure(fig_bar_all, f"hist_angle_error_per_bin_all_{bd}.png")
-            save_figure(fig_bar_filter, f"hist_angle_error_per_bin_filter_{bd}.png")
+            save_figure(fig_bar_all, f"hist_angle_error_per_bin_filter_{bd}.png")
+            save_figure(fig_bar_filter, f"hist_angle_error_per_bin_all_{bd}.png")
 
-    # Per-class bars (elige un bd, o loop)
+    # Per-class bars
     for bd in results["bin_degs"]:
         fig_bar_cls = plot_error_bar_mean_std_by_gt_bins_per_class(
             results["angle_errs_by_gtbin_per_cls"][bd],

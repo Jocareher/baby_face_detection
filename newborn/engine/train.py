@@ -1160,7 +1160,7 @@ def val_step(
             for b, out in enumerate(outputs):
                 # Predictions retained by NMS in (cx, cy, w, h, θ) format
                 all_pred_boxes.append(out["boxes"].cpu().detach())
-                all_pred_scores.append(out["scores"].cpu().detach())
+                all_pred_scores.append(out["final_score"].cpu().detach())
                 all_pred_labels.append(out["labels"].cpu().detach().long())
 
                 # Ground truth: filter by valid_mask and convert to (cx, cy, w, h, θ)

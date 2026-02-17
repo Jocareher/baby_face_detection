@@ -1686,7 +1686,7 @@ def in_training_inference(
 
         # Plot predicted polygons in blue, with edge 0→1 in red
         p_polys = pred["polygons"].cpu()
-        p_scores = pred["scores"].cpu().numpy()
+        p_scores = pred["final_score"].cpu().numpy()
         p_lbls = pred["labels"].cpu().numpy().astype(int)
         for poly, lbl, sc in zip(p_polys, p_lbls, p_scores):
             pts = poly.view(4, 2).numpy()

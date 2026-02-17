@@ -956,75 +956,36 @@ class RandomRotateOBBEqualizeBins:
         phi = float(np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle)))
         return self.apply_rotation(sample, phi)
 
-    def apply_rotation(
-        self, sample: Dict[str, Any], angle_rad: float
-    ) -> Dict[str, Any]:
-        """
-        Rotate the image and update OBB corners and angles in the target.
+    def apply_rotation(self, sample: dict, angle_rad: float) -> dict:
+        image, target = sample["image"], sample["target"]
+        h, w = image.shape[:2]
+        ang_deg = float(np.rad2deg(angle_rad))
 
-        Rotation is applied around the image center, with canvas expansion to fit the rotated image.
+        c, s = abs(np.cos(angle_rad)), abs(np.sin(angle_rad))
+        new_w, new_h = int(h * s + w * c), int(h * c + w * s)
 
-        Args:
-            sample: Sample dict with keys "image" and "target".
-            angle_rad: Rotation angle in radians (positive is CCW in OpenCV degrees convention).
+        rot = cv2.getRotationMatrix2D((w/2.0, h/2.0), ang_deg, 1.0).astype(np.float32)
+        rot[0,2] += (new_w - w) / 2.0
+        rot[1,2] += (new_h - h) / 2.0
 
-        Returns:
-            Updated sample dict with rotated image and updated target.
-        """
-        image = sample["image"]
-        target = sample["target"]
+        img_rot = cv2.warpAffine(image, rot, (new_w, new_h), flags=cv2.INTER_LINEAR)
 
-        height, width = image.shape[:2]
-        angle_deg = math.degrees(angle_rad)
+        boxes = target["boxes"].clone(); N = boxes.shape[0]
+        if N > 0:
+            pts = boxes.view(N,4,2).cpu().numpy().astype(np.float32)
+            hom = np.concatenate([pts, np.ones((N,4,1), np.float32)], axis=2)
+            pts_rot = hom @ rot.T
+            target["boxes"] = torch.tensor(pts_rot.reshape(N,8),
+                                           dtype=torch.float32, device=boxes.device)
+            ang = target["angles"].clone()
+            ang = wrap_to_pi(ang - float(angle_rad))
+            target["angles"] = ang
 
-        cos_a, sin_a = abs(math.cos(angle_rad)), abs(math.sin(angle_rad))
-        new_w = int(height * sin_a + width * cos_a)
-        new_h = int(height * cos_a + width * sin_a)
-
-        rot = cv2.getRotationMatrix2D(
-            (width / 2.0, height / 2.0), angle_deg, 1.0
-        ).astype(np.float32)
-        rot[0, 2] += (new_w - width) / 2.0
-        rot[1, 2] += (new_h - height) / 2.0
-
-        rotated_image = cv2.warpAffine(
-            image, rot, (new_w, new_h), flags=cv2.INTER_LINEAR
-        )
-
-        boxes = target.get("boxes", None)
-        angles = target.get("angles", None)
-
-        num = int(boxes.shape[0]) if isinstance(boxes, torch.Tensor) else 0
-        if boxes is not None and isinstance(boxes, torch.Tensor) and num > 0:
-            device = boxes.device
-            pts = boxes.view(num, 4, 2).detach().cpu().numpy().astype(np.float32)
-            hom = np.concatenate([pts, np.ones((num, 4, 1), dtype=np.float32)], axis=2)
-            pts_rot = hom @ rot.T  # [N, 4, 2]
-
-            target["boxes"] = torch.tensor(
-                pts_rot.reshape(num, 8), dtype=torch.float32, device=device
-            )
-
-            if (
-                angles is not None
-                and isinstance(angles, torch.Tensor)
-                and angles.numel() == num
-            ):
-                target["angles"] = wrap_to_pi(angles - float(angle_rad))
-
-        sample["image"] = rotated_image
+        sample["image"] = img_rot
+        target["valid_mask"] = torch.ones(N, dtype=torch.bool, device=target["boxes"].device) if N>0 else torch.zeros(0, dtype=torch.bool)
         sample["target"] = target
-
-        boxes_after = target.get("boxes", None)
-        if isinstance(boxes_after, torch.Tensor) and boxes_after.numel() > 0:
-            n_after = int(boxes_after.shape[0])
-            sample["target"]["valid_mask"] = torch.ones(
-                n_after, dtype=torch.bool, device=boxes_after.device
-            )
-        else:
-            sample["target"]["valid_mask"] = torch.zeros(0, dtype=torch.bool)
-
         return sample
+
 
 
 def collect_degrees_by_class(

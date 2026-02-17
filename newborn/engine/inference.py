@@ -47,6 +47,7 @@ from utils.visualize import (
     plot_qualitative_grid,
     plot_error_bar_mean_std_by_gt_bins,
     plot_error_box_by_gt_bins,
+    plot_face_vs_bg_confusion_matrices,
 )
 from data_setup.augmentations import wrap_to_pi
 
@@ -138,48 +139,101 @@ def run_evaluation(
     render_original: bool = False,
 ) -> Dict[str, Any]:
     """
-    Runs inference on a dataset and collects predictions, ground truths, and metrics.
+    Run inference and compute comprehensive evaluation metrics across three dimensions:
+    orientation class classification, child/adult detection, and localization-only (SOTA).
+
+    This function processes a dataset through a trained model and accumulates metrics for:
+      1. Orientation multi-class metrics (orientation classes in labels_map + background=-1)
+      2. Child/adult binary classification metrics
+      3. Localization-only metrics (SOTA comparable) using ONLY final NMS-filtered detections
 
     Args:
-        - model (torch.nn.Module): The trained model to use for inference.
-        - loader (DataLoader): DataLoader providing the test dataset.
-        - anchors_xy (torch.Tensor): Precomputed anchors in (x, y) format.
-        - resize_size (Tuple[int, int]): Target size used to resize images.
-        - face_thres (float): Confidence threshold for face detection.
-        - iou_thres (float): IoU threshold for matching predictions to ground truths.
-        - class_thres (float): Class score threshold for filtering predictions.
-        - baby_thres (float): Baby face confidence threshold for filtering predictions.
-        - device (torch.device): Device to run inference on (e.g., 'cuda' or 'cpu').
-        - labels_map (Dict[int, str]): Mapping from class indices to human-readable labels.
-        - render_original (bool): Whether to render original images instead of normalized ones.
+        model (torch.nn.Module): Trained detection model.
+        loader (DataLoader): DataLoader providing batches with 'image' and 'target' keys.
+        anchors_xy (torch.Tensor): Anchor box coordinates for feature maps.
+        resize_size (Tuple[int, int]): Target resize size (W, H) used during inference.
+        face_thres (float): Confidence threshold for face detection.
+        iou_thres (float): IoU threshold for matching predictions to ground truth.
+        class_thres (float): Confidence threshold for orientation class predictions.
+        baby_thres (float): Confidence threshold for child/baby classification.
+        device (torch.device): Computing device ('cuda' or 'cpu').
+        labels_map (Dict[int, str]): Mapping of class indices to orientation class names.
+            Does not include background (class=-1) or adults (class=-1).
+        render_original (bool, optional): Whether to load and render predictions on original
+            resolution images for visualization. Defaults to False.
+
+    Expected keys in inference output (from infer_with_rotated_nms):
+        - boxes: Tensor [N, 5] candidate boxes in (cx, cy, w, h, θ) format after detection
+        - labels: Tensor [N] predicted orientation class labels
+        - child_score: Tensor [N] baby/child probability scores
+        - final_keep: Bool Tensor [N] mask selecting final detections after NMS
+        - final_score: Tensor [N] scores used to rank final detections for matching
 
     Returns:
-        Dict[str, Any]: A dictionary containing:
-            - per_true (Dict[int, List[int]]): Binary ground truth (1 for TP, 0 for FP) per class.
-            - per_score (Dict[int, List[float]]): Confidence scores of predictions per class.
-            - iou_errs (Dict[int, List[float]]): IoU errors per class.
-            - angle_errs (Dict[int, List[float]]): Angle errors per class.
-            - stats (Dict[int, Dict[str, int]]): TP, FP, FN counts per class.
-            - y_true (List[int]): Ground truth labels for confusion matrix.
-            - y_pred (List[int]): Predicted labels for confusion matrix.
-            - all_gts (List[int]): Ground truth labels for F1 vs. threshold computation.
-            - all_preds (List[int]): Predicted labels for F1 vs. threshold computation.
-            - all_scores (List[float]): Prediction scores for F1 vs. threshold computation.
-            - child_stats (Dict[str, int]): TP, FP, FN counts for child face detection.
-            - child_gt (List[int]): Ground truth labels for child face detection (0 = adult, 1 = child).
-            - child_pred (List[int]): Predicted labels for child face detection (0 = adult, 1 = child).
-            - samples (List[Tuple[Any, Dict[str, torch.Tensor], str, torch.Tensor, torch.Tensor, torch.Tensor, int, int]]):
-              List of qualitative samples for visualization, including images, predictions, ground truths, and error counts.
-            - viz_payload (Optional[Dict[str, Any]]): Optional payload for visualization, including original image and scaling factors.
+        Dict[str, Any]: Comprehensive evaluation results containing:
+
+            **Orientation/Class Metrics:**
+                - "per_true": Dict[int, List[int]] - Binary ground truth (TP=1, FP/FN=0) per class
+                - "per_score": Dict[int, List[float]] - Confidence scores per class
+                - "stats": Dict[int, Dict] - TP/FP/FN counts per class
+                - "y_true": List[int] - Ground truth labels for class confusion matrix
+                - "y_pred": List[int] - Predicted labels for class confusion matrix
+                - "iou_errs": Dict[int, List[float]] - IoU values for TP matches per class
+                - "angle_errs": Dict[int, List[float]] - Angular errors (degrees) per class
+                - "all_gts": List[int] - All ground truth labels
+                - "all_preds": List[int] - All predicted labels
+                - "all_scores": List[float] - All confidence scores
+
+            **Angular Error by GT Bins:**
+                - "angle_errs_by_gtbin_global": Dict[int, Dict] - Angular errors binned by GT angle
+                - "angle_errs_by_gtbin_per_cls": Dict[int, Dict] - Angular errors by GT bin per class
+                - "bin_degs": Tuple[int, ...] - Bin sizes used (e.g., 20°, 10°, 5°)
+
+            **Child/Adult Binary Metrics:**
+                - "child_stats": Dict - {"tp": int, "fp": int, "fn": int}
+                - "child_gt": List[int] - Ground truth child labels (1=child, 0=adult)
+                - "child_pred": List[int] - Predicted child labels (1=child, 0=adult)
+
+            **Localization-Only Metrics (SOTA Comparable):**
+                - "loc_tp_global": int - Total true positives (localization only)
+                - "loc_fp_global": int - Total false positives
+                - "loc_fn_global": int - Total false negatives
+                - "loc_precision": float - Localization-only precision
+                - "loc_recall": float - Localization-only recall
+                - "loc_f1": float - Localization-only F1 score
+                - "loc_tp_per_cls": Dict[int, int] - TP count per class
+                - "loc_fn_per_cls": Dict[int, int] - FN count per class
+                - "loc_tp_pred_cls": Dict[int, int] - TP count among predictions per class
+                - "loc_fp_pred_cls": Dict[int, int] - FP count among predictions per class
+                - "precision_loc_pred_per_cls": Dict[int, float] - Localization precision per class
+                - "recall_loc_per_cls": Dict[int, float] - Localization recall per class
+
+            **False Positive Analysis:**
+                - "fp_in_baby_imgs": int - FP detections in images containing babies
+                - "fp_in_adult_imgs": int - FP detections in adult-only images
+                - "fp_in_bg_imgs": int - FP detections in pure background images
+
+            **Diagnostic/Report Data:**
+                - "distance_rows": List[Dict] - Detailed TP/FP/FN matching report with class distances
+                - "samples": List[Tuple] - Sample data for qualitative visualization including
+                  (normalized image tensor, predictions dict, filename, GT boxes, GT angles,
+                  GT labels, FP count, FN count, optional original image payload)
     """
-    # Initialize data structures for metrics and qualitative results
-    per_true = {c: [] for c in labels_map}
-    per_score = {c: [] for c in labels_map}
-    stats = {c: {"tp": 0, "fp": 0, "fn": 0} for c in labels_map}
-    y_true, y_pred = [], []
-    iou_errs = {c: [] for c in labels_map}
-    angle_errs = {c: [] for c in labels_map}
-    # Angle error by GT-angle bins (unsigned degrees in [0,180))
+    # -------------------------------------------------------------------------
+    # Orientation metrics
+    # -------------------------------------------------------------------------
+    per_true: Dict[int, List[int]] = {c: [] for c in labels_map}
+    per_score: Dict[int, List[float]] = {c: [] for c in labels_map}
+    stats: Dict[int, Dict[str, int]] = {
+        c: {"tp": 0, "fp": 0, "fn": 0} for c in labels_map
+    }
+
+    y_true: List[int] = []
+    y_pred: List[int] = []
+
+    iou_errs: Dict[int, List[float]] = {c: [] for c in labels_map}
+    angle_errs: Dict[int, List[float]] = {c: [] for c in labels_map}
+
     bin_degs = (20, 10, 5)
     angle_errs_by_gtbin_global: Dict[int, Dict[int, List[float]]] = {
         bd: {} for bd in bin_degs
@@ -189,125 +243,262 @@ def run_evaluation(
     }
 
     def gt_bin_index(theta_deg_unsigned: float, bin_deg: int) -> int:
+        """
+        Return bin index for an unsigned GT angle in [0, 180).
+        """
         theta = min(theta_deg_unsigned, 180.0 - 1e-6)
         return int(theta // bin_deg)
 
+    # -------------------------------------------------------------------------
+    # Child/adult metrics
+    # -------------------------------------------------------------------------
     child_stats = {"tp": 0, "fp": 0, "fn": 0}
-    samples = []
+    child_gt: List[int] = []
+    child_pred: List[int] = []
 
-    # Additional lists for F1 vs. threshold computation
-    all_gts = []  # Ground truth labels
-    all_preds = []  # Predicted labels
-    all_scores = []  # Prediction scores
-    child_gt, child_pred = [], []
-
-    def log_child(gt_is_baby: bool, pred_is_baby: bool):
+    def log_child(gt_is_baby: bool, pred_is_baby: bool) -> None:
+        """
+        Append labels for child/adult confusion matrix.
+        """
         child_gt.append(1 if gt_is_baby else 0)
         child_pred.append(1 if pred_is_baby else 0)
+
+    # -------------------------------------------------------------------------
+    # Shared accumulators
+    # -------------------------------------------------------------------------
+    samples: List[Any] = []
+    all_gts: List[int] = []
+    all_preds: List[int] = []
+    all_scores: List[float] = []
+
+    # -------------------------------------------------------------------------
+    # Localization-only (SOTA comparable) from final detections only
+    # -------------------------------------------------------------------------
+    loc_tp_global = 0
+    loc_fp_global = 0
+    loc_fn_global = 0
+
+    loc_tp_per_cls = {c: 0 for c in labels_map}
+    loc_fn_per_cls = {c: 0 for c in labels_map}
+    loc_tp_pred_cls = {c: 0 for c in labels_map}
+    loc_fp_pred_cls = {c: 0 for c in labels_map}
+
+    fp_in_baby_imgs = 0
+    fp_in_adult_imgs = 0
+    fp_in_bg_imgs = 0
+
+    distance_rows: List[Dict[str, Any]] = []
 
     dataset = loader.dataset
     global_idx = 0
 
-    model.eval()  # Set model to evaluation mode
+    # Useful class tensor (fixed on device)
+    orient_class_ids_device = torch.tensor(
+        list(labels_map.keys()), device=device, dtype=torch.long
+    )
+
+    model.eval()
     with torch.inference_mode():
         for batch in tqdm(loader, desc="Inference"):
             imgs = batch["image"].to(device)
             targets = batch["target"]
 
-            # Perform inference with rotated NMS
             outputs = infer_with_rotated_nms(
                 model,
                 imgs,
                 anchors_xy,
                 resize_size,
-                face_thres,
-                baby_thres,
-                iou_thres,
-                class_thres,
+                face_thres=face_thres,
+                baby_thres=baby_thres,
+                iou_thres=iou_thres,
+                class_thres=class_thres,
             )
 
-            # Process each image in the batch
             batch_size = imgs.size(0)
             for b in range(batch_size):
-                # Get filename and initialize FP/FN counters
                 fname = dataset.file_list[global_idx]
-                # Update global index
                 global_idx += 1
-                # Count of false positives and false negatives in this image
                 fp_img, fn_img = 0, 0
 
-                # Load original image for visualization if needed
                 viz_payload = None
-                # Render original image if specified
                 if render_original:
-                    # Load original image and compute scaling factors
                     orig_img_np, (sx, sy) = load_original_and_scale(
                         dataset, fname, resize_size
                     )
-                    # If loading was successful, prepare payload
                     if orig_img_np is not None:
-                        # Visualization payload with original image and scaling
                         viz_payload = {"orig_img": orig_img_np, "scale": (sx, sy)}
-                    else:
-                        viz_payload = None
 
-                # --------------------- Ground Truth Processing -------------------
-                valid_mask = targets["valid_mask"][b]
-                gt_boxes = targets["boxes"][b][valid_mask]  # GT boxes coordinates
-                gt_angles = targets["angles"][b][valid_mask].view(
-                    -1
-                )  # GT rotation angles
-                gt_labels = targets["class_idx"][b][valid_mask]  # GT class labels
-                gt_child = targets["child_prob"][b][valid_mask] > 0.5  # Child face mask
-                num_gt = gt_boxes.size(0)
+                # -----------------------------------------------------------------
+                # GT prep: index on CPU first, then move to device
+                # -----------------------------------------------------------------
+                valid_mask_cpu = targets["valid_mask"][b].bool().cpu()
+                gt_boxes = targets["boxes"][b][valid_mask_cpu].to(device)
+                gt_angles = targets["angles"][b][valid_mask_cpu].view(-1).to(device)
+                gt_labels = targets["class_idx"][b][valid_mask_cpu].to(device)
+                gt_child = targets["child_prob"][b][valid_mask_cpu].to(device) > 0.5
+                num_gt = int(gt_boxes.size(0))
 
-                # Convert GT boxes to xywhr format for rotated IoU computation
-                gt_xywhr = xyxyxyxy2xywhr(
-                    gt_boxes, gt_angles.unsqueeze(-1), resize_size
-                ).to(device)
-                gt_matched = torch.zeros(num_gt, dtype=torch.bool, device=device)
+                is_bg_pure = num_gt == 0
+                is_adult_only = (num_gt > 0) and (not bool(gt_child.any().item()))
 
-                # --------------------- Model Predictions ------------------------
-                pred_boxes = outputs[b]["boxes"].to(
-                    device
-                )  # Predicted boxes (N_pred, 5)
-                pred_scores = outputs[b]["scores"].to(device)  # Confidence scores
-                pred_labels = outputs[b]["labels"].to(device)  # Predicted class labels
-                pred_child_s = outputs[b]["child_score"].to(
-                    device
-                )  # Adult/child scores
-                pred_is_child = outputs[b]["is_child"].to(device)
-                num_pred = pred_boxes.size(0)
+                if num_gt > 0:
+                    gt_xywhr = xyxyxyxy2xywhr(
+                        gt_boxes, gt_angles.unsqueeze(-1), resize_size
+                    ).to(device)
+                else:
+                    gt_xywhr = torch.empty((0, 5), device=device)
 
-                # ----------------- Handle Images without GT (num_gt==0) ----------
+                gt_matched_any = torch.zeros(num_gt, dtype=torch.bool, device=device)
+                gt_matched_orient = torch.zeros(num_gt, dtype=torch.bool, device=device)
+
+                if num_gt > 0:
+                    gt_class_in_eval = (
+                        gt_labels.unsqueeze(1) == orient_class_ids_device.unsqueeze(0)
+                    ).any(dim=1)
+                    gt_is_orient_eval = gt_child & gt_class_in_eval
+                else:
+                    gt_is_orient_eval = torch.zeros(0, dtype=torch.bool, device=device)
+
+                # -----------------------------------------------------------------
+                # Predictions
+                # -----------------------------------------------------------------
+                pred_boxes_all = outputs[b]["boxes"].to(device)
+                pred_labels_all = outputs[b]["labels"].to(device)
+                pred_child_s_all = outputs[b]["child_score"].to(device)
+
+                final_keep = outputs[b]["final_keep"].to(device).bool()
+                pred_boxes = pred_boxes_all[final_keep]
+                pred_labels = pred_labels_all[final_keep]
+                pred_scores = outputs[b]["final_score"].to(device)[final_keep]
+
+                num_pred_all = int(pred_boxes_all.size(0))
+                num_pred = int(pred_boxes.size(0))
+
+                # -----------------------------------------------------------------
+                # Loc-only from final detections
+                # -----------------------------------------------------------------
+                loc_img = compute_loc_only_from_final(
+                    gt_xywhr=gt_xywhr,
+                    gt_labels=gt_labels,
+                    pred_boxes_final=pred_boxes,
+                    pred_scores_final=pred_scores,
+                    pred_labels_final=pred_labels,
+                    iou_threshold=iou_thres,
+                    labels_map=labels_map,
+                    device=device,
+                    orient_class_ids_device=orient_class_ids_device,
+                )
+
+                loc_tp_global += loc_img["tp"]
+                loc_fp_global += loc_img["fp"]
+                loc_fn_global += loc_img["fn"]
+
+                for c in labels_map:
+                    loc_tp_per_cls[c] += loc_img["tp_per_cls"][c]
+                    loc_fn_per_cls[c] += loc_img["fn_per_cls"][c]
+                    loc_tp_pred_cls[c] += loc_img["tp_pred_cls"][c]
+                    loc_fp_pred_cls[c] += loc_img["fp_pred_cls"][c]
+
+                if is_bg_pure:
+                    fp_in_bg_imgs += loc_img["fp"]
+                elif is_adult_only:
+                    fp_in_adult_imgs += loc_img["fp"]
+                else:
+                    fp_in_baby_imgs += loc_img["fp"]
+
+                # detailed report rows (localization lens)
+                for gi, pj in loc_img["matched_pairs"]:
+                    iou_val = float(
+                        batch_probiou(
+                            gt_xywhr[gi].unsqueeze(0), pred_boxes[pj].unsqueeze(0)
+                        ).item()
+                    )
+                    c_gt = int(gt_labels[gi].item())
+                    c_pred = int(pred_labels[pj].item())
+                    class_distance = (
+                        abs(c_gt - c_pred)
+                        if (c_gt in labels_map and c_pred in labels_map)
+                        else None
+                    )
+                    distance_rows.append(
+                        {
+                            "image_id": str(fname),
+                            "case": "loc_tp",
+                            "gt_idx": gi,
+                            "pred_idx": pj,
+                            "gt_class": c_gt,
+                            "pred_class": c_pred,
+                            "class_distance": class_distance,
+                            "iou": iou_val,
+                            "score": float(pred_scores[pj].item()),
+                        }
+                    )
+
+                for gi in loc_img["unmatched_gt"]:
+                    c_gt = int(gt_labels[gi].item())
+                    distance_rows.append(
+                        {
+                            "image_id": str(fname),
+                            "case": "loc_fn",
+                            "gt_idx": gi,
+                            "pred_idx": None,
+                            "gt_class": c_gt,
+                            "pred_class": -1,
+                            "class_distance": None,
+                            "iou": None,
+                            "score": 0.0,
+                        }
+                    )
+
+                for pj in loc_img["unmatched_pr"]:
+                    c_pred = int(pred_labels[pj].item())
+                    distance_rows.append(
+                        {
+                            "image_id": str(fname),
+                            "case": "loc_fp",
+                            "gt_idx": None,
+                            "pred_idx": pj,
+                            "gt_class": -1,
+                            "pred_class": c_pred,
+                            "class_distance": None,
+                            "iou": None,
+                            "score": float(pred_scores[pj].item()),
+                        }
+                    )
+
+                # -----------------------------------------------------------------
+                # BG pure path for class/child metrics
+                # -----------------------------------------------------------------
                 if num_gt == 0:
-                    for det_idx in range(num_pred):
-                        cls_det = int(pred_labels[det_idx])
-                        score_det = float(pred_scores[det_idx])
+                    # orientation/class CM: each final detection => BG -> class
+                    if num_pred == 0:
+                        # explicit BG->BG TN event
+                        y_true.append(-1)
+                        y_pred.append(-1)
+                    else:
+                        for det_idx in range(num_pred):
+                            cls_det = int(pred_labels[det_idx].item())
+                            score_det = float(pred_scores[det_idx].item())
 
-                        # Update PR/F1 metrics
-                        per_true[cls_det].append(0)  # All predictions are FP
-                        per_score[cls_det].append(score_det)
-                        all_gts.append(-1)  # Background class
-                        all_preds.append(cls_det)
-                        all_scores.append(score_det)
+                            if cls_det in labels_map:
+                                per_true[cls_det].append(0)
+                                per_score[cls_det].append(score_det)
+                                stats[cls_det]["fp"] += 1
+                                fp_img += 1
 
-                        # Update stats and confusion matrix
-                        stats[cls_det]["fp"] += 1  # Count as False Positive
-                        fp_img += 1
-                        y_true.append(-1)  # Background row
-                        y_pred.append(cls_det)  # Predicted class column
+                            y_true.append(-1)
+                            y_pred.append(cls_det)
+                            all_gts.append(-1)
+                            all_preds.append(cls_det)
+                            all_scores.append(score_det)
 
-                        pred_baby = bool(
-                            pred_is_child[det_idx].item()
-                        )  # Is it a child face?
+                    # child/adult from all candidates
+                    for det_idx in range(num_pred_all):
+                        pred_baby = bool(pred_child_s_all[det_idx].item() >= baby_thres)
                         log_child(False, pred_baby)
-                        # Update child stats
-                        if bool(pred_is_child[det_idx].item()):
-                            # Child face detected
+                        if pred_baby:
                             child_stats["fp"] += 1
 
-                    # Store qualitative sample
                     samples.append(
                         (
                             imgs[b].cpu(),
@@ -318,79 +509,142 @@ def run_evaluation(
                             gt_labels.cpu(),
                             fp_img,
                             fn_img,
+                            viz_payload,
                         )
                     )
-                    continue  # Next image
-                # ----------------------------------------------------------------
+                    continue
 
-                # Compute complete IoU matrix (num_gt × num_pred)
-                iou_matrix = batch_probiou(gt_xywhr, pred_boxes)
+                # -----------------------------------------------------------------
+                # IoU matrices for class/child logic
+                # -----------------------------------------------------------------
+                iou_all = (
+                    batch_probiou(gt_xywhr, pred_boxes_all)
+                    if num_pred_all > 0
+                    else torch.empty((num_gt, 0), device=device)
+                )
+                iou_final = (
+                    batch_probiou(gt_xywhr, pred_boxes)
+                    if num_pred > 0
+                    else torch.empty((num_gt, 0), device=device)
+                )
 
-                # Sort detections by confidence score (descending)
-                _, idxs_det = torch.sort(pred_scores, descending=True)
+                # -----------------------------------------------------------------
+                # A) ALL candidates for child/adult + gt_matched_any
+                # -----------------------------------------------------------------
+                if num_pred_all > 0:
+                    _, det_order_all = torch.sort(pred_child_s_all, descending=True)
 
-                # Process each detection in order of confidence
-                for det_idx in idxs_det.tolist():
-                    score_det = float(pred_scores[det_idx])
-                    cls_det = int(pred_labels[det_idx])
+                    for det_idx in det_order_all.tolist():
+                        unmatched = ~gt_matched_any
+                        if not unmatched.any():
+                            pred_baby = bool(
+                                pred_child_s_all[det_idx].item() >= baby_thres
+                            )
+                            log_child(False, pred_baby)
+                            if pred_baby:
+                                child_stats["fp"] += 1
+                            continue
 
-                    # Find best matching GT for this detection
-                    unmatched_mask = ~gt_matched  # Unmatched GT mask
-                    ious_all = iou_matrix[
-                        :, det_idx
-                    ].clone()  # IoUs with current detection
-                    ious_all[~unmatched_mask] = -1  # Exclude already matched GTs
-
-                    if unmatched_mask.any():
-                        best_iou_val, best_gt_idx = ious_all.max(0)
-                        best_gt_idx = int(best_gt_idx.item())
+                        ious_col = iou_all[:, det_idx].clone()
+                        ious_col[~unmatched] = -1.0
+                        best_iou_val, best_gt_idx = ious_col.max(0)
                         best_iou_val = float(best_iou_val.item())
-                    else:  # All GTs matched → can only be FP
-                        best_iou_val, best_gt_idx = -1.0, -1
+                        best_gt_idx = int(best_gt_idx.item())
 
-                    if best_iou_val >= iou_thres:
-                        true_cls = int(gt_labels[best_gt_idx])
+                        if best_iou_val < iou_thres:
+                            pred_baby = bool(
+                                pred_child_s_all[det_idx].item() >= baby_thres
+                            )
+                            log_child(False, pred_baby)
+                            if pred_baby:
+                                child_stats["fp"] += 1
+                            continue
+
+                        gt_matched_any[best_gt_idx] = True
+
                         gt_baby = bool(gt_child[best_gt_idx].item())
-                        pred_baby = bool(pred_is_child[det_idx].item())
+                        pred_baby = bool(pred_child_s_all[det_idx].item() >= baby_thres)
                         log_child(gt_baby, pred_baby)
 
                         if pred_baby and gt_baby:
                             child_stats["tp"] += 1
-                        elif pred_baby and not gt_baby:
+                        elif pred_baby and (not gt_baby):
                             child_stats["fp"] += 1
                         elif (not pred_baby) and gt_baby:
                             child_stats["fn"] += 1
 
-                        if cls_det == true_cls and true_cls in stats:
-                            # -------------------- TRUE POSITIVE --------------------
-                            stats[true_cls]["tp"] += 1
-                            gt_matched[best_gt_idx] = True
+                # -----------------------------------------------------------------
+                # B) FINAL outputs for orientation class CM
+                # -----------------------------------------------------------------
+                if num_pred > 0:
+                    _, det_order = torch.sort(pred_scores, descending=True)
 
-                            # Update metrics
+                    for det_idx in det_order.tolist():
+                        score_det = float(pred_scores[det_idx].item())
+                        cls_det = int(pred_labels[det_idx].item())
+
+                        eligible = gt_is_orient_eval & (~gt_matched_orient)
+
+                        if not eligible.any():
+                            if cls_det in labels_map:
+                                stats[cls_det]["fp"] += 1
+                                fp_img += 1
+                                per_true[cls_det].append(0)
+                                per_score[cls_det].append(score_det)
+
+                            y_true.append(-1)
+                            y_pred.append(cls_det)
+                            all_gts.append(-1)
+                            all_preds.append(cls_det)
+                            all_scores.append(score_det)
+                            continue
+
+                        ious_col = iou_final[:, det_idx].clone()
+                        ious_col[~eligible] = -1.0
+                        best_iou_val, best_gt_idx = ious_col.max(0)
+                        best_iou_val = float(best_iou_val.item())
+                        best_gt_idx = int(best_gt_idx.item())
+
+                        if best_iou_val < iou_thres:
+                            if cls_det in labels_map:
+                                stats[cls_det]["fp"] += 1
+                                fp_img += 1
+                                per_true[cls_det].append(0)
+                                per_score[cls_det].append(score_det)
+
+                            y_true.append(-1)
+                            y_pred.append(cls_det)
+                            all_gts.append(-1)
+                            all_preds.append(cls_det)
+                            all_scores.append(score_det)
+                            continue
+
+                        true_cls = int(gt_labels[best_gt_idx].item())
+                        gt_matched_orient[best_gt_idx] = True
+
+                        if cls_det == true_cls and true_cls in stats:
+                            stats[true_cls]["tp"] += 1
                             per_true[true_cls].append(1)
                             per_score[true_cls].append(score_det)
+
                             y_true.append(true_cls)
                             y_pred.append(true_cls)
 
-                            # Compute geometric errors
                             iou_errs[true_cls].append(best_iou_val)
-                            # Compute angular error in degrees (0..180)
+
                             angle_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
                             error_deg = float(
                                 wrap_to_pi(angle_diff).abs() * 180.0 / math.pi
                             )
                             angle_errs[true_cls].append(error_deg)
 
-                            # Bin by GT angle (unsigned deg in [0,180))
                             theta_gt_rad = float(
                                 wrap_to_pi(gt_angles[best_gt_idx]).item()
                             )
-                            theta_gt_deg_signed = theta_gt_rad * 180.0 / math.pi
-                            theta_gt_deg_unsigned = abs(theta_gt_deg_signed)
                             theta_gt_deg_unsigned = min(
-                                theta_gt_deg_unsigned, 180.0 - 1e-6
+                                abs(theta_gt_rad * 180.0 / math.pi),
+                                180.0 - 1e-6,
                             )
-
                             for bd in bin_degs:
                                 bidx = gt_bin_index(theta_gt_deg_unsigned, bd)
                                 angle_errs_by_gtbin_global[bd].setdefault(
@@ -399,13 +653,12 @@ def run_evaluation(
                                 angle_errs_by_gtbin_per_cls[bd][true_cls].setdefault(
                                     bidx, []
                                 ).append(error_deg)
+
                             all_gts.append(true_cls)
                             all_preds.append(true_cls)
                             all_scores.append(score_det)
 
                         else:
-                            # -------------- CLASS CONFUSION ERROR -----------------
-                            # Wrong class but good localization
                             if cls_det in stats:
                                 stats[cls_det]["fp"] += 1
                                 fp_img += 1
@@ -415,68 +668,82 @@ def run_evaluation(
                             if true_cls in stats:
                                 stats[true_cls]["fn"] += 1
                                 fn_img += 1
-                                gt_matched[best_gt_idx] = True
 
-                            # CM and global curves can include classes not in labels_map
-                            y_true.append(true_cls)  # GT class row
-                            y_pred.append(cls_det)  # Predicted class column
+                            y_true.append(true_cls)
+                            y_pred.append(cls_det)
                             all_gts.append(true_cls)
                             all_preds.append(cls_det)
                             all_scores.append(score_det)
 
-                    else:
-                        # ---------------- BACKGROUND FALSE POSITIVE --------------
-                        # No matching GT with sufficient IoU
-                        if cls_det in stats:
-                            stats[cls_det]["fp"] += 1
-                            fp_img += 1
-                            per_true[cls_det].append(0)
-                            per_score[cls_det].append(score_det)
-                            pred_baby = bool(pred_is_child[det_idx].item())
-                            log_child(False, pred_baby)
-
-                        if bool(pred_is_child[det_idx]):
-                            child_stats["fp"] += 1
-
-                        y_true.append(-1)  # Background row
-                        y_pred.append(cls_det)  # Predicted class column
-
-                        all_gts.append(-1)
-                        all_preds.append(cls_det)
-                        all_scores.append(score_det)
-
-                # ---- Process unmatched GT boxes as False Negatives -------------
+                # unmatched evaluable GT -> class FN
                 for i in range(num_gt):
-                    if not gt_matched[i]:
-                        # GT box not matched to any detection
-                        cls_gt = int(gt_labels[i])
+                    if not bool(gt_is_orient_eval[i].item()):
+                        continue
+                    if bool(gt_matched_orient[i].item()):
+                        continue
 
-                        # Update PR/F1 metrics
-                        if cls_gt in labels_map:
-                            per_true[cls_gt].append(1)  # True for GT
-                            per_score[cls_gt].append(0.0)  # Score is 0 for unmatched GT
-                            if cls_gt in stats:
-                                stats[cls_gt]["fn"] += 1  # Count as False Negative
-                                fn_img += 1
-                            y_true.append(cls_gt)  # GT class row
-                            y_pred.append(-1)  # Background column
-                        else:
-                            # GT with no original class (should not happen)
+                    cls_gt = int(gt_labels[i].item())
+                    if cls_gt in labels_map:
+                        per_true[cls_gt].append(1)
+                        per_score[cls_gt].append(0.0)
+                        stats[cls_gt]["fn"] += 1
+                        fn_img += 1
+
+                        y_true.append(cls_gt)
+                        y_pred.append(-1)
+
+                    all_gts.append(cls_gt)
+                    all_preds.append(-1)
+                    all_scores.append(0.0)
+
+                # Adults into BG row for class CM
+                if num_pred > 0:
+                    adult_idx = (gt_labels == -1).nonzero(as_tuple=False).view(-1)
+                    if adult_idx.numel() > 0:
+                        adult_taken = torch.zeros(
+                            adult_idx.numel(), dtype=torch.bool, device=device
+                        )
+                        _, det_order_adult = torch.sort(pred_scores, descending=True)
+
+                        for det_idx in det_order_adult.tolist():
+                            ious_adult = iou_final[adult_idx, det_idx].clone()
+                            ious_adult[adult_taken] = -1.0
+                            best_iou_val, best_local = ious_adult.max(0)
+                            best_iou_val = float(best_iou_val.item())
+                            best_local = int(best_local.item())
+
+                            if best_iou_val < iou_thres:
+                                continue
+
+                            adult_taken[best_local] = True
+                            cls_det = int(pred_labels[det_idx].item())
+                            score_det = float(pred_scores[det_idx].item())
+
                             y_true.append(-1)
-                            y_pred.append(-1)
+                            y_pred.append(cls_det)
+                            all_gts.append(-1)
+                            all_preds.append(cls_det)
+                            all_scores.append(score_det)
 
-                        # This three can include classes not in labels_map
-                        all_gts.append(cls_gt)  # GT class
-                        all_preds.append(-1)  # Background class
-                        all_scores.append(0.0)  # Score is 0 for unmatched GT
+                        for k in range(adult_idx.numel()):
+                            if not bool(adult_taken[k].item()):
+                                y_true.append(-1)
+                                y_pred.append(-1)
+                else:
+                    adult_count = int((gt_labels == -1).sum().item())
+                    for _ in range(adult_count):
+                        y_true.append(-1)
+                        y_pred.append(-1)
 
-                        # Update child/adult if needed
-                        gt_baby = bool(gt_child[i].item())
-                        log_child(gt_baby, False)
-                        if gt_baby:
-                            child_stats["fn"] += 1
+                # unmatched GT babies in ANY-match => child FN
+                for i in range(num_gt):
+                    if bool(gt_matched_any[i].item()):
+                        continue
+                    gt_baby = bool(gt_child[i].item())
+                    log_child(gt_baby, False)
+                    if gt_baby:
+                        child_stats["fn"] += 1
 
-                # ---- Store qualitative sample ----------------------------------
                 samples.append(
                     (
                         imgs[b].cpu(),
@@ -491,21 +758,50 @@ def run_evaluation(
                     )
                 )
 
-            # # Clean up to free memory
-            # del imgs, outputs, targets
-            # torch.cuda.empty_cache()
-
-    # Finalize metrics for each class
+    # non-empty PR vectors
     for cls in labels_map:
-        # Ensure every class has at least one entry in per_true/per_score
         if not per_true[cls]:
-            # If no predictions for this class, set to empty lists
             per_true[cls].append(0)
-            # If no predictions for this class, set score to 0.0
             per_score[cls].append(0.0)
 
+    # Loc-only summaries
+    loc_precision = (
+        loc_tp_global / (loc_tp_global + loc_fp_global)
+        if (loc_tp_global + loc_fp_global) > 0
+        else 0.0
+    )
+    loc_recall = (
+        loc_tp_global / (loc_tp_global + loc_fn_global)
+        if (loc_tp_global + loc_fn_global) > 0
+        else 0.0
+    )
+    loc_f1 = (
+        2 * loc_precision * loc_recall / (loc_precision + loc_recall)
+        if (loc_precision + loc_recall) > 0
+        else 0.0
+    )
+
+    precision_loc_pred_per_cls = {}
+    recall_loc_per_cls = {}
+    for c in labels_map:
+        tp_c = loc_tp_per_cls[c]
+        fn_c = loc_fn_per_cls[c]
+        recall_loc_per_cls[c] = tp_c / (tp_c + fn_c) if (tp_c + fn_c) > 0 else 0.0
+
+        tp_pred_c = loc_tp_pred_cls[c]
+        fp_pred_c = loc_fp_pred_cls[c]
+        precision_loc_pred_per_cls[c] = (
+            tp_pred_c / (tp_pred_c + fp_pred_c) if (tp_pred_c + fp_pred_c) > 0 else 0.0
+        )
+
     print(f"[INFO] Inference completed on {global_idx} samples.")
+    print(
+        f"[LOC-ONLY] TP={loc_tp_global}, FP={loc_fp_global}, FN={loc_fn_global}, "
+        f"P={loc_precision:.4f}, R={loc_recall:.4f}, F1={loc_f1:.4f}"
+    )
+
     return {
+        # orientation/class
         "per_true": per_true,
         "per_score": per_score,
         "iou_errs": iou_errs,
@@ -516,13 +812,32 @@ def run_evaluation(
         "all_gts": all_gts,
         "all_preds": all_preds,
         "all_scores": all_scores,
-        "child_stats": child_stats,
-        "child_gt": child_gt,
-        "child_pred": child_pred,
-        "samples": samples,
         "angle_errs_by_gtbin_global": angle_errs_by_gtbin_global,
         "angle_errs_by_gtbin_per_cls": angle_errs_by_gtbin_per_cls,
         "bin_degs": bin_degs,
+        # child/adult
+        "child_stats": child_stats,
+        "child_gt": child_gt,
+        "child_pred": child_pred,
+        # localization-only (from final detections)
+        "loc_tp_global": loc_tp_global,
+        "loc_fp_global": loc_fp_global,
+        "loc_fn_global": loc_fn_global,
+        "loc_precision": loc_precision,
+        "loc_recall": loc_recall,
+        "loc_f1": loc_f1,
+        "loc_tp_per_cls": loc_tp_per_cls,
+        "loc_fn_per_cls": loc_fn_per_cls,
+        "loc_tp_pred_cls": loc_tp_pred_cls,
+        "loc_fp_pred_cls": loc_fp_pred_cls,
+        "precision_loc_pred_per_cls": precision_loc_pred_per_cls,
+        "recall_loc_per_cls": recall_loc_per_cls,
+        "fp_in_baby_imgs": fp_in_baby_imgs,
+        "fp_in_adult_imgs": fp_in_adult_imgs,
+        "fp_in_bg_imgs": fp_in_bg_imgs,
+        "distance_rows": distance_rows,
+        # qualitative
+        "samples": samples,
     }
 
 
@@ -729,7 +1044,7 @@ def save_individual_predictions(
 
         # Draw predicted OBBs (solid blue with red front edge)
         for i, (pts, lbl, score) in enumerate(
-            zip(out["polygons"], out["labels"], out["scores"])
+            zip(out["polygons"], out["labels"], out["final_score"])
         ):
             coords = pts.cpu().view(4, 2).numpy()
             # Scale coordinates to original resolution if needed
@@ -815,52 +1130,65 @@ def inference(
     render_original: bool = False,
 ) -> Dict[str, Any]:
     """
-        This function processes a test dataset through a trained model and generates comprehensive
-    evaluation metrics and visualizations.
+    Process a test dataset through a trained model and generate comprehensive evaluation metrics
+    and visualizations.
 
-    Steps:
-        1. Anchor preparation for inference
-        2. Model inference on test set
-        3. Metrics computation and visualization generation
-        4. CSV export of metrics and confusion matrices
-        5. Saving of prediction visualizations
+    This function performs end-to-end inference including anchor preparation, model evaluation,
+    metric computation, and detailed report generation across three evaluation dimensions:
+    orientation class classification, child/adult detection, and localization-only metrics.
 
-        - model (torch.nn.Module): Trained model for inference.
-        - test_loader (DataLoader): DataLoader containing test dataset.
-        - output_dir (Union[str, Path]): Directory path to save results and visualizations.
-        - device (torch.device): Computing device ('cuda' or 'cpu').
-        - labels_map (Dict[int, str]): Mapping of class indices to label names.
-        - scale_factors (List[float]): Scale factors for anchor box generation.
-        - ratio_factors (List[float]): Aspect ratio factors for anchor box generation.
-        - face_thres (float, optional): Confidence threshold for face detection. Defaults to 0.25.
-        - baby_thres (float, optional): Confidence threshold for baby classification. Defaults to 0.25.
-        - iou_thres (float, optional): IoU threshold for prediction matching. Defaults to 0.5.
-        - class_thres (float, optional): Confidence threshold for class predictions. Defaults to 0.5.
-        - grid_shape (Tuple[int, int], optional): Shape of prediction visualization grid (rows, cols).
-            Defaults to (3, 3).
-        - mean (Tuple[float, float, float], optional): Mean values for image normalization.
+    Args:
+        model (torch.nn.Module): Trained detection model.
+        test_loader (DataLoader): DataLoader containing test dataset with 'image' and 'target' keys.
+        output_dir (Union[str, Path]): Base directory for saving all results, figures, and predictions.
+        device (torch.device): Computing device ('cuda' or 'cpu').
+        labels_map (Dict[int, str]): Mapping of class indices to orientation class names.
+        scale_factors (List[float]): Scale factors for anchor generation.
+        ratio_factors (List[float]): Aspect ratio factors for anchor generation.
+        face_thres (float, optional): Confidence threshold for face detection. Defaults to 0.25.
+        baby_thres (float, optional): Confidence threshold for child/baby classification. Defaults to 0.25.
+        iou_thres (float, optional): IoU threshold for matching predictions to ground truth. Defaults to 0.5.
+        class_thres (float, optional): Confidence threshold for orientation class predictions. Defaults to 0.5.
+        grid_shape (Tuple[int, int], optional): Shape (rows, cols) for qualitative example grid. Defaults to (3, 3).
+        mean (Tuple[float, float, float], optional): Channel means for image denormalization.
             Defaults to (0.485, 0.456, 0.406).
-        - std (Tuple[float, float, float], optional): Standard deviation values for image normalization.
+        std (Tuple[float, float, float], optional): Channel standard deviations for denormalization.
             Defaults to (0.229, 0.224, 0.225).
-        - save_figs (bool, optional): Whether to save generated figures. Defaults to True.
-        - close_figs (bool, optional): Whether to close figures after saving. Defaults to True.
-        - anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors.
-            Defaults to None.
+        save_figs (bool, optional): Whether to save generated matplotlib figures. Defaults to True.
+        close_figs (bool, optional): Whether to close figures after saving to free memory. Defaults to True.
+        anchors_cache_path (Union[str, Path], optional): Path to cache/load generated anchors. Defaults to None.
+        render_original (bool, optional): Whether to render predictions on original resolution images.
+            Defaults to False.
 
-            - "mAP": Mean Average Precision across all classes
-            - "APs": Dictionary of per-class Average Precision scores
-        -  render_original (bool, optional): Whether to render predictions on original images. Defaults to False.
+    Returns:
+        Dict[str, Any]: Summary results dictionary containing:
+            - "mAP" (float): Mean Average Precision across all orientation classes.
+            - "APs" (Dict[int, float]): Per-class Average Precision scores.
+            - "loc_precision" (float): Localization-only precision (SOTA comparable).
+            - "loc_recall" (float): Localization-only recall (SOTA comparable).
+            - "loc_f1" (float): Localization-only F1 score (SOTA comparable).
+            - "metrics_csv" (Path): Path to exported metrics and confusion matrix CSV.
+            - "distance_csv" (Path): Path to detailed TP/FP/FN matching report CSV.
 
-    Generated Outputs:
-        - Precision-Recall curves
-        - Confusion matrices (raw and normalized) for class predictions
-        - Confusion matrices (raw and normalized) for child/adult classification
-        - IoU distribution boxplots per class
-        - Angle error distribution boxplots per class
-        - F1 score vs confidence threshold plots
-        - Grid of qualitative prediction examples
-        - Individual prediction visualizations
-        - CSV files with metrics and confusion matrices
+    Generated Output Files:
+        - figures/: Matplotlib visualizations including:
+            - precision_recall.png: PR curves with mAP summary
+            - child_cm_raw.png, child_cm_normalized.png: Child/adult confusion matrices
+            - class_cm_raw.png, class_cm_normalized.png: Orientation class confusion matrices
+            - iou_boxplot.png: IoU distribution per class
+            - angle_boxplot.png: Angular error distribution per class
+            - box_angle_error_per_bin_*.png: Angular error by GT angle bins
+            - hist_angle_error_per_bin_*.png: Mean±std of angular errors by bins
+            - angle_error_per_class_bar_bin_*.png: Per-class angular error analysis
+            - f1_threshold.png: F1 score vs confidence threshold
+            - grid_examples.png: Qualitative grid of predictions
+        - predictions/: Individual prediction visualizations with GT/pred overlays:
+            - tp_only/: Perfect predictions (TP only)
+            - fp/: False positives only
+            - fn/: False negatives only
+            - fp_fn/: Both error types
+        - metrics.csv: Per-class metrics (TP/FP/FN/P/R/F1/AP), confusion matrices
+        - distance_report.csv: Detailed matching report with class distances for diagnostics
     """
 
     def save_figure(fig: plt.Figure, fname: str):
@@ -1005,6 +1333,33 @@ def inference(
         "grid_examples.png",
     )
 
+    print("[STEP 3.1] Localization-only summary (SOTA comparable)...")
+    print(
+        "[LOC] "
+        f"P={results['loc_precision']:.4f} | "
+        f"R={results['loc_recall']:.4f} | "
+        f"F1={results['loc_f1']:.4f}"
+    )
+    print(
+        "[LOC] "
+        f"TP={results['loc_tp_global']} | "
+        f"FP={results['loc_fp_global']} | "
+        f"FN={results['loc_fn_global']}"
+    )
+    print(
+        "[LOC] FP buckets -> "
+        f"BABY={results['fp_in_baby_imgs']} | "
+        f"ADULT_ONLY={results['fp_in_adult_imgs']} | "
+        f"BG={results['fp_in_bg_imgs']}"
+    )
+
+    print("[STEP 3.2] Exporting distance report...")
+    distance_csv = export_distance_report(
+        distance_rows=results["distance_rows"],
+        out_dir=output_dir,
+        fname="distance_report.csv",
+    )
+
     print("[STEP 4] Exporting metrics and confusion matrix CSV...")
     metrics_csv = export_metrics_and_confusion_csv(results, labels_map, output_dir)
 
@@ -1023,29 +1378,52 @@ def inference(
     )
     print("[DONE] Inference and reporting completed.")
 
-    return {"mAP": mAP, "APs": APs}
+    return {
+        "mAP": mAP,
+        "APs": APs,
+        "loc_precision": results["loc_precision"],
+        "loc_recall": results["loc_recall"],
+        "loc_f1": results["loc_f1"],
+        "metrics_csv": metrics_csv,
+        "distance_csv": distance_csv,
+    }
 
 
 def export_metrics_and_confusion_csv(
-    results: dict, labels_map: dict[int, str], out_dir: Path, fname: str = "metrics.csv"
+    results: dict,
+    labels_map: Dict[int, str],
+    out_dir: Path,
+    fname: str = "metrics.csv",
 ) -> Path:
     """
-    Exports evaluation results to a single CSV file containing:
-      - Per-class metrics table (TP, FP, FN, Precision, Recall, F1, AP, IoU, Angle error)
-      - Raw confusion matrix
-      - Normalized confusion matrix
+    Export comprehensive evaluation results to a single CSV file containing multiple sections.
 
-    Each section is separated by a comment line starting with '# --- SECTION ---'.
-    This allows pandas.read_csv(..., comment='#') to read each table independently.
+     This function processes evaluation results and writes them to a CSV file organized in the
+     following sections:
+       1) Per-class metrics (precision, recall, F1, AP, IoU, angle errors for each orientation class + BG)
+       2) Child/adult classification metrics summary
+       3) Raw class confusion matrix (orientation classes + background)
+       5) Raw child vs. adult confusion matrix
+       6) Normalized child vs. adult confusion matrix
+       7) Localization-only metrics (SOTA comparable) with per-class breakdown
 
-    Args:
-        results (dict): Output dictionary from the inference pipeline containing metrics and predictions.
-        labels_map (dict[int, str]): Mapping from class indices to human-readable class names.
-        out_dir (Path): Directory where the CSV will be saved.
-        fname (str): Name of the CSV file (default: "metrics.csv").
+         results (dict): Output dictionary from run_evaluation containing:
+             - stats: Per-class TP/FP/FN counts
+             - per_true, per_score: Ground truth and prediction scores for AP calculation
+             - iou_errs, angle_errs: Localization error lists per class
+             - y_true, y_pred: Class-level predictions
+             - child_stats: TP/FP/FN for child/adult classification
+             - child_gt, child_pred: Child/adult ground truth and predictions
+             - loc_*: Localization-only metrics
+             - fp_in_*_imgs: False positive counts by image type
+         labels_map (Dict[int, str]): Mapping from class ID to class name (orientation classes).
+         out_dir (Path): Output directory where CSV file will be saved.
+         fname (str, optional): CSV filename. Defaults to "metrics.csv".
 
-    Returns:
-        Path: Path to the saved CSV file.
+         Path: Path to the saved CSV file.
+
+     Raises:
+         Creating parent directories if they don't exist (parents=True).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / fname
@@ -1054,87 +1432,211 @@ def export_metrics_and_confusion_csv(
     class_names = [labels_map[c] for c in classes]
     bg_label, bg_name = -1, "BG"
 
-    # ---------- Per-class metrics table ----------------------------------------
-    rows = []
-    for c, name in zip(classes, class_names):
-        tp = results["stats"][c]["tp"]
-        fp = results["stats"][c]["fp"]
-        fn = results["stats"][c]["fn"]
+    # --------------------- Per-class metrics table ---------------------
+    metric_rows = []
+    for class_id, class_name in zip(classes, class_names):
+        tp = int(results["stats"][class_id]["tp"])
+        fp = int(results["stats"][class_id]["fp"])
+        fn = int(results["stats"][class_id]["fn"])
 
-        prec = tp / (tp + fp) if tp + fp else 0.0
-        rec = tp / (tp + fn) if tp + fn else 0.0
-        f1 = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
-        ap = (
-            average_precision_score(results["per_true"][c], results["per_score"][c])
-            if tp
-            else 0.0
-        )
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0
 
-        iou_vals = results["iou_errs"][c]
-        angle_vals = results["angle_errs"][c]
-
-        rows.append(
-            dict(
-                Class=name,
-                TP=tp,
-                FP=fp,
-                FN=fn,
-                Precision=prec,
-                Recall=rec,
-                F1=f1,
-                AP_PR=ap,
-                IoU_mean=np.mean(iou_vals) if iou_vals else 0.0,
-                IoU_std=np.std(iou_vals) if iou_vals else 0.0,
-                Angle_mean_deg=np.mean(angle_vals) if angle_vals else 0.0,
-                Angle_std_deg=np.std(angle_vals) if angle_vals else 0.0,
+        ap_pr = 0.0
+        if len(results["per_true"][class_id]) > 0:
+            ap_pr = float(
+                average_precision_score(
+                    results["per_true"][class_id], results["per_score"][class_id]
+                )
             )
+
+        iou_vals = results["iou_errs"][class_id]
+        angle_vals = results["angle_errs"][class_id]
+
+        metric_rows.append(
+            {
+                "Class": class_name,
+                "TP": tp,
+                "FP": fp,
+                "FN": fn,
+                "Precision": precision,
+                "Recall": recall,
+                "F1": f1,
+                "AP_PR": ap_pr,
+                "IoU_mean": float(np.mean(iou_vals)) if iou_vals else 0.0,
+                "IoU_std": float(np.std(iou_vals)) if iou_vals else 0.0,
+                "Angle_mean_deg": float(np.mean(angle_vals)) if angle_vals else 0.0,
+                "Angle_std_deg": float(np.std(angle_vals)) if angle_vals else 0.0,
+            }
         )
 
-    # Add background row: counts FPs where prediction was made but no GT exists
-    bg_fp = int((np.array(results["y_true"]) == bg_label).sum())
-    rows.append(
-        dict(
-            Class=bg_name,
-            TP=0,
-            FP=bg_fp,
-            FN=0,
-            Precision=0.0,
-            Recall=0.0,
-            F1=0.0,
-            AP_PR=0.0,
-            IoU_mean=0.0,
-            IoU_std=0.0,
-            Angle_mean_deg=0.0,
-            Angle_std_deg=0.0,
-        )
+    # BG summary row derived from class CM accounting
+    y_true_np = np.array(results["y_true"])
+    y_pred_np = np.array(results["y_pred"])
+
+    bg_tp = int(((y_true_np == bg_label) & (y_pred_np == bg_label)).sum())
+    bg_fn = int(((y_true_np == bg_label) & (y_pred_np != bg_label)).sum())
+    bg_fp = int(((y_true_np != bg_label) & (y_pred_np == bg_label)).sum())
+
+    bg_precision = bg_tp / (bg_tp + bg_fp) if (bg_tp + bg_fp) else 0.0
+    bg_recall = bg_tp / (bg_tp + bg_fn) if (bg_tp + bg_fn) else 0.0
+    bg_f1 = (
+        2 * bg_tp / (2 * bg_tp + bg_fp + bg_fn) if (2 * bg_tp + bg_fp + bg_fn) else 0.0
     )
 
-    df_metrics = pd.DataFrame(rows).set_index("Class")
+    metric_rows.append(
+        {
+            "Class": bg_name,
+            "TP": bg_tp,
+            "FP": bg_fp,
+            "FN": bg_fn,
+            "Precision": bg_precision,
+            "Recall": bg_recall,
+            "F1": bg_f1,
+            "AP_PR": 0.0,
+            "IoU_mean": 0.0,
+            "IoU_std": 0.0,
+            "Angle_mean_deg": 0.0,
+            "Angle_std_deg": 0.0,
+        }
+    )
 
-    # ---------- Confusion matrices (raw and normalized) ------------------------
-    mat_labels = classes + [bg_label]
-    mat_names = class_names + [bg_name]
+    df_metrics = pd.DataFrame(metric_rows).set_index("Class")
 
-    cm_raw = confusion_matrix(results["y_true"], results["y_pred"], labels=mat_labels)
+    # --------------------- Child metrics summary ---------------------
+    child_tp = int(results["child_stats"]["tp"])
+    child_fp = int(results["child_stats"]["fp"])
+    child_fn = int(results["child_stats"]["fn"])
+
+    child_precision = child_tp / (child_tp + child_fp) if (child_tp + child_fp) else 0.0
+    child_recall = child_tp / (child_tp + child_fn) if (child_tp + child_fn) else 0.0
+    child_f1 = (
+        2 * child_tp / (2 * child_tp + child_fp + child_fn)
+        if (2 * child_tp + child_fp + child_fn)
+        else 0.0
+    )
+
+    df_child_metrics = pd.DataFrame(
+        [
+            {
+                "Task": "Child_vs_Adult",
+                "TP": child_tp,
+                "FP": child_fp,
+                "FN": child_fn,
+                "Precision": child_precision,
+                "Recall": child_recall,
+                "F1": child_f1,
+            }
+        ]
+    ).set_index("Task")
+
+    # --------------------- Class confusion matrices ---------------------
+    cm_labels = classes + [bg_label]
+    cm_names = class_names + [bg_name]
+
+    cm_raw = confusion_matrix(results["y_true"], results["y_pred"], labels=cm_labels)
     cm_norm = np.nan_to_num(cm_raw.astype(float) / cm_raw.sum(axis=1, keepdims=True))
 
-    df_cm_raw = pd.DataFrame(cm_raw, index=mat_names, columns=mat_names)
-    df_cm_norm = pd.DataFrame(cm_norm, index=mat_names, columns=mat_names)
+    df_cm_raw = pd.DataFrame(cm_raw, index=cm_names, columns=cm_names)
+    df_cm_norm = pd.DataFrame(cm_norm, index=cm_names, columns=cm_names)
 
-    # ---------- Write all tables to a single CSV file --------------------------
+    # --------------------- Child confusion matrices ---------------------
+    child_cm_raw = confusion_matrix(
+        results["child_gt"], results["child_pred"], labels=[0, 1]
+    )
+    child_cm_norm = np.nan_to_num(
+        child_cm_raw.astype(float) / child_cm_raw.sum(axis=1, keepdims=True)
+    )
+    df_child_cm_raw = pd.DataFrame(
+        child_cm_raw,
+        index=["Adult", "Child"],
+        columns=["Adult", "Child"],
+    )
+    df_child_cm_norm = pd.DataFrame(
+        child_cm_norm,
+        index=["Adult", "Child"],
+        columns=["Adult", "Child"],
+    )
+
+    # ---------- Localization-only (SOTA comparable) ----------
+    loc_tp = int(results.get("loc_tp_global", 0))
+    loc_fp = int(results.get("loc_fp_global", 0))
+    loc_fn = int(results.get("loc_fn_global", 0))
+
+    loc_p = float(results.get("loc_precision", 0.0))
+    loc_r = float(results.get("loc_recall", 0.0))
+    loc_f1 = float(results.get("loc_f1", 0.0))
+
+    loc_tp_per_cls = results.get("loc_tp_per_cls", {})
+    loc_fn_per_cls = results.get("loc_fn_per_cls", {})
+    precision_loc_pred_per_cls = results.get("precision_loc_pred_per_cls", {})
+
+    df_loc_per_cls = pd.DataFrame(
+        [
+            {
+                "Class": labels_map[c],
+                "GT_total": int(loc_tp_per_cls.get(c, 0) + loc_fn_per_cls.get(c, 0)),
+                "TP_loc": int(loc_tp_per_cls.get(c, 0)),
+                "FN_loc": int(loc_fn_per_cls.get(c, 0)),
+                "Recall_loc": (
+                    float(loc_tp_per_cls.get(c, 0))
+                    / float(loc_tp_per_cls.get(c, 0) + loc_fn_per_cls.get(c, 0))
+                    if (loc_tp_per_cls.get(c, 0) + loc_fn_per_cls.get(c, 0)) > 0
+                    else 0.0
+                ),
+                "Precision_loc_pred_class": float(
+                    precision_loc_pred_per_cls.get(c, 0.0)
+                ),
+            }
+            for c in labels_map
+        ]
+    ).set_index("Class")
+
+    # --------------------- Write one CSV ---------------------
     with open(csv_path, "w", newline="") as f:
+        f.write("# --- METRICS PER CLASS -------------------------------------------\n")
+        df_metrics.to_csv(f, float_format="%.6f")
+
         f.write(
-            "# --- METRICS PER CLASS -------------------------------------------------\n"
+            "\n# --- CHILD METRICS -----------------------------------------------\n"
         )
-        df_metrics.to_csv(f, float_format="%.4f")
+        df_child_metrics.to_csv(f, float_format="%.6f")
+
         f.write(
-            "\n# --- CONFUSION MATRIX RAW ----------------------------------------------\n"
+            "\n# --- CLASS CONFUSION MATRIX RAW ----------------------------------\n"
         )
         df_cm_raw.to_csv(f)
+
         f.write(
-            "\n# --- CONFUSION MATRIX NORMALIZED ---------------------------------------\n"
+            "\n# --- CLASS CONFUSION MATRIX NORMALIZED ---------------------------\n"
         )
-        df_cm_norm.to_csv(f, float_format="%.4f")
+        df_cm_norm.to_csv(f, float_format="%.6f")
+
+        f.write(
+            "\n# --- CHILD CONFUSION MATRIX RAW ----------------------------------\n"
+        )
+        df_child_cm_raw.to_csv(f)
+
+        f.write(
+            "\n# --- CHILD CONFUSION MATRIX NORMALIZED ---------------------------\n"
+        )
+        df_child_cm_norm.to_csv(f, float_format="%.6f")
+
+        f.write(
+            "\n# --- LOCALIZATION ONLY (SOTA COMPARABLE) -------------------------------\n"
+        )
+        f.write(f"loc_TP,{loc_tp}\n")
+        f.write(f"loc_FP,{loc_fp}\n")
+        f.write(f"loc_FN,{loc_fn}\n")
+        f.write(f"loc_Precision,{loc_p:.4f}\n")
+        f.write(f"loc_Recall,{loc_r:.4f}\n")
+        f.write(f"loc_F1,{loc_f1:.4f}\n")
+        f.write(f"fp_in_baby_imgs,{int(results.get('fp_in_baby_imgs', 0))}\n")
+        f.write(f"fp_in_adult_imgs,{int(results.get('fp_in_adult_imgs', 0))}\n")
+        f.write(f"fp_in_bg_imgs,{int(results.get('fp_in_bg_imgs', 0))}\n")
+        f.write("\n")
+        df_loc_per_cls.to_csv(f, float_format="%.4f")
 
     print(f"[INFO] Metrics and confusion matrices saved to {csv_path}")
     return csv_path
@@ -1544,3 +2046,221 @@ def export_predictions(
     tqdm.write(f"Images: {out_imgs}")
     tqdm.write(f"Labels: {out_lbls}")
     tqdm.write(f"Crops : {out_crops}")
+
+
+def export_distance_report(
+    distance_rows: List[Dict[str, Any]],
+    out_dir: Path,
+    fname: str = "distance_report.csv",
+) -> Path:
+    """
+    Export detailed TP/FP/FN matching report with class-distance diagnostics.
+
+    Args:
+        distance_rows (List[Dict[str, Any]]): Rows generated in run_evaluation.
+        out_dir (Path): Output directory.
+        fname (str, optional): CSV filename. Defaults to "distance_report.csv".
+
+    Returns:
+        Path: Path to the saved CSV file.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / fname
+
+    if len(distance_rows) == 0:
+        df_empty = pd.DataFrame(
+            columns=[
+                "image_id",
+                "img_kind",
+                "case",
+                "gt_idx",
+                "pred_idx",
+                "gt_class",
+                "pred_class",
+                "class_distance",
+                "opposite_flag",
+                "iou",
+                "score",
+                "is_class_match",
+            ]
+        )
+        df_empty.to_csv(csv_path, index=False)
+        print(f"[INFO] Empty distance report saved to {csv_path}")
+        return csv_path
+
+    df = pd.DataFrame(distance_rows)
+
+    # Sorting to prioritize potentially problematic rows
+    sort_cols = []
+    for c in ["case", "opposite_flag", "class_distance", "iou", "score", "image_id"]:
+        if c in df.columns:
+            sort_cols.append(c)
+
+    if len(sort_cols) > 0:
+        ascending = [True] * len(sort_cols)
+        # For score and iou, descending is usually more informative
+        if "score" in sort_cols:
+            ascending[sort_cols.index("score")] = False
+        if "iou" in sort_cols:
+            ascending[sort_cols.index("iou")] = False
+        df = df.sort_values(sort_cols, ascending=ascending)
+
+    df.to_csv(csv_path, index=False)
+    print(f"[INFO] Distance report saved to {csv_path}")
+    return csv_path
+
+
+def compute_loc_only_from_final(
+    gt_xywhr: torch.Tensor,
+    gt_labels: torch.Tensor,
+    pred_boxes_final: torch.Tensor,
+    pred_scores_final: torch.Tensor,
+    pred_labels_final: torch.Tensor,
+    iou_threshold: float,
+    labels_map: Dict[int, str],
+    device: torch.device,
+    orient_class_ids_device: torch.Tensor,
+) -> Dict[str, Any]:
+    """
+    Compute localization-only TP/FP/FN with final detections only, ignoring class label
+    for matching but preserving per-class counters from GT and predicted labels.
+
+    GT considered for loc-only:
+        - Only labels in labels_map (baby orientation classes).
+        - Adults (class=-1) are excluded from loc GT denominator.
+
+    Args:
+        gt_xywhr: [G_all,5] GT boxes in cx,cy,w,h,theta format for all GT (including non-eval classes)
+        gt_labels: [G_all] GT class labels for all GT
+        pred_boxes_final: [P,5] Final predicted boxes after NMS in cx,cy,w,h,theta format
+        pred_scores_final: [P] Confidence scores for final predicted boxes
+        pred_labels_final: [P] Class labels for final predicted boxes
+        iou_threshold: IoU threshold to consider a match as TP
+        labels_map: Mapping of class ids to names for orientation classes (excludes adults)
+        device: Torch device for computations
+        orient_class_ids_device: Tensor of class ids that are considered for evaluation (orientation classes)
+
+    Returns:
+        Dict with global counts, per-class deltas, and matched/unmatched index lists.
+    """
+    out = {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tp_per_cls": {c: 0 for c in labels_map},
+        "fn_per_cls": {c: 0 for c in labels_map},
+        "tp_pred_cls": {c: 0 for c in labels_map},
+        "fp_pred_cls": {c: 0 for c in labels_map},
+        "matched_pairs": [],  # list of tuples (gi_global, pj)
+        "unmatched_gt": [],  # gi_global
+        "unmatched_pr": [],  # pj
+        "n_eval_gt": 0,
+    }
+
+    G_all = int(gt_xywhr.size(0))
+    P = int(pred_boxes_final.size(0))
+
+    if G_all == 0 and P == 0:
+        return out
+
+    if G_all == 0:
+        out["fp"] = P
+        out["unmatched_pr"] = list(range(P))
+        for pj in out["unmatched_pr"]:
+            c_pred = int(pred_labels_final[pj].item())
+            if c_pred in out["fp_pred_cls"]:
+                out["fp_pred_cls"][c_pred] += 1
+        return out
+
+    gt_is_eval = (gt_labels.unsqueeze(1) == orient_class_ids_device.unsqueeze(0)).any(
+        dim=1
+    )
+    eval_idx = torch.where(gt_is_eval)[0]
+    G = int(eval_idx.numel())
+    out["n_eval_gt"] = G
+
+    if G == 0:
+        out["fp"] = P
+        out["unmatched_pr"] = list(range(P))
+        for pj in out["unmatched_pr"]:
+            c_pred = int(pred_labels_final[pj].item())
+            if c_pred in out["fp_pred_cls"]:
+                out["fp_pred_cls"][c_pred] += 1
+        return out
+
+    if P == 0:
+        out["fn"] = G
+        out["unmatched_gt"] = [int(i.item()) for i in eval_idx]
+        for gi_global in out["unmatched_gt"]:
+            c_gt = int(gt_labels[gi_global].item())
+            if c_gt in out["fn_per_cls"]:
+                out["fn_per_cls"][c_gt] += 1
+        return out
+
+    gt_eval_boxes = gt_xywhr[eval_idx]  # [G,5]
+    iou_mat = batch_probiou(gt_eval_boxes, pred_boxes_final)  # [G,P]
+
+    matched_gt_local = torch.zeros(G, dtype=torch.bool, device=device)
+    matched_pr = torch.zeros(P, dtype=torch.bool, device=device)
+
+    _, order = torch.sort(pred_scores_final, descending=True)
+    for pj in order.tolist():
+        if matched_gt_local.all():
+            break
+
+        ious = iou_mat[:, pj].clone()
+        ious[matched_gt_local] = -1.0
+        best_iou, gi_local = ious.max(dim=0)
+        best_iou_val = float(best_iou.item())
+        gi_local = int(gi_local.item())
+
+        if best_iou_val >= iou_threshold:
+            matched_gt_local[gi_local] = True
+            matched_pr[pj] = True
+
+    matched_gt_global = eval_idx[matched_gt_local]
+    unmatched_gt_global = eval_idx[~matched_gt_local]
+    unmatched_pr = torch.where(~matched_pr)[0]
+
+    out["matched_pairs"] = []
+    if matched_gt_global.numel() > 0:
+        # Rebuild pair list deterministically: nearest matched gt for each matched pred
+        # (for detailed report only, not for counters)
+        for pj in torch.where(matched_pr)[0].tolist():
+            ious = iou_mat[:, pj].clone()
+            ious[~matched_gt_local] = -1.0
+            _, gi_local = ious.max(dim=0)
+            gi_local = int(gi_local.item())
+            gi_global = int(eval_idx[gi_local].item())
+            out["matched_pairs"].append((gi_global, int(pj)))
+
+    out["unmatched_gt"] = [int(i.item()) for i in unmatched_gt_global]
+    out["unmatched_pr"] = [int(i.item()) for i in unmatched_pr]
+
+    tp = int(matched_gt_local.sum().item())
+    fn = int((~matched_gt_local).sum().item())
+    fp = int((~matched_pr).sum().item())
+
+    out["tp"] = tp
+    out["fn"] = fn
+    out["fp"] = fp
+
+    for gi_global, pj in out["matched_pairs"]:
+        c_gt = int(gt_labels[gi_global].item())
+        c_pred = int(pred_labels_final[pj].item())
+        if c_gt in out["tp_per_cls"]:
+            out["tp_per_cls"][c_gt] += 1
+        if c_pred in out["tp_pred_cls"]:
+            out["tp_pred_cls"][c_pred] += 1
+
+    for gi_global in out["unmatched_gt"]:
+        c_gt = int(gt_labels[gi_global].item())
+        if c_gt in out["fn_per_cls"]:
+            out["fn_per_cls"][c_gt] += 1
+
+    for pj in out["unmatched_pr"]:
+        c_pred = int(pred_labels_final[pj].item())
+        if c_pred in out["fp_pred_cls"]:
+            out["fp_pred_cls"][c_pred] += 1
+
+    return out

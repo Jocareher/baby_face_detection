@@ -295,42 +295,48 @@ def infer_with_rotated_nms(
     images: torch.Tensor,
     anchors_xy: torch.Tensor,
     image_size: Tuple[int, int],
-    face_thres: float = 0.5,  # Face detection confidence threshold
-    baby_thres: float = 0.5,  # Baby detection confidence threshold
-    iou_thres: float = 0.45,  # IoU threshold for NMS
-    class_thres: float = 0.60,  # Orientation class confidence threshold
-    pre_nms_topk: int = 500,  # Number of top predictions to keep before NMS
-    max_det: int = 300,  # Maximum detections after NMS
+    face_thres: float = 0.5,
+    baby_thres: float = 0.5,
+    iou_thres: float = 0.45,
+    class_thres: float = 0.60,
+    pre_nms_topk: int = 500,
+    max_det: int = 300,
 ) -> List[Dict[str, torch.Tensor]]:
     """
-    Performs inference on images and applies rotated NMS to filter predictions.
+    Performs single-pass OBB detection with Non-Maximum Suppression (NMS).
 
-    This function handles both model forward pass and direct prediction inputs.
-    It filters predictions based on face, baby and orientation confidence thresholds,
-    then applies rotated NMS to remove redundant detections.
+    This function takes model predictions (or a model and images) and applies a two-stage filtering process:
+      1. Pre-NMS filtering: Keeps detections with face confidence >= face_thres
+      2. NMS: Suppresses overlapping boxes based on rotated IoU threshold
+      3. Post-NMS filtering: Final system gate based on face, baby, and orientation confidence thresholds
 
     Args:
-        model_or_preds: Either a model to run inference, or tuple of predictions
-        images: Input images tensor of shape (B, C, H, W)
-        anchors_xy: Anchor boxes in vertex format (N, 8)
-        image_size: Target image size as (width, height)
-        face_thres: Minimum confidence for face detection (default: 0.5)
-        baby_thres: Minimum confidence for baby detection (default: 0.5)
-        iou_thres: IoU threshold for NMS (default: 0.45)
-        class_thres: Minimum confidence for orientation class (default: 0.60)
-        pre_nms_topk: Maximum predictions to consider before NMS (default: 500)
-        max_det: Maximum detections to return after NMS (default: 300)
+        model_or_preds: Either a nn.Module for inference or tuple of raw predictions
+                       (orient_logits, face_logits, deltas, pred_angles, child_logits).
+        images (torch.Tensor): Batch of input images with shape (B, C, H, W).
+        anchors_xy (torch.Tensor): Anchor boxes in vertex format (xyxyxyxy), shape (N, 8).
+        image_size (Tuple[int, int]): Original image dimensions as (width, height).
+        face_thres (float): Minimum face detection confidence (pre-NMS and final gate). Default: 0.5.
+        baby_thres (float): Minimum baby face probability for final filtering. Default: 0.5.
+        iou_thres (float): IoU threshold for rotated NMS suppression. Default: 0.45.
+        class_thres (float): Minimum orientation/class confidence for final filtering. Default: 0.60.
+        pre_nms_topk (int): Maximum number of detections to keep before NMS. Default: 500.
+        max_det (int): Maximum number of final detections per image after NMS. Default: 300.
 
     Returns:
-        List of dictionaries containing filtered predictions for each image:
-            - boxes: Rotated boxes in (cx, cy, w, h, angle) format
-            - scores: Confidence scores
-            - labels: Orientation class labels
-            - polygons: Box vertices in (x1,y1,x2,y2,x3,y3,x4,y4) format
-            - child_score: Baby detection confidence
-            - is_child: Boolean mask indicating baby detections
+        List[Dict[str, torch.Tensor]]: List of detection dictionaries (one per image) containing:
+            - "boxes" (N, 5): Rotated boxes in (cx, cy, w, h, angle) format.
+            - "polygons" (N, 8): Rotated boxes in vertex format (xyxyxyxy).
+            - "labels" (N,): Class labels for each detection.
+            - "face_score" (N,): Face detection confidence scores.
+            - "child_score" (N,): Baby face probability scores.
+            - "orient_score" (N,): Orientation/class confidence scores.
+            - "score_nms" (N,): NMS ranking scores (face * orientation).
+            - "final_score" (N,): Final combined scores (face * baby * orientation).
+            - "nms_keep" (N,): Boolean mask indicating boxes retained after NMS.
+            - "final_keep" (N,): Boolean mask indicating boxes passing final system gate.
     """
-    # Run model if needed, otherwise use provided predictions
+    # Extract predictions from model if needed, otherwise use provided predictions
     if isinstance(model_or_preds, nn.Module):
         orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds(
             images
@@ -338,74 +344,99 @@ def infer_with_rotated_nms(
     else:
         orient_logits, face_logits, deltas, pred_angles, child_logits = model_or_preds
 
-    B = images.size(0)  # Batch size
+    device = images.device
+    batch_size = images.size(0)
+
     # Convert logits to probabilities
-    face_prob = torch.sigmoid(face_logits.squeeze(-1))  # Face detection probabilities
-    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # Baby detection probabilities
-    orientation_probs = F.softmax(
-        orient_logits, dim=-1
-    )  # Orientation class probabilities
+    face_prob = torch.sigmoid(
+        face_logits.squeeze(-1)
+    )  # [B, A] face detection confidence
+    child_prob = torch.sigmoid(child_logits.squeeze(-1))  # [B, A] baby face probability
+    orient_probs = F.softmax(orient_logits, dim=-1)  # [B, A, C] class probabilities
+    orient_conf, orient_labels = orient_probs.max(
+        dim=-1
+    )  # [B, A] max confidence and class labels
 
-    outputs = []
-    for b in range(B):
-        # Get most likely orientation class and confidence
-        orient_conf, orient_labels = orientation_probs[b].max(-1)
+    outputs: List[Dict[str, torch.Tensor]] = []
 
-        # Filter predictions based on confidence thresholds
-        keep = (
-            (face_prob[b] >= face_thres)
-            & (child_prob[b] >= baby_thres)
-            & (orient_conf >= class_thres)
-        )
+    # Process each image in the batch
+    for b in range(batch_size):
+        # === STAGE 1: Pre-NMS candidate filtering ===
+        # Keep only detections with sufficient face confidence
+        keep_face = face_prob[b] >= face_thres
+        idx = keep_face.nonzero(as_tuple=False).squeeze(1)
 
-        # Handle case with no valid detections
-        if not keep.any():
+        # Handle empty detection case
+        if idx.numel() == 0:
+            empty_f = torch.empty(0, device=device)
             outputs.append(
-                dict(
-                    boxes=torch.empty(0, 5, device=images.device),
-                    scores=torch.empty(0, device=images.device),
-                    labels=torch.empty(0, device=images.device),
-                    polygons=torch.empty(0, 8, device=images.device),
-                    child_score=torch.empty(0, device=images.device),
-                    is_child=torch.empty(0, dtype=torch.bool, device=images.device),
-                )
+                {
+                    "boxes": torch.empty(0, 5, device=device),
+                    "polygons": torch.empty(0, 8, device=device),
+                    "labels": torch.empty(0, dtype=torch.long, device=device),
+                    "face_score": empty_f,
+                    "child_score": empty_f,
+                    "orient_score": empty_f,
+                    "score_nms": empty_f,
+                    "final_score": empty_f,
+                    "nms_keep": torch.empty(0, dtype=torch.bool, device=device),
+                    "final_keep": torch.empty(0, dtype=torch.bool, device=device),
+                }
             )
             continue
 
-        # Get indices of kept predictions and apply top-k filtering
-        idx = keep.nonzero().squeeze(1)
-        K = min(pre_nms_topk, idx.numel())
-        score = face_prob[b] * child_prob[b] * orient_conf  # Combined score
-        topk = score[idx].topk(K).indices
-        sel = idx[topk]
+        # === STAGE 2: Top-K filtering before NMS ===
+        # Use face * orientation confidence as NMS ranking score (exclude baby gating here)
+        score_nms_all = face_prob[b] * orient_conf[b]
+        topk_k = min(pre_nms_topk, idx.numel())
+        topk_local = score_nms_all[idx].topk(topk_k).indices
+        sel = idx[topk_local]  # Final anchor indices selected for NMS
 
-        # Decode prediction boxes from deltas
+        # === STAGE 3: Decode predictions ===
+        # Convert anchor deltas and angles to vertex format
         verts = decode_vertices(
             deltas[b][sel],
-            anchors_xy[sel].to(images.device),
+            anchors_xy[sel].to(device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
         )
-        # Convert vertices to (cx,cy,w,h,angle) format for NMS
+        # Convert vertices to parameterized format (cx, cy, w, h, theta)
         xywhr = verts_to_xywhr_with_theta(verts, pred_angles[b][sel].squeeze(-1))
 
-        # Apply rotated NMS and limit detections
-        keep_nms = nms_rotated(xywhr, score[sel], iou_thres)[:max_det]
-        sel_final = sel[keep_nms]
-        child_scores = child_prob[b][sel][keep_nms]
-        is_child = child_scores >= baby_thres
+        # === STAGE 4: Rotated NMS ===
+        # Suppress overlapping boxes based on rotated IoU threshold
+        keep_nms_idx = nms_rotated(xywhr, score_nms_all[sel], iou_thres)[:max_det]
 
-        # Store filtered predictions
+        # === STAGE 5: Collect post-NMS results ===
+        boxes = xywhr[keep_nms_idx]
+        polygons = verts[keep_nms_idx]
+        labels = orient_labels[b][sel][keep_nms_idx].long()
+
+        f_sc = face_prob[b][sel][keep_nms_idx]
+        c_sc = child_prob[b][sel][keep_nms_idx]
+        o_sc = orient_conf[b][sel][keep_nms_idx]
+        s_nms = score_nms_all[sel][keep_nms_idx]
+        s_final = f_sc * c_sc * o_sc
+
+        # === STAGE 6: Final system gate ===
+        # Apply all confidence thresholds for final filtering
+        final_keep = (f_sc >= face_thres) & (c_sc >= baby_thres) & (o_sc >= class_thres)
+
         outputs.append(
-            dict(
-                boxes=xywhr[keep_nms],
-                scores=score[sel][keep_nms],
-                labels=orient_labels[sel_final].float(),
-                polygons=verts[keep_nms],
-                child_score=child_scores,
-                is_child=is_child,
-            )
+            {
+                "boxes": boxes,
+                "polygons": polygons,
+                "labels": labels,
+                "face_score": f_sc,
+                "child_score": c_sc,
+                "orient_score": o_sc,
+                "score_nms": s_nms,
+                "final_score": s_final,
+                "nms_keep": torch.ones_like(final_keep, dtype=torch.bool),
+                "final_keep": final_keep,
+            }
         )
+
     return outputs
 
 

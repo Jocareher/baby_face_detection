@@ -850,6 +850,13 @@ class RandomRotateOBBEqualizeBins:
         self.num_bins = int(len(self.bin_centers_deg))
 
         self.prob_bins = self.build_bin_probabilities(bin_weights=bin_weights)
+    
+    @staticmethod
+    def wrap_to_pi_np(x: float) -> float:
+        """
+        Wrap scalar angle (radians) to [-pi, pi) using NumPy scalar math.
+        """
+        return float((x + np.pi) % (2.0 * np.pi) - np.pi)
 
     def build_bin_probabilities(
         self, bin_weights: Optional[Sequence[int]]
@@ -906,72 +913,48 @@ class RandomRotateOBBEqualizeBins:
 
     def delta_to_bin_center(self, theta_rad: float, center_deg: float) -> float:
         """
-        Compute a rotation delta (radians) that moves a reference angle close to a target bin center.
-
-        Because your histogram is built over [0, 180) using |angle|, there are two equivalent
-        target directions (+center and -center). We choose the delta that minimizes absolute rotation.
-
-        Args:
-            theta_rad: Reference GT angle in radians.
-            center_deg: Target bin center in degrees.
-
-        Returns:
-            Rotation delta in radians (wrapped to [-pi, pi]) that is smallest in magnitude.
+        Original logic preserved from old implementation.
         """
-        target = math.radians(center_deg)
-
-        cand1 = wrap_to_pi(theta_rad - target)
-        cand2 = wrap_to_pi(theta_rad + target)
-
-        return cand1 if abs(cand1) <= abs(cand2) else cand2
+        trg = float(np.deg2rad(center_deg))
+        cands = np.array(
+            [
+                self.wrap_to_pi_np(theta_rad - trg),
+                self.wrap_to_pi_np(theta_rad + trg),
+            ],
+            dtype=np.float32,
+        )
+        return float(cands[np.argmin(np.abs(cands))])
 
     def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Apply the transform to a sample with probability `self.prob`.
-
-        Args:
-            sample: A dict containing "image" and "target".
-
-        Returns:
-            The (possibly) rotated sample dict.
-        """
         if float(np.random.rand()) > self.prob:
             return sample
 
-        image = sample["image"]
         target = sample["target"]
-
-        boxes = target.get("boxes", None)
-        angles = target.get("angles", None)
+        boxes = target.get("boxes")
+        angles = target.get("angles")
 
         if boxes is None or angles is None or boxes.numel() == 0:
-            random_phi = math.radians(
-                float(np.random.uniform(-self.max_angle, self.max_angle))
-            )
-            return self.apply_rotation(sample=sample, angle_rad=random_phi)
+            phi = float(np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle)))
+            return self.apply_rotation(sample, phi)
 
-        ref_idx = self.choose_reference_index(boxes=boxes, policy=self.ref_policy)
+        ref_idx = self.choose_reference_index(boxes, self.ref_policy)
         if ref_idx < 0:
-            random_phi = math.radians(
-                float(np.random.uniform(-self.max_angle, self.max_angle))
-            )
-            return self.apply_rotation(sample=sample, angle_rad=random_phi)
+            phi = float(np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle)))
+            return self.apply_rotation(sample, phi)
 
         theta_ref = float(angles[ref_idx].item())
-        limit = math.radians(self.max_angle) + 1e-6
+        lim = float(np.deg2rad(self.max_angle) + 1e-6)
 
         for _ in range(self.max_tries):
             k = int(np.random.choice(self.num_bins, p=self.prob_bins))
-            delta = self.delta_to_bin_center(
-                theta_rad=theta_ref, center_deg=float(self.bin_centers_deg[k])
+            delta = self._delta_to_bin_center_original(
+                theta_ref, float(self.bin_centers_deg[k])
             )
-            if abs(delta) <= limit:
-                return self.apply_rotation(sample=sample, angle_rad=delta)
+            if abs(delta) <= lim:
+                return self.apply_rotation(sample, delta)
 
-        random_phi = math.radians(
-            float(np.random.uniform(-self.max_angle, self.max_angle))
-        )
-        return self.apply_rotation(sample=sample, angle_rad=random_phi)
+        phi = float(np.deg2rad(np.random.uniform(-self.max_angle, self.max_angle)))
+        return self.apply_rotation(sample, phi)
 
     def apply_rotation(
         self, sample: Dict[str, Any], angle_rad: float

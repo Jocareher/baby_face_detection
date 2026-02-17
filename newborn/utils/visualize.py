@@ -2414,7 +2414,7 @@ def plot_qualitative_grid(
 
         # Draw predicted OBBs (blue solid boxes)
         for i, (pts, lbl, score) in enumerate(
-            zip(out["polygons"], out["labels"], out["scores"])
+            zip(out["polygons"], out["labels"], out["final_score"])
         ):
             pts_np = pts.view(4, 2).numpy()
             # Draw OBB polygon
@@ -2516,44 +2516,3 @@ def plot_histograms_split(
     fig.savefig(out_dir / f"{tag}_perclass_bin{bin_deg}.png", dpi=200)
     plt.close(fig)
 
-
-def compute_face_vs_bg_metrics(
-    y_true: List[int], y_pred: List[int]
-) -> Dict[str, float]:
-    """
-    Compute interpretable Face-vs-BG image-level metrics from binary labels.
-
-    Convention:
-        Positive class = Face (1)
-        Negative class = BG (0)
-
-    Args:
-        y_true: Ground-truth labels (0/1).
-        y_pred: Predicted labels (0/1).
-
-    Returns:
-        Dictionary with TP, TN, FP, FN and derived rates.
-    """
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel()
-
-    total = tp + tn + fp + fn
-    acc = (tp + tn) / total if total > 0 else 0.0
-    precision_face = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall_face = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    specificity_bg = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    fpr_bg = fp / (fp + tn) if (fp + tn) > 0 else 0.0
-    fnr_face = fn / (fn + tp) if (fn + tp) > 0 else 0.0
-
-    return {
-        "tn_bg_correct_reject": float(tn),
-        "fp_bg_false_alarm": float(fp),
-        "fn_face_miss": float(fn),
-        "tp_face_detected": float(tp),
-        "accuracy": float(acc),
-        "precision_face": float(precision_face),
-        "recall_face": float(recall_face),
-        "specificity_bg": float(specificity_bg),
-        "fpr_bg": float(fpr_bg),
-        "fnr_face": float(fnr_face),
-    }

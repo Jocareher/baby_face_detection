@@ -47,7 +47,6 @@ from utils.visualize import (
     plot_qualitative_grid,
     plot_error_bar_mean_std_by_gt_bins,
     plot_error_box_by_gt_bins,
-    plot_face_vs_bg_confusion_matrices,
 )
 from data_setup.augmentations import wrap_to_pi
 

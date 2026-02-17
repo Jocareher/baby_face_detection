@@ -947,7 +947,7 @@ class RandomRotateOBBEqualizeBins:
 
         for _ in range(self.max_tries):
             k = int(np.random.choice(self.num_bins, p=self.prob_bins))
-            delta = self._delta_to_bin_center_original(
+            delta = self.delta_to_bin_center(
                 theta_ref, float(self.bin_centers_deg[k])
             )
             if abs(delta) <= lim:

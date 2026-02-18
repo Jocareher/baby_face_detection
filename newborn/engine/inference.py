@@ -1895,7 +1895,7 @@ def export_predictions(
                             out_b.get("boxes")
                         )  # (N,5) -> cx,cy,w,h,theta
                         labels_np = to_numpy(out_b.get("labels"))
-                        scores_np = to_numpy(out_b.get("scores"))
+                        scores_np = to_numpy(out_b.get("final_score"))
                         polys_np = to_numpy(out_b.get("polygons"))  # (N,8) or (N,4,2)
 
                         # Normalize/reconstruct polygons if needed

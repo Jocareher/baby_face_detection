@@ -440,8 +440,7 @@ def encode_vertices(
     diag = (anc_xy[:, 0] - anc_xy[:, 2]).norm(dim=1, keepdim=True)  # (N,1)
     offs = offs / (diag.unsqueeze(-1) * scale)  # (N,4,2)
 
-    return offs.reshape(N, 8).clamp_(-1.0, 1.0)
-
+    return offs.reshape(N, 8)
 
 def verts_to_xywhr_with_theta(verts: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     """

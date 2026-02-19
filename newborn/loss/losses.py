@@ -583,7 +583,7 @@ class MultiTaskLoss(nn.Module):
             pos_weight=torch.tensor(face_pos_weight), reduction="mean"
         )
         self.obb_loss = OBBRegressionLoss(
-            loss_type=obb_loss_type, beta=2.0, reduction="mean"
+            loss_type=obb_loss_type, beta=0.5, reduction="mean"
         )
         self.child_loss = nn.BCEWithLogitsLoss(reduction="mean")
         self.rot_loss = RotationLoss(mode=rot_loss_type)

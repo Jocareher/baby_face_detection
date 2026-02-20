@@ -276,7 +276,8 @@ def decode_vertices(
     anchors: torch.Tensor,  # (N, 8) — Anchor box vertices in pixel coordinates
     pred_angles: torch.Tensor,  # (N,) — Predicted box rotation angles in radians
     image_size: Tuple[int, int],  # (W, H)
-    scale: float = 0.5,  # Scale factor for offsets
+    scale: float = 1.0,  # Scale factor for offsets
+    clamp: bool = False,  # Whether to clamp output vertices to image bounds
 ) -> torch.Tensor:
     """
     Decodes predicted normalized vertex offsets into absolute OBB vertex coordinates.
@@ -294,7 +295,8 @@ def decode_vertices(
             ordered as (x0, y0, x1, y1, x2, y2, x3, y3).
         pred_angles (torch.Tensor): Tensor of shape (N,) with predicted rotation angles in radians.
         image_size (Tuple[int, int]): Tuple (width, height) specifying the image dimensions for clamping.
-        scale (float, optional): Scaling factor applied to the offset magnitude. Default is 0.5.
+        scale (float, optional): Scaling factor applied to the offset magnitude. Default is 1.0.
+        clamp (bool, optional): If True, clamps the output vertex coordinates to the image bounds. Default is False.
 
     Returns:
         torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex positions for each OBB,
@@ -324,8 +326,12 @@ def decode_vertices(
     verts = anc_xy + offs_rot  # (N, 4, 2)
 
     # Clamp coordinates to image bounds
-    verts[..., 0].clamp_(0, W)
-    verts[..., 1].clamp_(0, H)
+    if clamp:
+        verts[..., 0].clamp_(0, W)
+        verts[..., 1].clamp_(0, H)
+    else:
+        verts[..., 0].clamp_(-W, W * 2) # Allow some leeway for boxes slightly outside the image
+        verts[..., 1].clamp_(-H, H * 2) 
     return verts.view(N, 8)
 
 
@@ -391,7 +397,7 @@ def encode_vertices(
     gt_boxes: torch.Tensor,  # (N, 8) absolute vertex coordinates of ground truth OBBs
     anchors: torch.Tensor,  # (N, 8) absolute vertex coordinates of anchor OBBs
     gt_angles: torch.Tensor,  # (N,) rotation angles of ground truth OBBs in radians
-    scale: float = 0.5,  # Scale factor for normalization
+    scale: float = 1.0,  # Scale factor for normalization
 ) -> torch.Tensor:
     """
     Encodes ground truth oriented bounding boxes (OBBs) as normalized deltas

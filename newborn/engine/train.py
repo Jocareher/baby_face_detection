@@ -398,7 +398,7 @@ def infer_with_rotated_nms(
             deltas[b][sel],
             anchors_xy[sel].to(device),
             pred_angles[b][sel].squeeze(-1),
-            image_size,
+            image_size, clamp=True
         )
         # Convert vertices to parameterized format (cx, cy, w, h, theta)
         xywhr = verts_to_xywhr_with_theta(verts, pred_angles[b][sel].squeeze(-1))
@@ -988,7 +988,7 @@ def train_step(
             targets_raw, device
         )  # Prepare targets for loss
 
-        optimizer.zero_grad()  # Reset gradients before backward pass
+        optimizer.zero_grad(set_to_none=True)  # Reset gradients before backward pass. Set to None for potential memory savings.
         anchors_xy, anchors_xywhr = anchors
         # batch_anchors = anchors_xy.unsqueeze(0).repeat(
         #     images.size(0), 1, 1

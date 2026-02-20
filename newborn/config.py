@@ -188,7 +188,7 @@ def get_train_transform(
 
     return transforms.Compose(
         [
-            RandomHorizontalFlipOBB(prob=0.5),
+            #RandomHorizontalFlipOBB(prob=0.5),
             rot,
             RandomOcclusionOBB(max_size_ratio=0.5, prob=0.5),
             RandomNoiseOBB(std=10, prob=0.7),

@@ -850,7 +850,7 @@ class RandomRotateOBBEqualizeBins:
         self.num_bins = int(len(self.bin_centers_deg))
 
         self.prob_bins = self.build_bin_probabilities(bin_weights=bin_weights)
-    
+
     @staticmethod
     def wrap_to_pi_np(x: float) -> float:
         """
@@ -947,9 +947,7 @@ class RandomRotateOBBEqualizeBins:
 
         for _ in range(self.max_tries):
             k = int(np.random.choice(self.num_bins, p=self.prob_bins))
-            delta = self.delta_to_bin_center(
-                theta_ref, float(self.bin_centers_deg[k])
-            )
+            delta = self.delta_to_bin_center(theta_ref, float(self.bin_centers_deg[k]))
             if abs(delta) <= lim:
                 return self.apply_rotation(sample, delta)
 
@@ -957,6 +955,30 @@ class RandomRotateOBBEqualizeBins:
         return self.apply_rotation(sample, phi)
 
     def apply_rotation(self, sample: dict, angle_rad: float) -> dict:
+        """
+        Apply rotation transformation to an image and its corresponding OBBs.
+        
+        This method rotates an image by a specified angle and adjusts all associated
+        obb coordinates and rotation angles accordingly. The image canvas is
+        expanded to accommodate the rotated content without clipping.
+        
+        Args:
+            sample (dict): A dictionary containing:
+                - "image": numpy array of shape (H, W, C) representing the input image
+                - "target": dict with keys:
+                    - "boxes": tensor of shape (N, 8) representing 4 corner points of N boxes
+                              in format [x1, y1, x2, y2, x3, y3, x4, y4]
+                    - "angles": tensor of shape (N,) containing rotation angles in radians
+            angle_rad (float): Rotation angle in radians. Positive values rotate counter-clockwise.
+        
+        Returns:
+            dict: Updated sample dictionary with:
+                - "image": rotated image with expanded canvas to prevent clipping
+                - "target": dict with updated:
+                    - "boxes": transformed obb coordinates in the rotated image space
+                    - "angles": adjusted rotation angles (wrapped to [-π, π])
+                    - "valid_mask": boolean mask indicating valid boxes (all True if N > 0)
+        """
         image, target = sample["image"], sample["target"]
         h, w = image.shape[:2]
         ang_deg = float(np.rad2deg(angle_rad))
@@ -964,28 +986,35 @@ class RandomRotateOBBEqualizeBins:
         c, s = abs(np.cos(angle_rad)), abs(np.sin(angle_rad))
         new_w, new_h = int(h * s + w * c), int(h * c + w * s)
 
-        rot = cv2.getRotationMatrix2D((w/2.0, h/2.0), ang_deg, 1.0).astype(np.float32)
-        rot[0,2] += (new_w - w) / 2.0
-        rot[1,2] += (new_h - h) / 2.0
+        rot = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), ang_deg, 1.0).astype(
+            np.float32
+        )
+        rot[0, 2] += (new_w - w) / 2.0
+        rot[1, 2] += (new_h - h) / 2.0
 
         img_rot = cv2.warpAffine(image, rot, (new_w, new_h), flags=cv2.INTER_LINEAR)
 
-        boxes = target["boxes"].clone(); N = boxes.shape[0]
+        boxes = target["boxes"].clone()
+        N = boxes.shape[0]
         if N > 0:
-            pts = boxes.view(N,4,2).cpu().numpy().astype(np.float32)
-            hom = np.concatenate([pts, np.ones((N,4,1), np.float32)], axis=2)
+            pts = boxes.view(N, 4, 2).cpu().numpy().astype(np.float32)
+            hom = np.concatenate([pts, np.ones((N, 4, 1), np.float32)], axis=2)
             pts_rot = hom @ rot.T
-            target["boxes"] = torch.tensor(pts_rot.reshape(N,8),
-                                           dtype=torch.float32, device=boxes.device)
+            target["boxes"] = torch.tensor(
+                pts_rot.reshape(N, 8), dtype=torch.float32, device=boxes.device
+            )
             ang = target["angles"].clone()
             ang = wrap_to_pi(ang - float(angle_rad))
             target["angles"] = ang
 
         sample["image"] = img_rot
-        target["valid_mask"] = torch.ones(N, dtype=torch.bool, device=target["boxes"].device) if N>0 else torch.zeros(0, dtype=torch.bool)
+        target["valid_mask"] = (
+            torch.ones(N, dtype=torch.bool, device=target["boxes"].device)
+            if N > 0
+            else torch.zeros(0, dtype=torch.bool)
+        )
         sample["target"] = target
         return sample
-
 
 
 def collect_degrees_by_class(

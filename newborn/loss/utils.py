@@ -330,8 +330,10 @@ def decode_vertices(
         verts[..., 0].clamp_(0, W)
         verts[..., 1].clamp_(0, H)
     else:
-        verts[..., 0].clamp_(-W, W * 2) # Allow some leeway for boxes slightly outside the image
-        verts[..., 1].clamp_(-H, H * 2) 
+        verts[..., 0].clamp_(
+            -W, W * 2
+        )  # Allow some leeway for boxes slightly outside the image
+        verts[..., 1].clamp_(-H, H * 2)
     return verts.view(N, 8)
 
 
@@ -447,6 +449,7 @@ def encode_vertices(
     offs = offs / (diag.unsqueeze(-1) * scale)  # (N,4,2)
 
     return offs.reshape(N, 8)
+
 
 def verts_to_xywhr_with_theta(verts: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     """

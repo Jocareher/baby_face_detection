@@ -47,6 +47,7 @@ from utils.visualize import (
     plot_qualitative_grid,
     plot_error_bar_mean_std_by_gt_bins,
     plot_error_box_by_gt_bins,
+    plot_face_vs_bg_confusion_matrices,
 )
 from data_setup.augmentations import wrap_to_pi
 
@@ -138,85 +139,17 @@ def run_evaluation(
     render_original: bool = False,
 ) -> Dict[str, Any]:
     """
-    Run inference and compute comprehensive evaluation metrics across three dimensions:
-    orientation class classification, child/adult detection, and localization-only (SOTA).
+    Run inference and compute:
+      - Orientation multi-class metrics (classes in labels_map + BG=-1 in CM accounting)
+      - Child/adult binary metrics
+      - Localization-only (SOTA comparable) using ONLY final detections
 
-    This function processes a dataset through a trained model and accumulates metrics for:
-      1. Orientation multi-class metrics (orientation classes in labels_map + background=-1)
-      2. Child/adult binary classification metrics
-      3. Localization-only metrics (SOTA comparable) using ONLY final NMS-filtered detections
-
-    Args:
-        model (torch.nn.Module): Trained detection model.
-        loader (DataLoader): DataLoader providing batches with 'image' and 'target' keys.
-        anchors_xy (torch.Tensor): Anchor box coordinates for feature maps.
-        resize_size (Tuple[int, int]): Target resize size (W, H) used during inference.
-        face_thres (float): Confidence threshold for face detection.
-        iou_thres (float): IoU threshold for matching predictions to ground truth.
-        class_thres (float): Confidence threshold for orientation class predictions.
-        baby_thres (float): Confidence threshold for child/baby classification.
-        device (torch.device): Computing device ('cuda' or 'cpu').
-        labels_map (Dict[int, str]): Mapping of class indices to orientation class names.
-            Does not include background (class=-1) or adults (class=-1).
-        render_original (bool, optional): Whether to load and render predictions on original
-            resolution images for visualization. Defaults to False.
-
-    Expected keys in inference output (from infer_with_rotated_nms):
-        - boxes: Tensor [N, 5] candidate boxes in (cx, cy, w, h, θ) format after detection
-        - labels: Tensor [N] predicted orientation class labels
-        - child_score: Tensor [N] baby/child probability scores
-        - final_keep: Bool Tensor [N] mask selecting final detections after NMS
-        - final_score: Tensor [N] scores used to rank final detections for matching
-
-    Returns:
-        Dict[str, Any]: Comprehensive evaluation results containing:
-
-            **Orientation/Class Metrics:**
-                - "per_true": Dict[int, List[int]] - Binary ground truth (TP=1, FP/FN=0) per class
-                - "per_score": Dict[int, List[float]] - Confidence scores per class
-                - "stats": Dict[int, Dict] - TP/FP/FN counts per class
-                - "y_true": List[int] - Ground truth labels for class confusion matrix
-                - "y_pred": List[int] - Predicted labels for class confusion matrix
-                - "iou_errs": Dict[int, List[float]] - IoU values for TP matches per class
-                - "angle_errs": Dict[int, List[float]] - Angular errors (degrees) per class
-                - "all_gts": List[int] - All ground truth labels
-                - "all_preds": List[int] - All predicted labels
-                - "all_scores": List[float] - All confidence scores
-
-            **Angular Error by GT Bins:**
-                - "angle_errs_by_gtbin_global": Dict[int, Dict] - Angular errors binned by GT angle
-                - "angle_errs_by_gtbin_per_cls": Dict[int, Dict] - Angular errors by GT bin per class
-                - "bin_degs": Tuple[int, ...] - Bin sizes used (e.g., 20°, 10°, 5°)
-
-            **Child/Adult Binary Metrics:**
-                - "child_stats": Dict - {"tp": int, "fp": int, "fn": int}
-                - "child_gt": List[int] - Ground truth child labels (1=child, 0=adult)
-                - "child_pred": List[int] - Predicted child labels (1=child, 0=adult)
-
-            **Localization-Only Metrics (SOTA Comparable):**
-                - "loc_tp_global": int - Total true positives (localization only)
-                - "loc_fp_global": int - Total false positives
-                - "loc_fn_global": int - Total false negatives
-                - "loc_precision": float - Localization-only precision
-                - "loc_recall": float - Localization-only recall
-                - "loc_f1": float - Localization-only F1 score
-                - "loc_tp_per_cls": Dict[int, int] - TP count per class
-                - "loc_fn_per_cls": Dict[int, int] - FN count per class
-                - "loc_tp_pred_cls": Dict[int, int] - TP count among predictions per class
-                - "loc_fp_pred_cls": Dict[int, int] - FP count among predictions per class
-                - "precision_loc_pred_per_cls": Dict[int, float] - Localization precision per class
-                - "recall_loc_per_cls": Dict[int, float] - Localization recall per class
-
-            **False Positive Analysis:**
-                - "fp_in_baby_imgs": int - FP detections in images containing babies
-                - "fp_in_adult_imgs": int - FP detections in adult-only images
-                - "fp_in_bg_imgs": int - FP detections in pure background images
-
-            **Diagnostic/Report Data:**
-                - "distance_rows": List[Dict] - Detailed TP/FP/FN matching report with class distances
-                - "samples": List[Tuple] - Sample data for qualitative visualization including
-                  (normalized image tensor, predictions dict, filename, GT boxes, GT angles,
-                  GT labels, FP count, FN count, optional original image payload)
+    Expected keys per sample from infer_with_rotated_nms:
+        - boxes: Tensor [N, 5] post-NMS candidate boxes (xywhr)
+        - labels: Tensor [N] predicted orientation labels
+        - child_score: Tensor [N] baby probabilities
+        - final_keep: Bool Tensor [N] selecting final detections
+        - final_score: Tensor [N] score used to rank final detections
     """
     # -------------------------------------------------------------------------
     # Orientation metrics
@@ -491,13 +424,6 @@ def run_evaluation(
                             all_preds.append(cls_det)
                             all_scores.append(score_det)
 
-                    # child/adult from all candidates
-                    for det_idx in range(num_pred_all):
-                        pred_baby = bool(pred_child_s_all[det_idx].item() >= baby_thres)
-                        log_child(False, pred_baby)
-                        if pred_baby:
-                            child_stats["fp"] += 1
-
                     samples.append(
                         (
                             imgs[b].cpu(),
@@ -530,47 +456,43 @@ def run_evaluation(
                 # -----------------------------------------------------------------
                 # A) ALL candidates for child/adult + gt_matched_any
                 # -----------------------------------------------------------------
-                if num_pred_all > 0:
-                    _, det_order_all = torch.sort(pred_child_s_all, descending=True)
+                if num_gt > 0:
+                    if num_pred > 0:
+                        best_iou_vals, best_pred_idx = iou_final.max(dim=1)  # (num_gt,)
+                        pred_child_final = pred_child_s_all[
+                            final_keep
+                        ]  # align with pred_boxes/pred_labels
 
-                    for det_idx in det_order_all.tolist():
-                        unmatched = ~gt_matched_any
-                        if not unmatched.any():
-                            pred_baby = bool(
-                                pred_child_s_all[det_idx].item() >= baby_thres
-                            )
-                            log_child(False, pred_baby)
-                            if pred_baby:
-                                child_stats["fp"] += 1
-                            continue
+                        for gi in range(num_gt):
+                            gt_is_baby = bool(gt_child[gi].item())
 
-                        ious_col = iou_all[:, det_idx].clone()
-                        ious_col[~unmatched] = -1.0
-                        best_iou_val, best_gt_idx = ious_col.max(0)
-                        best_iou_val = float(best_iou_val.item())
-                        best_gt_idx = int(best_gt_idx.item())
+                            if float(best_iou_vals[gi].item()) >= iou_thres:
+                                pj = int(best_pred_idx[gi].item())
+                                pred_is_baby = bool(
+                                    pred_child_final[pj].item() >= baby_thres
+                                )
 
-                        if best_iou_val < iou_thres:
-                            pred_baby = bool(
-                                pred_child_s_all[det_idx].item() >= baby_thres
-                            )
-                            log_child(False, pred_baby)
-                            if pred_baby:
-                                child_stats["fp"] += 1
-                            continue
+                                log_child(gt_is_baby, pred_is_baby)
 
-                        gt_matched_any[best_gt_idx] = True
-
-                        gt_baby = bool(gt_child[best_gt_idx].item())
-                        pred_baby = bool(pred_child_s_all[det_idx].item() >= baby_thres)
-                        log_child(gt_baby, pred_baby)
-
-                        if pred_baby and gt_baby:
-                            child_stats["tp"] += 1
-                        elif pred_baby and (not gt_baby):
-                            child_stats["fp"] += 1
-                        elif (not pred_baby) and gt_baby:
-                            child_stats["fn"] += 1
+                                if gt_is_baby and pred_is_baby:
+                                    child_stats["tp"] += 1
+                                elif (not gt_is_baby) and pred_is_baby:
+                                    child_stats["fp"] += 1
+                                elif gt_is_baby and (not pred_is_baby):
+                                    child_stats["fn"] += 1
+                                # else: adult predicted adult -> TN
+                            else:
+                                # Miss: treat as predicted adult (end-to-end)
+                                log_child(gt_is_baby, False)
+                                if gt_is_baby:
+                                    child_stats["fn"] += 1
+                    else:
+                        # No predictions at all: every GT is missed
+                        for gi in range(num_gt):
+                            gt_is_baby = bool(gt_child[gi].item())
+                            log_child(gt_is_baby, False)
+                            if gt_is_baby:
+                                child_stats["fn"] += 1
 
                 # -----------------------------------------------------------------
                 # B) FINAL outputs for orientation class CM
@@ -733,15 +655,6 @@ def run_evaluation(
                     for _ in range(adult_count):
                         y_true.append(-1)
                         y_pred.append(-1)
-
-                # unmatched GT babies in ANY-match => child FN
-                for i in range(num_gt):
-                    if bool(gt_matched_any[i].item()):
-                        continue
-                    gt_baby = bool(gt_child[i].item())
-                    log_child(gt_baby, False)
-                    if gt_baby:
-                        child_stats["fn"] += 1
 
                 samples.append(
                     (
@@ -1129,65 +1042,52 @@ def inference(
     render_original: bool = False,
 ) -> Dict[str, Any]:
     """
-    Process a test dataset through a trained model and generate comprehensive evaluation metrics
-    and visualizations.
+        This function processes a test dataset through a trained model and generates comprehensive
+    evaluation metrics and visualizations.
 
-    This function performs end-to-end inference including anchor preparation, model evaluation,
-    metric computation, and detailed report generation across three evaluation dimensions:
-    orientation class classification, child/adult detection, and localization-only metrics.
+    Steps:
+        1. Anchor preparation for inference
+        2. Model inference on test set
+        3. Metrics computation and visualization generation
+        4. CSV export of metrics and confusion matrices
+        5. Saving of prediction visualizations
 
-    Args:
-        model (torch.nn.Module): Trained detection model.
-        test_loader (DataLoader): DataLoader containing test dataset with 'image' and 'target' keys.
-        output_dir (Union[str, Path]): Base directory for saving all results, figures, and predictions.
-        device (torch.device): Computing device ('cuda' or 'cpu').
-        labels_map (Dict[int, str]): Mapping of class indices to orientation class names.
-        scale_factors (List[float]): Scale factors for anchor generation.
-        ratio_factors (List[float]): Aspect ratio factors for anchor generation.
-        face_thres (float, optional): Confidence threshold for face detection. Defaults to 0.25.
-        baby_thres (float, optional): Confidence threshold for child/baby classification. Defaults to 0.25.
-        iou_thres (float, optional): IoU threshold for matching predictions to ground truth. Defaults to 0.5.
-        class_thres (float, optional): Confidence threshold for orientation class predictions. Defaults to 0.5.
-        grid_shape (Tuple[int, int], optional): Shape (rows, cols) for qualitative example grid. Defaults to (3, 3).
-        mean (Tuple[float, float, float], optional): Channel means for image denormalization.
+        - model (torch.nn.Module): Trained model for inference.
+        - test_loader (DataLoader): DataLoader containing test dataset.
+        - output_dir (Union[str, Path]): Directory path to save results and visualizations.
+        - device (torch.device): Computing device ('cuda' or 'cpu').
+        - labels_map (Dict[int, str]): Mapping of class indices to label names.
+        - scale_factors (List[float]): Scale factors for anchor box generation.
+        - ratio_factors (List[float]): Aspect ratio factors for anchor box generation.
+        - face_thres (float, optional): Confidence threshold for face detection. Defaults to 0.25.
+        - baby_thres (float, optional): Confidence threshold for baby classification. Defaults to 0.25.
+        - iou_thres (float, optional): IoU threshold for prediction matching. Defaults to 0.5.
+        - class_thres (float, optional): Confidence threshold for class predictions. Defaults to 0.5.
+        - grid_shape (Tuple[int, int], optional): Shape of prediction visualization grid (rows, cols).
+            Defaults to (3, 3).
+        - mean (Tuple[float, float, float], optional): Mean values for image normalization.
             Defaults to (0.485, 0.456, 0.406).
-        std (Tuple[float, float, float], optional): Channel standard deviations for denormalization.
+        - std (Tuple[float, float, float], optional): Standard deviation values for image normalization.
             Defaults to (0.229, 0.224, 0.225).
-        save_figs (bool, optional): Whether to save generated matplotlib figures. Defaults to True.
-        close_figs (bool, optional): Whether to close figures after saving to free memory. Defaults to True.
-        anchors_cache_path (Union[str, Path], optional): Path to cache/load generated anchors. Defaults to None.
-        render_original (bool, optional): Whether to render predictions on original resolution images.
-            Defaults to False.
+        - save_figs (bool, optional): Whether to save generated figures. Defaults to True.
+        - close_figs (bool, optional): Whether to close figures after saving. Defaults to True.
+        - anchors_cache_path (Union[str, Path], optional): Path to cache generated anchors.
+            Defaults to None.
 
-    Returns:
-        Dict[str, Any]: Summary results dictionary containing:
-            - "mAP" (float): Mean Average Precision across all orientation classes.
-            - "APs" (Dict[int, float]): Per-class Average Precision scores.
-            - "loc_precision" (float): Localization-only precision (SOTA comparable).
-            - "loc_recall" (float): Localization-only recall (SOTA comparable).
-            - "loc_f1" (float): Localization-only F1 score (SOTA comparable).
-            - "metrics_csv" (Path): Path to exported metrics and confusion matrix CSV.
-            - "distance_csv" (Path): Path to detailed TP/FP/FN matching report CSV.
+            - "mAP": Mean Average Precision across all classes
+            - "APs": Dictionary of per-class Average Precision scores
+        -  render_original (bool, optional): Whether to render predictions on original images. Defaults to False.
 
-    Generated Output Files:
-        - figures/: Matplotlib visualizations including:
-            - precision_recall.png: PR curves with mAP summary
-            - child_cm_raw.png, child_cm_normalized.png: Child/adult confusion matrices
-            - class_cm_raw.png, class_cm_normalized.png: Orientation class confusion matrices
-            - iou_boxplot.png: IoU distribution per class
-            - angle_boxplot.png: Angular error distribution per class
-            - box_angle_error_per_bin_*.png: Angular error by GT angle bins
-            - hist_angle_error_per_bin_*.png: Mean±std of angular errors by bins
-            - angle_error_per_class_bar_bin_*.png: Per-class angular error analysis
-            - f1_threshold.png: F1 score vs confidence threshold
-            - grid_examples.png: Qualitative grid of predictions
-        - predictions/: Individual prediction visualizations with GT/pred overlays:
-            - tp_only/: Perfect predictions (TP only)
-            - fp/: False positives only
-            - fn/: False negatives only
-            - fp_fn/: Both error types
-        - metrics.csv: Per-class metrics (TP/FP/FN/P/R/F1/AP), confusion matrices
-        - distance_report.csv: Detailed matching report with class distances for diagnostics
+    Generated Outputs:
+        - Precision-Recall curves
+        - Confusion matrices (raw and normalized) for class predictions
+        - Confusion matrices (raw and normalized) for child/adult classification
+        - IoU distribution boxplots per class
+        - Angle error distribution boxplots per class
+        - F1 score vs confidence threshold plots
+        - Grid of qualitative prediction examples
+        - Individual prediction visualizations
+        - CSV files with metrics and confusion matrices
     """
 
     def save_figure(fig: plt.Figure, fname: str):
@@ -1395,34 +1295,22 @@ def export_metrics_and_confusion_csv(
     fname: str = "metrics.csv",
 ) -> Path:
     """
-    Export comprehensive evaluation results to a single CSV file containing multiple sections.
+    Export evaluation results to a single CSV with:
+      1) Per-class metrics (orientation classes + BG row)
+      2) Child/adult metrics summary
+      3) Raw class confusion matrix
+      4) Normalized class confusion matrix
+      5) Raw child confusion matrix
+      6) Normalized child confusion matrix
 
-     This function processes evaluation results and writes them to a CSV file organized in the
-     following sections:
-       1) Per-class metrics (precision, recall, F1, AP, IoU, angle errors for each orientation class + BG)
-       2) Child/adult classification metrics summary
-       3) Raw class confusion matrix (orientation classes + background)
-       5) Raw child vs. adult confusion matrix
-       6) Normalized child vs. adult confusion matrix
-       7) Localization-only metrics (SOTA comparable) with per-class breakdown
+    Args:
+        results: Output dictionary from run_evaluation.
+        labels_map: Mapping from class id to class name for orientation classes.
+        out_dir: Output directory.
+        fname: CSV filename.
 
-         results (dict): Output dictionary from run_evaluation containing:
-             - stats: Per-class TP/FP/FN counts
-             - per_true, per_score: Ground truth and prediction scores for AP calculation
-             - iou_errs, angle_errs: Localization error lists per class
-             - y_true, y_pred: Class-level predictions
-             - child_stats: TP/FP/FN for child/adult classification
-             - child_gt, child_pred: Child/adult ground truth and predictions
-             - loc_*: Localization-only metrics
-             - fp_in_*_imgs: False positive counts by image type
-         labels_map (Dict[int, str]): Mapping from class ID to class name (orientation classes).
-         out_dir (Path): Output directory where CSV file will be saved.
-         fname (str, optional): CSV filename. Defaults to "metrics.csv".
-
-         Path: Path to the saved CSV file.
-
-     Raises:
-         Creating parent directories if they don't exist (parents=True).
+    Returns:
+        Path to the saved CSV file.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / fname

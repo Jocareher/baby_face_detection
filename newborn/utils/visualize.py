@@ -230,7 +230,7 @@ def visualize_predictions(
     """
     W, H = image_sizes[0]
 
-    pred_xy = decode_vertices(pred_obbs[0], anchors[0], (W, H))
+    pred_xy = decode_vertices(pred_obbs[0], anchors[0], (W, H), clamp=True)
     pred_xywhr = xyxyxyxy2xywhr(pred_xy, pred_angles[0].squeeze(-1), (W, H))
     gt_xywhr = xyxyxyxy2xywhr(gt_obbs[0], gt_angles[1], (W, H))
 
@@ -2515,4 +2515,3 @@ def plot_histograms_split(
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(out_dir / f"{tag}_perclass_bin{bin_deg}.png", dpi=200)
     plt.close(fig)
-

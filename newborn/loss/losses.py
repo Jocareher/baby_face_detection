@@ -751,6 +751,7 @@ class MultiTaskLoss(nn.Module):
                     anc_xy_1,
                     ang_1,
                     image_sizes[b],
+                    clamp_mode="wide"
                 )
                 anc_xywhr_1 = verts_to_xywhr_with_theta(verts_1, ang_1)
 
@@ -792,7 +793,7 @@ class MultiTaskLoss(nn.Module):
 
             # ---------- Orthogonality loss ----------
             verts_pred = decode_vertices(
-                pred_deltas_2, anc_xy_2, pa_2, image_sizes[b]
+                pred_deltas_2, anc_xy_2, pa_2, image_sizes[b], clamp_mode="none"
             ).view(-1, 4, 2)
             rect_loss += orthogonality_loss(verts_pred)
 

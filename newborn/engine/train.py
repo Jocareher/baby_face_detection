@@ -399,7 +399,7 @@ def infer_with_rotated_nms(
             anchors_xy[sel].to(device),
             pred_angles[b][sel].squeeze(-1),
             image_size,
-            clamp=True,
+            clamp_mode="image",
         )
         # Convert vertices to parameterized format (cx, cy, w, h, theta)
         xywhr = verts_to_xywhr_with_theta(verts, pred_angles[b][sel].squeeze(-1))

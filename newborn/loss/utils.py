@@ -277,7 +277,7 @@ def decode_vertices(
     pred_angles: torch.Tensor,  # (N,) — Predicted box rotation angles in radians
     image_size: Tuple[int, int],  # (W, H)
     scale: float = 1.0,  # Scale factor for offsets
-    clamp: bool = False,  # Whether to clamp output vertices to image bounds
+    clamp_mode: str = "none"
 ) -> torch.Tensor:
     """
     Decodes predicted normalized vertex offsets into absolute OBB vertex coordinates.
@@ -296,8 +296,10 @@ def decode_vertices(
         pred_angles (torch.Tensor): Tensor of shape (N,) with predicted rotation angles in radians.
         image_size (Tuple[int, int]): Tuple (width, height) specifying the image dimensions for clamping.
         scale (float, optional): Scaling factor applied to the offset magnitude. Default is 1.0.
-        clamp (bool, optional): If True, clamps the output vertex coordinates to the image bounds. Default is False.
-
+        clamp_mode (str, optional): Mode for clamping vertex coordinates. Options are "none", "image", or "extended".
+            - "none": No clamping.
+            - "image": Clamp to image bounds.
+            - "wide": Allow some leeway for boxes slightly outside the image. Default is "none".
     Returns:
         torch.Tensor: Tensor of shape (N, 8) containing the decoded absolute vertex positions for each OBB,
             clamped to the image bounds.
@@ -325,15 +327,18 @@ def decode_vertices(
     # Add rotated offsets to anchor vertices to get decoded vertices
     verts = anc_xy + offs_rot  # (N, 4, 2)
 
-    # Clamp coordinates to image bounds
-    if clamp:
-        verts[..., 0].clamp_(0, W)
-        verts[..., 1].clamp_(0, H)
-    else:
-        verts[..., 0].clamp_(
-            -W, W * 2
-        )  # Allow some leeway for boxes slightly outside the image
-        verts[..., 1].clamp_(-H, H * 2)
+    # Clamp coordinates (optional)
+    if clamp_mode == "image":
+        verts = verts.clone()
+        verts[..., 0] = verts[..., 0].clamp(0, W)
+        verts[..., 1] = verts[..., 1].clamp(0, H)
+    elif clamp_mode == "wide":
+        verts = verts.clone()
+        verts[..., 0] = verts[..., 0].clamp(-W, 2 * W)
+        verts[..., 1] = verts[..., 1].clamp(-H, 2 * H)
+    elif clamp_mode != "none":
+        raise ValueError(f"Invalid clamp_mode: {clamp_mode}. Use 'none', 'wide', or 'image'.")
+
     return verts.view(N, 8)
 
 

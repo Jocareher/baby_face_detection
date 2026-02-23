@@ -386,8 +386,8 @@ def infer_with_rotated_nms(
             continue
 
         # === STAGE 2: Top-K filtering before NMS ===
-        # Use face * orientation confidence as NMS ranking score (exclude baby gating here)
-        score_nms_all = face_prob[b] * orient_conf[b]
+        # Use face * orientation confidence as NMS ranking score
+        score_nms_all = face_prob[b] * orient_conf[b] * child_prob[b]
         topk_k = min(pre_nms_topk, idx.numel())
         topk_local = score_nms_all[idx].topk(topk_k).indices
         sel = idx[topk_local]  # Final anchor indices selected for NMS

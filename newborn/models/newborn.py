@@ -59,7 +59,11 @@ class OBBHead(nn.Module):
 
     def __init__(self, in_ch: int):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, config.NUM_ANCHORS * 8, kernel_size=1)
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_ch, config.NUM_ANCHORS * 8, kernel_size=1),
+        )
 
     def forward(self, x):
         # Apply 1x1 convolution, reshape and apply tanh to constrain output to [-1, 1]
@@ -68,7 +72,7 @@ class OBBHead(nn.Module):
         # The vertices are represented as (Δx1, Δy1, Δx2, Δy2, Δx3, Δy3, Δx4, Δy4)
         # The output is reshaped to (B, N, 8) where N = H × W × num_anchors
         return self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
-          # torch.tanh(
+        # torch.tanh(
         # self.conv(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 8)
 
 

@@ -747,11 +747,7 @@ class MultiTaskLoss(nn.Module):
                 anc_xy_1 = anchors_xy[pos_mask_1_baby]
                 ang_1 = pred_angles[b][pos_mask_1_baby].squeeze(-1)
                 verts_1 = decode_vertices(
-                    pred_deltas_1,
-                    anc_xy_1,
-                    ang_1,
-                    image_sizes[b],
-                    clamp_mode="wide"
+                    pred_deltas_1, anc_xy_1, ang_1, image_sizes[b], clamp_mode="wide"
                 )
                 anc_xywhr_1 = verts_to_xywhr_with_theta(verts_1, ang_1)
 

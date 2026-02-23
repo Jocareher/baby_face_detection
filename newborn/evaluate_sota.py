@@ -551,9 +551,9 @@ def evaluate_sota(
         "iou_stats_all_gt": iou_stats,
         "angle_stats_all_gt": angle_stats,
         "iou_all_gts_per_cls": iou_all_gts_per_cls,
-        "angle_all_gts_per_cls": angle_all_gts_per_cls
-        if angle_stats is not None
-        else None,
+        "angle_all_gts_per_cls": (
+            angle_all_gts_per_cls if angle_stats is not None else None
+        ),
     }
 
 
@@ -1223,9 +1223,11 @@ def evaluate_obb(
     TP_baby_total = int(sum(loc_tp_per_cls.values()))
     recall_micro_baby = (TP_baby_total / GT_baby_total) if GT_baby_total > 0 else 0.0
     recalls_per_cls = {
-        c: (loc_tp_per_cls[c] / (loc_tp_per_cls[c] + loc_fn_per_cls[c]))
-        if (loc_tp_per_cls[c] + loc_fn_per_cls[c]) > 0
-        else 0.0
+        c: (
+            (loc_tp_per_cls[c] / (loc_tp_per_cls[c] + loc_fn_per_cls[c]))
+            if (loc_tp_per_cls[c] + loc_fn_per_cls[c]) > 0
+            else 0.0
+        )
         for c in LABELS_MAP
     }
     recalls_present = [

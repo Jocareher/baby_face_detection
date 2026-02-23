@@ -63,9 +63,9 @@ def evaluate_infantface(
     figs_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize variables for localization curves and IoU statistics
-    y_is_tp: List[
-        int
-    ] = []  # True positives (1) or false positives (0) for each prediction
+    y_is_tp: List[int] = (
+        []
+    )  # True positives (1) or false positives (0) for each prediction
     y_scores: List[float] = []  # Confidence scores for predictions
     all_iou: List[float] = []  # IoU values for true positives
     total_gt = 0  # Total ground truth boxes

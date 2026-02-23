@@ -101,9 +101,7 @@ def draw_obb(
     cls_txt = (
         labels_map.get(int(class_idx), str(class_idx))
         if (labels_map and class_idx is not None)
-        else str(class_idx)
-        if class_idx is not None
-        else "?"
+        else str(class_idx) if class_idx is not None else "?"
     )
     ang_txt = f"{math.degrees(float(angle)):.1f}°" if angle is not None else ""
     ax.text(
@@ -230,7 +228,7 @@ def visualize_predictions(
     """
     W, H = image_sizes[0]
 
-    pred_xy = decode_vertices(pred_obbs[0], anchors[0], (W, H), clamp=True)
+    pred_xy = decode_vertices(pred_obbs[0], anchors[0], (W, H), clamp_mode="image")
     pred_xywhr = xyxyxyxy2xywhr(pred_xy, pred_angles[0].squeeze(-1), (W, H))
     gt_xywhr = xyxyxyxy2xywhr(gt_obbs[0], gt_angles[1], (W, H))
 

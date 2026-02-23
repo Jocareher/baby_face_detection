@@ -277,7 +277,7 @@ def decode_vertices(
     pred_angles: torch.Tensor,  # (N,) — Predicted box rotation angles in radians
     image_size: Tuple[int, int],  # (W, H)
     scale: float = 1.0,  # Scale factor for offsets
-    clamp_mode: str = "none"
+    clamp_mode: str = "none",
 ) -> torch.Tensor:
     """
     Decodes predicted normalized vertex offsets into absolute OBB vertex coordinates.
@@ -337,7 +337,9 @@ def decode_vertices(
         verts[..., 0] = verts[..., 0].clamp(-W, 2 * W)
         verts[..., 1] = verts[..., 1].clamp(-H, 2 * H)
     elif clamp_mode != "none":
-        raise ValueError(f"Invalid clamp_mode: {clamp_mode}. Use 'none', 'wide', or 'image'.")
+        raise ValueError(
+            f"Invalid clamp_mode: {clamp_mode}. Use 'none', 'wide', or 'image'."
+        )
 
     return verts.view(N, 8)
 

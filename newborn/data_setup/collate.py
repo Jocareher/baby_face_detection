@@ -106,9 +106,11 @@ def images_only_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     imgs = [im if isinstance(im, torch.Tensor) else torch.as_tensor(im) for im in imgs]
     # If HWC -> CHW
     imgs = [
-        im.permute(2, 0, 1)
-        if im.ndim == 3 and im.shape[-1] in (3, 4) and im.shape[0] not in (1, 3, 4)
-        else im
+        (
+            im.permute(2, 0, 1)
+            if im.ndim == 3 and im.shape[-1] in (3, 4) and im.shape[0] not in (1, 3, 4)
+            else im
+        )
         for im in imgs
     ]
     images = torch.stack(imgs, dim=0)

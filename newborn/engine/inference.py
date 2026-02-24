@@ -542,14 +542,7 @@ def run_evaluation(
                         true_cls = int(gt_labels[best_gt_idx].item())
                         gt_matched_orient[best_gt_idx] = True
 
-                        if cls_det == true_cls and true_cls in stats:
-                            stats[true_cls]["tp"] += 1
-                            per_true[true_cls].append(1)
-                            per_score[true_cls].append(score_det)
-
-                            y_true.append(true_cls)
-                            y_pred.append(true_cls)
-
+                        if true_cls in labels_map:
                             iou_errs[true_cls].append(best_iou_val)
 
                             angle_diff = pred_boxes[det_idx, 4] - gt_angles[best_gt_idx]
@@ -573,6 +566,14 @@ def run_evaluation(
                                 angle_errs_by_gtbin_per_cls[bd][true_cls].setdefault(
                                     bidx, []
                                 ).append(error_deg)
+
+                        if cls_det == true_cls and true_cls in stats:
+                            stats[true_cls]["tp"] += 1
+                            per_true[true_cls].append(1)
+                            per_score[true_cls].append(score_det)
+
+                            y_true.append(true_cls)
+                            y_pred.append(true_cls)
 
                             all_gts.append(true_cls)
                             all_preds.append(true_cls)

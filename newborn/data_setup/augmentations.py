@@ -129,12 +129,12 @@ class RandomHorizontalFlipOBB:
 
             target["boxes"] = boxes  # Updates the boxes in the target dictionary.
             target["angles"] = angles  # Updates the angles in the target dictionary.
-            target["class_idx"] = (
-                class_idxs_flipped  # Updates the class indices in the target dictionary.
-            )
-            target["child_prob"] = (
-                child_prob  # Updates the child probabilities in the target dictionary.
-            )
+            target[
+                "class_idx"
+            ] = class_idxs_flipped  # Updates the class indices in the target dictionary.
+            target[
+                "child_prob"
+            ] = child_prob  # Updates the child probabilities in the target dictionary.
 
         sample["image"] = image  # Updates the image in the sample.
         sample["target"] = target  # Updates the target in the sample.
@@ -238,12 +238,12 @@ class RandomRotateOBB:
 
         target["boxes"] = boxes  # Updates the boxes in the target dictionary.
         target["angles"] = angles  # Updates the angles in the target dictionary.
-        target["class_idx"] = (
-            class_idxs  # Updates the class indices in the target dictionary.
-        )
-        target["child_prob"] = (
-            child_prob  # Updates the child probabilities in the target dictionary.
-        )
+        target[
+            "class_idx"
+        ] = class_idxs  # Updates the class indices in the target dictionary.
+        target[
+            "child_prob"
+        ] = child_prob  # Updates the child probabilities in the target dictionary.
 
         sample["image"] = rotated_image  # Updates the rotated image in the sample.
         sample["target"] = target  # Updates the target in the sample.
@@ -660,9 +660,9 @@ class RandomOcclusionOBB:
             )  # Generates a random y coordinate for the occlusion.
 
         # Apply occlusion
-        image[y0 : y0 + occ_h, x0 : x0 + occ_w] = (
-            0  # Applies the occlusion to the image.
-        )
+        image[
+            y0 : y0 + occ_h, x0 : x0 + occ_w
+        ] = 0  # Applies the occlusion to the image.
         sample["image"] = image  # Updates the image in the sample.
         return sample
 

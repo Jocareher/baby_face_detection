@@ -59,11 +59,7 @@ class OBBHead(nn.Module):
 
     def __init__(self, in_ch: int):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_ch, config.NUM_ANCHORS * 8, kernel_size=1),
-        )
+        self.conv = (nn.Conv2d(in_ch, config.NUM_ANCHORS * 8, kernel_size=1),)
 
     def forward(self, x):
         # Apply 1x1 convolution, reshape and apply tanh to constrain output to [-1, 1]

@@ -456,42 +456,67 @@ def run_evaluation(
                 # A) ALL candidates for child/adult + gt_matched_any
                 # -----------------------------------------------------------------
                 if num_gt > 0:
+                    pred_child_final = pred_child_s_all[final_keep] if num_pred > 0 else torch.empty(
+                        0, device=device
+                    )
+
+                    gt_matched_child = torch.zeros(num_gt, dtype=torch.bool, device=device)
+                    pred_matched_child = torch.zeros(num_pred, dtype=torch.bool, device=device)
+
                     if num_pred > 0:
-                        best_iou_vals, best_pred_idx = iou_final.max(dim=1)  # (num_gt,)
-                        pred_child_final = pred_child_s_all[
-                            final_keep
-                        ]  # align with pred_boxes/pred_labels
+                        _, det_order_child = torch.sort(pred_scores, descending=True)
 
-                        for gi in range(num_gt):
-                            gt_is_baby = bool(gt_child[gi].item())
+                        for det_idx in det_order_child.tolist():
+                            unmatched_gt = ~gt_matched_child
+                            if not unmatched_gt.any():
+                                break
 
-                            if float(best_iou_vals[gi].item()) >= iou_thres:
-                                pj = int(best_pred_idx[gi].item())
-                                pred_is_baby = bool(
-                                    pred_child_final[pj].item() >= baby_thres
-                                )
+                            ious_col = iou_final[:, det_idx].clone()
+                            ious_col[~unmatched_gt] = -1.0
 
-                                log_child(gt_is_baby, pred_is_baby)
+                            best_iou_val, best_gt_idx = ious_col.max(0)
+                            best_iou_val = float(best_iou_val.item())
+                            best_gt_idx = int(best_gt_idx.item())
 
-                                if gt_is_baby and pred_is_baby:
-                                    child_stats["tp"] += 1
-                                elif (not gt_is_baby) and pred_is_baby:
-                                    child_stats["fp"] += 1
-                                elif gt_is_baby and (not pred_is_baby):
-                                    child_stats["fn"] += 1
-                                # else: adult predicted adult -> TN
-                            else:
-                                # Miss: treat as predicted adult (end-to-end)
-                                log_child(gt_is_baby, False)
-                                if gt_is_baby:
-                                    child_stats["fn"] += 1
-                    else:
-                        # No predictions at all: every GT is missed
-                        for gi in range(num_gt):
-                            gt_is_baby = bool(gt_child[gi].item())
-                            log_child(gt_is_baby, False)
-                            if gt_is_baby:
+                            if best_iou_val < iou_thres:
+                                continue
+
+                            gt_matched_child[best_gt_idx] = True
+                            pred_matched_child[det_idx] = True
+
+                            gt_is_baby = bool(gt_child[best_gt_idx].item())
+                            pred_is_baby = bool(pred_child_final[det_idx].item() >= baby_thres)
+
+                            log_child(gt_is_baby, pred_is_baby)
+
+                            if gt_is_baby and pred_is_baby:
+                                child_stats["tp"] += 1
+                            elif (not gt_is_baby) and pred_is_baby:
+                                child_stats["fp"] += 1
+                            elif gt_is_baby and (not pred_is_baby):
                                 child_stats["fn"] += 1
+                            # adult -> adult is TN, so it is only logged in the CM
+
+                    # Unmatched GTs are treated as predicted Adult (end-to-end miss)
+                    for gi in range(num_gt):
+                        if bool(gt_matched_child[gi].item()):
+                            continue
+
+                        gt_is_baby = bool(gt_child[gi].item())
+                        log_child(gt_is_baby, False)
+
+                        if gt_is_baby:
+                            child_stats["fn"] += 1
+
+                    # Unmatched predictions with child=True are false positives for child detection
+                    for pj in range(num_pred):
+                        if bool(pred_matched_child[pj].item()):
+                            continue
+
+                        pred_is_baby = bool(pred_child_final[pj].item() >= baby_thres)
+                        if pred_is_baby:
+                            log_child(False, True)
+                child_stats["fp"] += 1
 
                 # -----------------------------------------------------------------
                 # B) FINAL outputs for orientation class CM

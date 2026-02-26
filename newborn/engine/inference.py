@@ -456,12 +456,9 @@ def run_evaluation(
                 # A) ALL candidates for child/adult + gt_matched_any
                 # -----------------------------------------------------------------
                 if num_gt > 0:
-                    pred_child_final = pred_child_s_all[final_keep] if num_pred > 0 else torch.empty(
-                        0, device=device
-                    )
+                    pred_child_final = pred_child_s_all[final_keep] if num_pred > 0 else torch.empty(0, device=device)
 
                     gt_matched_child = torch.zeros(num_gt, dtype=torch.bool, device=device)
-                    pred_matched_child = torch.zeros(num_pred, dtype=torch.bool, device=device)
 
                     if num_pred > 0:
                         _, det_order_child = torch.sort(pred_scores, descending=True)
@@ -482,7 +479,6 @@ def run_evaluation(
                                 continue
 
                             gt_matched_child[best_gt_idx] = True
-                            pred_matched_child[det_idx] = True
 
                             gt_is_baby = bool(gt_child[best_gt_idx].item())
                             pred_is_baby = bool(pred_child_final[det_idx].item() >= baby_thres)
@@ -495,9 +491,7 @@ def run_evaluation(
                                 child_stats["fp"] += 1
                             elif gt_is_baby and (not pred_is_baby):
                                 child_stats["fn"] += 1
-                            # adult -> adult is TN, so it is only logged in the CM
 
-                    # Unmatched GTs are treated as predicted Adult (end-to-end miss)
                     for gi in range(num_gt):
                         if bool(gt_matched_child[gi].item()):
                             continue
@@ -507,16 +501,6 @@ def run_evaluation(
 
                         if gt_is_baby:
                             child_stats["fn"] += 1
-
-                    # Unmatched predictions with child=True are false positives for child detection
-                    for pj in range(num_pred):
-                        if bool(pred_matched_child[pj].item()):
-                            continue
-
-                        pred_is_baby = bool(pred_child_final[pj].item() >= baby_thres)
-                        if pred_is_baby:
-                            log_child(False, True)
-                child_stats["fp"] += 1
 
                 # -----------------------------------------------------------------
                 # B) FINAL outputs for orientation class CM

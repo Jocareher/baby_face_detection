@@ -456,9 +456,15 @@ def run_evaluation(
                 # A) ALL candidates for child/adult + gt_matched_any
                 # -----------------------------------------------------------------
                 if num_gt > 0:
-                    pred_child_final = pred_child_s_all[final_keep] if num_pred > 0 else torch.empty(0, device=device)
+                    pred_child_final = (
+                        pred_child_s_all[final_keep]
+                        if num_pred > 0
+                        else torch.empty(0, device=device)
+                    )
 
-                    gt_matched_child = torch.zeros(num_gt, dtype=torch.bool, device=device)
+                    gt_matched_child = torch.zeros(
+                        num_gt, dtype=torch.bool, device=device
+                    )
 
                     if num_pred > 0:
                         _, det_order_child = torch.sort(pred_scores, descending=True)
@@ -481,7 +487,9 @@ def run_evaluation(
                             gt_matched_child[best_gt_idx] = True
 
                             gt_is_baby = bool(gt_child[best_gt_idx].item())
-                            pred_is_baby = bool(pred_child_final[det_idx].item() >= baby_thres)
+                            pred_is_baby = bool(
+                                pred_child_final[det_idx].item() >= baby_thres
+                            )
 
                             log_child(gt_is_baby, pred_is_baby)
 

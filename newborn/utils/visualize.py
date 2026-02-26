@@ -2039,8 +2039,8 @@ def plot_child_confusion_matrix(
     the raw counts and the row‑normalized version.
 
     Args:
-        y_true (List[int]): Ground‑truth labels (0 = adult, 1 = child).
-        y_pred (List[int]): Predicted labels  (0 = adult, 1 = child).
+        y_true (List[int]): Ground‑truth labels (0 = adult, 1 =baby).
+        y_pred (List[int]): Predicted labels  (0 = adult, 1 = baby).
         figsize (Tuple[int, int]): Size of the output figures.
 
     Returns:
@@ -2055,7 +2055,7 @@ def plot_child_confusion_matrix(
     row_sums = cm_norm.sum(axis=1, keepdims=True)
     cm_norm = np.divide(cm_norm, row_sums, where=row_sums != 0)
 
-    classes = ["Adult", "Child"]
+    classes = ["Adult", "Baby"]
 
     # ------------------------------------------------------------------ #
     # 2) Plot raw confusion matrix
@@ -2083,7 +2083,7 @@ def plot_child_confusion_matrix(
     ax_raw.set_yticklabels(classes)
     ax_raw.set_xlabel("Predicted", fontsize=11)
     ax_raw.set_ylabel("True", fontsize=11)
-    ax_raw.set_title("Adult / Child Confusion Matrix (Raw)", fontsize=13)
+    ax_raw.set_title("Adult / Baby Confusion Matrix (Raw)", fontsize=13)
     plt.colorbar(im_raw, ax=ax_raw, fraction=0.046, pad=0.04)
     fig_raw.tight_layout()
 
@@ -2113,11 +2113,11 @@ def plot_child_confusion_matrix(
     ax_norm.set_yticklabels(classes)
     ax_norm.set_xlabel("Predicted", fontsize=11)
     ax_norm.set_ylabel("True", fontsize=11)
-    ax_norm.set_title("Adult / Child Confusion Matrix (Normalized)", fontsize=13)
+    ax_norm.set_title("Adult / Baby Confusion Matrix (Normalized)", fontsize=13)
     plt.colorbar(im_norm, ax=ax_norm, fraction=0.046, pad=0.04)
     fig_norm.tight_layout()
 
-    print("[INFO] Adult/Child confusion matrices plotted.")
+    print("[INFO] Adult/Baby confusion matrices plotted.")
     return {"raw": fig_raw, "normalized": fig_norm}
 
 

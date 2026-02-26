@@ -972,31 +972,47 @@ def save_individual_predictions(
             )
 
         # Draw predicted OBBs (solid blue with red front edge)
+        final_keep = out.get("final_keep", None)
+
+        if final_keep is not None:
+            keep_mask = final_keep.bool().cpu()
+            pred_polygons = out["polygons"][keep_mask]
+            pred_labels = out["labels"][keep_mask]
+            pred_scores = out["final_score"][keep_mask]
+            pred_boxes = out["boxes"][keep_mask]
+        else:
+            pred_polygons = out["polygons"]
+            pred_labels = out["labels"]
+            pred_scores = out["final_score"]
+            pred_boxes = out["boxes"]
+
         for i, (pts, lbl, score) in enumerate(
-            zip(out["polygons"], out["labels"], out["final_score"])
+            zip(pred_polygons, pred_labels, pred_scores)
         ):
             coords = pts.cpu().view(4, 2).numpy()
-            # Scale coordinates to original resolution if needed
             coords[:, 0] *= sx
             coords[:, 1] *= sy
-            # Draw OBB polygon
+
             ax.add_patch(
                 patches.Polygon(
                     coords,
                     closed=True,
                     fill=False,
-                    edgecolor="#004080",  # Dark blue for predictions
+                    edgecolor="#004080",
                     linewidth=1.5,
                 )
             )
-            # Draw front edge in dark red
+
             ax.plot(
-                coords[[0, 1], 0], coords[[0, 1], 1], color="#800000", linewidth=1.5
+                coords[[0, 1], 0],
+                coords[[0, 1], 1],
+                color="#800000",
+                linewidth=1.5,
             )
 
-            # Add class label, angle and confidence at top-left with blue background
             tl_x, tl_y = coords[:, 0].min(), coords[:, 1].min()
-            ang_pred = math.degrees(float(out["boxes"][i, 4]))
+            ang_pred = math.degrees(float(pred_boxes[i, 4]))
+
             ax.text(
                 tl_x,
                 tl_y,

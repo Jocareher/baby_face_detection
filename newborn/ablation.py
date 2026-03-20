@@ -404,7 +404,7 @@ def parse_args():
         "--ablate_param",
         type=str,
         default="lambda_rot",
-        choices=["lambda_rot", "lambda_cls"],
+        choices=["lambda_rot", "lambda_cls", "lambda_obb"],
         help="Which lambda to vary during ablation.",
     )
     parser.add_argument(
@@ -801,6 +801,8 @@ def main() -> None:
                     args.lambda_rot = float(ablate_value)
                 elif args.ablate_param == "lambda_cls":
                     args.lambda_cls = float(ablate_value)
+                elif args.ablate_param == "lambda_obb":
+                    args.lambda_obb = float(ablate_value)
                 else:
                     raise ValueError(f"Unknown ablation parameter: {args.ablate_param}")
 

@@ -27,13 +27,13 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 # =======================
 # Default Hyperparameters
 # =======================
-DEFAULT_EPOCHS = 1
+DEFAULT_EPOCHS = 40
 DEFAULT_LR = 3e-4
-DEFAULT_BATCH_SIZE = 32
+DEFAULT_BATCH_SIZE = 16
 DEFAULT_WEIGHT_DECAY = 1e-4
 DEFAULT_OPTIMIZER = "ADAMW"
 DEFAULT_SCHEDULER = "Cosine"
-DEFAULT_CLIP_VALUE = None
+DEFAULT_CLIP_VALUE = 1
 DEFAULT_GRAD_CLIP_MODE = "Norm"
 DEFAULT_PATIENCE = 20
 DEFAULT_OUT_CHANNELS = 128
@@ -121,8 +121,8 @@ FACE_POS_WEIGHT = 2.0  # Weight for positive face samples in the loss function
 LAMBDA_CLS = 1.0
 LAMBDA_FACE = 1.0
 LAMBDA_OBB = 1.0
-LAMBDA_ROT = 2.0
-LAMBDA_RECT = 0.2  # Weight for the rectangle loss
+LAMBDA_ROT = 1.0
+LAMBDA_RECT = 1.0  # Weight for the rectangle loss
 LAMBDA_CHILD = 1.0
 OBB_LOSS_TYPE = "smooth_l1"  # "smooth_l1", "l1"
 ROT_LOSS_TYPE = "vector"  # "cosine", "vector"

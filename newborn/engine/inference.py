@@ -1920,12 +1920,22 @@ def export_predictions(
                         errors += 1
                         tqdm.write(f"Saving error for {p}: {e}")
 
-                    if polys_for_img is not None and polys_for_img.size > 0:
-                        for j in range(polys_for_img.shape[0]):
+                    crop_polys = polys_for_img
+                    if boxes_for_crop is not None and boxes_for_crop.size > 0:
+                        crop_polys = np.stack(
+                            [
+                                xywhr_to_poly42_shape(*boxes_for_crop[j])
+                                for j in range(boxes_for_crop.shape[0])
+                            ],
+                            axis=0,
+                        ).astype(np.float32)
+
+                    if crop_polys is not None and crop_polys.size > 0:
+                        for j in range(crop_polys.shape[0]):
                             crop_attempted += 1
 
                             try:
-                                poly = polys_for_img[j].astype(np.float32)
+                                poly = crop_polys[j].astype(np.float32)
 
                                 theta = (
                                     float(boxes_for_crop[j, 4])
@@ -1942,7 +1952,7 @@ def export_predictions(
                                     poly42=poly,
                                     angle_rad=theta,
                                     desired_scale_crop=1.15,
-                                    pivot="tl",
+                                    pivot="center",
                                     max_output_side=None,
                                 )
 

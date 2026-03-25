@@ -1917,47 +1917,57 @@ def export_predictions(
                         tqdm.write(f"Saving error for {p}: {e}")
 
                     if polys_for_img is not None and polys_for_img.size > 0:
-                        # Model input size (width, height) used for the face crops (e.g., 640x640)
                         for j in range(polys_for_img.shape[0]):
-                            # polygon for this detection as (4,2) float32 array
-                            poly = polys_for_img[j].astype(np.float32)
+                            crop_attempted += 1
 
-                            # angle from the detected box in radians; fallback to 0.0 if not present
-                            theta = (
+                            try:
+                                poly = polys_for_img[j].astype(np.float32)
+
+                                theta = (
                                     float(boxes_for_crop[j, 4])
                                     if (
-                                        boxes_for_crop is not None and boxes_for_crop.size > 0
+                                        boxes_for_crop is not None
+                                        and boxes_for_crop.size > 0
+                                        and j < boxes_for_crop.shape[0]
                                     )
                                     else 0.0
                                 )
 
-                            # Extract an oriented crop of the face using the polygon and rotation angle.
-                            crop_img = get_oriented_face_crop(
-                                base_img=base_img,
-                                poly42=poly,
-                                angle_rad=theta,
-                                desired_scale_crop=1.15,
-                                max_output_side=None,
-                            )
-                            
-                            # Skip if crop extraction failed
-                            if crop_img is None:
-                                continue
+                                crop_img = get_oriented_face_crop(
+                                    base_img=base_img,
+                                    poly42=poly,
+                                    angle_rad=theta,
+                                    desired_scale_crop=1.15,
+                                    pivot="tl",
+                                    max_output_side=None,
+                                )
 
-                            # Determine class index and name for this detection (fallback to 0)
-                            cls_idx = (
-                                int(labels_np[j])
-                                if (labels_np is not None and labels_np.size > j)
-                                else 0
-                            )
-                            cls_name = labels_map.get(cls_idx, str(cls_idx))
-                            # Prepare class-specific output directory for crops using class name
-                            cls_dir = Path(out_dir) / "crops" / cls_name
-                            cls_dir.mkdir(parents=True, exist_ok=True)
-                            # Save the crop as a JPEG with an index in the filename
-                            Image.fromarray(crop_img).save(
-                                cls_dir / f"{stem}_{j:02d}.jpg"
-                            )
+                                if crop_img is None:
+                                    crop_failed_none += 1
+                                    tqdm.write(
+                                        f"[CROP NONE] {stem} det={j} "
+                                        f"theta_deg={math.degrees(theta):.2f} "
+                                        f"poly_shape={poly.shape} "
+                                        f"xrange=({poly[:,0].min():.1f},{poly[:,0].max():.1f}) "
+                                        f"yrange=({poly[:,1].min():.1f},{poly[:,1].max():.1f})"
+                                    )
+                                    continue
+
+                                cls_idx = (
+                                    int(labels_np[j])
+                                    if (labels_np is not None and labels_np.size > j)
+                                    else 0
+                                )
+                                cls_name = labels_map.get(cls_idx, str(cls_idx))
+                                cls_dir = Path(out_dir) / "crops" / cls_name
+                                cls_dir.mkdir(parents=True, exist_ok=True)
+
+                                Image.fromarray(crop_img).save(cls_dir / f"{stem}_{j:02d}.jpg")
+                                crop_saved += 1
+
+                            except Exception as e:
+                                crop_failed_exception += 1
+                                tqdm.write(f"[CROP ERROR] {stem} det={j}: {e}")
 
                     pbar_imgs.update(1)
                     global_idx += 1
@@ -1974,7 +1984,10 @@ def export_predictions(
     tqdm.write(f"Images: {out_imgs}")
     tqdm.write(f"Labels: {out_lbls}")
     tqdm.write(f"Crops : {out_crops}")
-
+    tqdm.write(f"   • Crop attempts    : {crop_attempted}")
+    tqdm.write(f"   • Crop saved       : {crop_saved}")
+    tqdm.write(f"   • Crop None        : {crop_failed_none}")
+    tqdm.write(f"   • Crop exceptions  : {crop_failed_exception}")
 
 def export_distance_report(
     distance_rows: List[Dict[str, Any]],

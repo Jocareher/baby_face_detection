@@ -1952,7 +1952,7 @@ def export_predictions(
                                     poly42=poly,
                                     angle_rad=theta,
                                     desired_scale_crop=1.15,
-                                    pivot="center",
+                                    pivot="tl",
                                     max_output_side=None,
                                 )
 

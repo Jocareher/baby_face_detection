@@ -1916,7 +1916,6 @@ def export_predictions(
 
                     if polys_for_img is not None and polys_for_img.size > 0:
                         # Model input size (width, height) used for the face crops (e.g., 640x640)
-                        Wr_target, Hr_target = resize_size
                         for j in range(polys_for_img.shape[0]):
                             # polygon for this detection as (4,2) float32 array
                             poly = polys_for_img[j].astype(np.float32)
@@ -1936,10 +1935,10 @@ def export_predictions(
                                 poly42=poly,
                                 angle_rad=theta,
                                 desired_scale_crop=1.15,
-                                pivot="tl",
                                 max_output_side=None,
                             )
-                                                            # Skip if crop extraction failed
+                            
+                            # Skip if crop extraction failed
                             if crop_img is None:
                                 continue
 

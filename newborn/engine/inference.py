@@ -1916,24 +1916,14 @@ def export_predictions(
                             )
 
                             # Extract an oriented crop of the face using the polygon and rotation angle.
-                            # - base_img: source image (numpy array HxWxC)
-                            # - poly42: polygon in 4x2 format (corner coordinates)
-                            # - angle_rad: rotation to apply (radians)
-                            # - pivot: reference point for rotation ("tl" = top-left, or "center")
-                            # - crop_out_wh: output crop size (W,H)
-                            # - border_mode: how to fill borders when rotating ("replicate"/"black"/"white")
-                            # - scale_crop: scale factor to add context (>1.0 adds margin)
-                            crop640 = get_oriented_face_crop(
-                                base_img=base_img,
-                                poly42=poly,
-                                angle_rad=theta,
-                                pivot="tl",  # or "center" if preferred
-                                crop_out_wh=(Wr_target, Hr_target),
-                                border_mode="replicate",  # "replicate" (no black borders) | "black" | "white"
-                                scale_crop=1.0,  # 1.0 = no margin; >1.0 adds context
-                            )
-                            # Skip if crop extraction failed
-                            if crop640 is None:
+                            crop_img = get_oriented_face_crop(
+                                    base_img=base_img,
+                                    poly42=poly,
+                                    desired_scale_crop=1.15,
+                                    max_output_side=None,
+                                )
+                                                            # Skip if crop extraction failed
+                            if crop_img is None:
                                 continue
 
                             # Determine class index and name for this detection (fallback to 0)
@@ -1947,7 +1937,7 @@ def export_predictions(
                             cls_dir = Path(out_dir) / "crops" / cls_name
                             cls_dir.mkdir(parents=True, exist_ok=True)
                             # Save the crop as a JPEG with an index in the filename
-                            Image.fromarray(crop640).save(
+                            Image.fromarray(crop_img).save(
                                 cls_dir / f"{stem}_{j:02d}.jpg"
                             )
 

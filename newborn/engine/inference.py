@@ -1738,6 +1738,10 @@ def export_predictions(
     empty_batches = 0  # Batches with no valid images
     no_dets = 0  # Images with no detections
     errors = 0  # Failed operations
+    crop_attempted = 0
+    crop_saved = 0
+    crop_failed_none = 0
+    crop_failed_exception = 0
 
     # Print configuration
     tqdm.write(f"Inference on device: {device}")

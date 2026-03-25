@@ -1812,12 +1812,27 @@ def export_predictions(
                     # Extract predictions
                     try:
                         out_b = outputs[b]
-                        boxes_np = to_numpy(
-                            out_b.get("boxes")
-                        )  # (N,5) -> cx,cy,w,h,theta
+
+                        boxes_np = to_numpy(out_b.get("boxes"))  # (N,5) -> cx,cy,w,h,theta
                         labels_np = to_numpy(out_b.get("labels"))
                         scores_np = to_numpy(out_b.get("final_score"))
                         polys_np = to_numpy(out_b.get("polygons"))  # (N,8) or (N,4,2)
+                        final_keep_np = to_numpy(out_b.get("final_keep"))
+
+                        if final_keep_np is not None and final_keep_np.size > 0:
+                            keep = final_keep_np.astype(bool)
+
+                            if boxes_np is not None and boxes_np.size > 0:
+                                boxes_np = boxes_np[keep]
+
+                            if labels_np is not None and labels_np.size > 0:
+                                labels_np = labels_np[keep]
+
+                            if scores_np is not None and scores_np.size > 0:
+                                scores_np = scores_np[keep]
+
+                            if polys_np is not None and polys_np.size > 0:
+                                polys_np = polys_np[keep]
 
                         # Normalize/reconstruct polygons if needed
                         polys_42 = ensure_polygons_42_shape(polys_np)

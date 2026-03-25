@@ -1967,6 +1967,7 @@ def export_predictions(
                                 cls_dir.mkdir(parents=True, exist_ok=True)
 
                                 Image.fromarray(crop_img).save(cls_dir / f"{stem}_{j:02d}.jpg")
+                                tqdm.write(f"[CROP DIR] cls_idx={cls_idx} cls_name={cls_name}")
                                 crop_saved += 1
 
                             except Exception as e:

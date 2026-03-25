@@ -1932,11 +1932,13 @@ def export_predictions(
 
                             # Extract an oriented crop of the face using the polygon and rotation angle.
                             crop_img = get_oriented_face_crop(
-                                    base_img=base_img,
-                                    poly42=poly,
-                                    desired_scale_crop=1.15,
-                                    max_output_side=None,
-                                )
+                                base_img=base_img,
+                                poly42=poly,
+                                angle_rad=theta,
+                                desired_scale_crop=1.15,
+                                pivot="tl",
+                                max_output_side=None,
+                            )
                                                             # Skip if crop extraction failed
                             if crop_img is None:
                                 continue

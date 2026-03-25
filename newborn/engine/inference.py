@@ -1966,7 +1966,8 @@ def export_predictions(
                                 cls_dir = Path(out_dir) / "crops" / cls_name
                                 cls_dir.mkdir(parents=True, exist_ok=True)
 
-                                Image.fromarray(crop_img).save(cls_dir / f"{stem}_{j:02d}.jpg")
+                                save_path = cls_dir / f"{stem}_{j:02d}.jpg"
+                                Image.fromarray(crop_img).save(save_path)
                                 tqdm.write(f"[CROP DIR] cls_idx={cls_idx} cls_name={cls_name}")
                                 crop_saved += 1
 

@@ -766,28 +766,30 @@ def scale_xywhr_boxes(boxes_np: np.ndarray, sx: float, sy: float) -> np.ndarray:
     Scale oriented bounding boxes from resized coordinates back to original image scale.
 
     Args:
-        boxes_np: Array of shape (N,5) containing [center_x, center_y, width, height, theta]
-                 in resized image coordinates, or None/empty array
-        sx: Scale factor for x-coordinates (original_width / resized_width)
-        sy: Scale factor for y-coordinates (original_height / resized_height)
+        boxes_np: Array of shape (N, 5) containing [center_x, center_y, width, height, theta]
+            in resized image coordinates, or None/empty array.
+        sx: Scale factor for x coordinates.
+        sy: Scale factor for y coordinates.
 
     Returns:
-        Scaled boxes array of same shape as input, with coordinates in original image scale.
-        Returns None/empty if input is None/empty.
-        Note: Rotation angle (theta) remains unchanged.
+        Scaled boxes array in the target coordinate system.
     """
     if boxes_np is None or boxes_np.size == 0:
         return boxes_np
 
-    # Create copy to avoid modifying input
     out = boxes_np.copy()
 
-    # Scale center coordinates and dimensions
-    out[:, 0] *= sx  # center x
-    out[:, 1] *= sy  # center y
-    out[:, 2] *= sx  # width
-    out[:, 3] *= sy  # height
-    # Angle (out[:, 4]) remains unchanged since rotation is scale-invariant
+    out[:, 0] *= sx
+    out[:, 1] *= sy
+    out[:, 2] *= sx
+    out[:, 3] *= sy
+
+    for i in range(out.shape[0]):
+        out[i, 4] = transform_angle_for_anisotropic_scaling(
+            angle_rad=float(boxes_np[i, 4]),
+            sx=sx,
+            sy=sy,
+        )
 
     return out
 
@@ -975,6 +977,34 @@ def _build_scaled_obb_rectangle(
         axis=0,
     ).astype(np.float32)
 
+
+def transform_angle_for_anisotropic_scaling(
+    angle_rad: float,
+    sx: float,
+    sy: float,
+) -> float:
+    """
+    Transform an angle after anisotropic scaling of the coordinate system.
+
+    The predicted angle is assumed to be defined in the resized inference space.
+    When coordinates are mapped back to the original image using different scale
+    factors for x and y, the angle must also be transformed to remain consistent
+    with the scaled geometry.
+
+    Args:
+        angle_rad: Original angle in radians in the resized inference space.
+        sx: Scale factor applied to x coordinates.
+        sy: Scale factor applied to y coordinates.
+
+    Returns:
+        Transformed angle in radians in the target coordinate system.
+    """
+    return float(
+        math.atan2(
+            sy * math.sin(float(angle_rad)),
+            sx * math.cos(float(angle_rad)),
+        )
+    )
 
 def get_oriented_face_crop(
     base_img: np.ndarray,

@@ -1862,18 +1862,20 @@ def export_predictions(
                             if boxes_np is not None
                             else None
                         )
+                        boxes_for_crop = boxes_for_txt
                     else:
                         polys_for_img = polys_42
                         boxes_for_txt = boxes_np
+                        boxes_for_crop = boxes_np
 
                     # Save results
                     try:
                         if polys_for_img is not None and polys_for_img.size > 0:
                             angles = (
-                                boxes_np[:, 4]
-                                if (boxes_np is not None and boxes_np.size > 0)
-                                else np.zeros((0,), dtype=np.float32)
-                            )
+                                    boxes_for_crop[:, 4]
+                                    if (boxes_for_crop is not None and boxes_for_crop.size > 0)
+                                    else np.zeros((0,), dtype=np.float32)
+                                )
                             lbls = (
                                 labels_np
                                 if labels_np is not None
@@ -1922,12 +1924,12 @@ def export_predictions(
 
                             # angle from the detected box in radians; fallback to 0.0 if not present
                             theta = (
-                                float(boxes_for_txt[j, 4])
-                                if (
-                                    boxes_for_txt is not None and boxes_for_txt.size > 0
+                                    float(boxes_for_crop[j, 4])
+                                    if (
+                                        boxes_for_crop is not None and boxes_for_crop.size > 0
+                                    )
+                                    else 0.0
                                 )
-                                else 0.0
-                            )
 
                             # Extract an oriented crop of the face using the polygon and rotation angle.
                             crop_img = get_oriented_face_crop(

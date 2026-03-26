@@ -1812,12 +1812,29 @@ def export_predictions(
                     # Extract predictions
                     try:
                         out_b = outputs[b]
+
                         boxes_np = to_numpy(
                             out_b.get("boxes")
                         )  # (N,5) -> cx,cy,w,h,theta
                         labels_np = to_numpy(out_b.get("labels"))
                         scores_np = to_numpy(out_b.get("final_score"))
                         polys_np = to_numpy(out_b.get("polygons"))  # (N,8) or (N,4,2)
+                        final_keep_np = to_numpy(out_b.get("final_keep"))
+
+                        if final_keep_np is not None and final_keep_np.size > 0:
+                            keep = final_keep_np.astype(bool)
+
+                            if boxes_np is not None and boxes_np.size > 0:
+                                boxes_np = boxes_np[keep]
+
+                            if labels_np is not None and labels_np.size > 0:
+                                labels_np = labels_np[keep]
+
+                            if scores_np is not None and scores_np.size > 0:
+                                scores_np = scores_np[keep]
+
+                            if polys_np is not None and polys_np.size > 0:
+                                polys_np = polys_np[keep]
 
                         # Normalize/reconstruct polygons if needed
                         polys_42 = ensure_polygons_42_shape(polys_np)
@@ -1847,16 +1864,21 @@ def export_predictions(
                             if boxes_np is not None
                             else None
                         )
+                        boxes_for_crop = boxes_for_txt
                     else:
                         polys_for_img = polys_42
                         boxes_for_txt = boxes_np
+                        boxes_for_crop = boxes_np
 
                     # Save results
                     try:
                         if polys_for_img is not None and polys_for_img.size > 0:
                             angles = (
-                                boxes_np[:, 4]
-                                if (boxes_np is not None and boxes_np.size > 0)
+                                boxes_for_crop[:, 4]
+                                if (
+                                    boxes_for_crop is not None
+                                    and boxes_for_crop.size > 0
+                                )
                                 else np.zeros((0,), dtype=np.float32)
                             )
                             lbls = (
@@ -1901,39 +1923,31 @@ def export_predictions(
 
                     if polys_for_img is not None and polys_for_img.size > 0:
                         # Model input size (width, height) used for the face crops (e.g., 640x640)
-                        Wr_target, Hr_target = resize_size
                         for j in range(polys_for_img.shape[0]):
                             # polygon for this detection as (4,2) float32 array
                             poly = polys_for_img[j].astype(np.float32)
 
                             # angle from the detected box in radians; fallback to 0.0 if not present
                             theta = (
-                                float(boxes_for_txt[j, 4])
+                                float(boxes_for_crop[j, 4])
                                 if (
-                                    boxes_for_txt is not None and boxes_for_txt.size > 0
+                                    boxes_for_crop is not None
+                                    and boxes_for_crop.size > 0
                                 )
                                 else 0.0
                             )
 
                             # Extract an oriented crop of the face using the polygon and rotation angle.
-                            # - base_img: source image (numpy array HxWxC)
-                            # - poly42: polygon in 4x2 format (corner coordinates)
-                            # - angle_rad: rotation to apply (radians)
-                            # - pivot: reference point for rotation ("tl" = top-left, or "center")
-                            # - crop_out_wh: output crop size (W,H)
-                            # - border_mode: how to fill borders when rotating ("replicate"/"black"/"white")
-                            # - scale_crop: scale factor to add context (>1.0 adds margin)
-                            crop640 = get_oriented_face_crop(
+                            crop_img = get_oriented_face_crop(
                                 base_img=base_img,
                                 poly42=poly,
                                 angle_rad=theta,
-                                pivot="tl",  # or "center" if preferred
-                                crop_out_wh=(Wr_target, Hr_target),
-                                border_mode="replicate",  # "replicate" (no black borders) | "black" | "white"
-                                scale_crop=1.0,  # 1.0 = no margin; >1.0 adds context
+                                desired_scale_crop=1.15,
+                                max_output_side=None,
                             )
+
                             # Skip if crop extraction failed
-                            if crop640 is None:
+                            if crop_img is None:
                                 continue
 
                             # Determine class index and name for this detection (fallback to 0)
@@ -1947,7 +1961,7 @@ def export_predictions(
                             cls_dir = Path(out_dir) / "crops" / cls_name
                             cls_dir.mkdir(parents=True, exist_ok=True)
                             # Save the crop as a JPEG with an index in the filename
-                            Image.fromarray(crop640).save(
+                            Image.fromarray(crop_img).save(
                                 cls_dir / f"{stem}_{j:02d}.jpg"
                             )
 

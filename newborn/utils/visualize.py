@@ -959,7 +959,22 @@ def transform_angle_for_anisotropic_scaling(
     )
 
 
-def get_oriented_face_crop(
+def _affine_to_homogeneous(matrix_23: np.ndarray) -> np.ndarray:
+    """
+    Convert a 2x3 affine matrix into a 3x3 homogeneous transform matrix.
+
+    Args:
+        matrix_23: Affine matrix with shape (2, 3).
+
+    Returns:
+        Homogeneous transform matrix with shape (3, 3).
+    """
+    matrix_33 = np.eye(3, dtype=np.float32)
+    matrix_33[:2, :] = np.asarray(matrix_23, dtype=np.float32)
+    return matrix_33
+
+
+def get_oriented_face_crop_with_transform(
     base_img: np.ndarray,
     poly42: np.ndarray,
     angle_rad: float,
@@ -967,51 +982,28 @@ def get_oriented_face_crop(
     pivot: str = "tl",
     max_binary_search_steps: int = 30,
     max_output_side: Optional[int] = None,
-) -> Optional[np.ndarray]:
+) -> Optional[Dict[str, Any]]:
     """
-    Extract an oriented face crop by rotating the image so the face becomes
-    axis-aligned, while preserving the original geometric ratio and avoiding
-    synthetic context whenever possible.
+    Extract an oriented face crop and return the exact geometry used to build it.
 
-    This function keeps the original spirit of the previous implementation:
-    it rotates the image according to the predicted face angle so that the
-    detected face becomes aligned with the axes. After rotation, it expands
-    the rotated OBB by a desired context factor, but automatically reduces
-    that factor if the expanded rectangle would fall outside the rotated image.
-
-    Differences with the old implementation:
-        - The crop output is no longer forced to a fixed size such as 640x640.
-        - The output resolution is proportional to the rotated OBB size.
-        - The aspect ratio of the detected face region is preserved.
-        - Context scaling is automatically reduced when needed.
-
-    Important note:
-        Rotating the full image can still expose areas outside the original
-        support. To avoid inventing visible synthetic context, this function
-        uses a transparent validity mask and then crops only inside the valid
-        rotated support. If the requested context does not fit, the margin is
-        reduced automatically.
+    The returned transforms are the exact matrices applied by the crop generation
+    path:
+    - `transform_orig_to_crop` maps original image coordinates to crop coordinates.
+    - `transform_crop_to_orig` is the exact inverse mapping of that matrix.
 
     Args:
         base_img: Source image as a NumPy array of shape (H, W, C).
         poly42: Detected OBB polygon as a NumPy array of shape (4, 2).
-        angle_rad: Rotation angle in radians. Positive values follow the
-            OpenCV convention used by getRotationMatrix2D after conversion
-            to degrees.
-        desired_scale_crop: Desired multiplicative context factor around
-            the detected OBB. A value of 1.0 means no extra context.
-        pivot: Rotation pivot point. Supported values are:
-            - "center": rotate around polygon center
-            - "tl": rotate around the ordered top-left vertex
-        max_binary_search_steps: Number of iterations used to find the
-            largest valid context factor after rotation.
-        max_output_side: Optional maximum size for the longest side of the
-            output crop. If provided, the crop is downscaled while preserving
-            aspect ratio. If None, the natural proportional size is kept.
+        angle_rad: Rotation angle in radians.
+        desired_scale_crop: Desired multiplicative context factor around the OBB.
+        pivot: Rotation pivot point. Supported values are "center" and "tl".
+        max_binary_search_steps: Number of binary-search iterations used to
+            maximize valid context.
+        max_output_side: Optional maximum size for the longest crop side.
 
     Returns:
-        An oriented crop as a NumPy array, or None if the crop cannot be
-        extracted robustly.
+        A dictionary containing the crop image, crop size, and the exact forward
+        and inverse transform matrices, or None if the crop cannot be extracted.
     """
     if base_img is None or base_img.size == 0:
         return None
@@ -1197,7 +1189,86 @@ def get_oriented_face_crop(
         borderValue=(0, 0, 0),
     )
 
-    return crop
+    rotation_matrix_33 = _affine_to_homogeneous(rotation_matrix)
+    transform_orig_to_crop = perspective_matrix @ rotation_matrix_33
+    transform_crop_to_orig = np.linalg.inv(transform_orig_to_crop)
+
+    return {
+        "crop": crop,
+        "crop_size_wh": (int(dst_width), int(dst_height)),
+        "final_rect_rotated_xy": final_rect.astype(np.float32),
+        "rotated_polygon_xy": rotated_poly.astype(np.float32),
+        "transform_orig_to_crop": transform_orig_to_crop.astype(np.float64),
+        "transform_crop_to_orig": transform_crop_to_orig.astype(np.float64),
+    }
+
+
+def get_oriented_face_crop(
+    base_img: np.ndarray,
+    poly42: np.ndarray,
+    angle_rad: float,
+    desired_scale_crop: float = 1.0,
+    pivot: str = "tl",
+    max_binary_search_steps: int = 30,
+    max_output_side: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """
+    Extract an oriented face crop by rotating the image so the face becomes
+    axis-aligned, while preserving the original geometric ratio and avoiding
+    synthetic context whenever possible.
+
+    This function keeps the original spirit of the previous implementation:
+    it rotates the image according to the predicted face angle so that the
+    detected face becomes aligned with the axes. After rotation, it expands
+    the rotated OBB by a desired context factor, but automatically reduces
+    that factor if the expanded rectangle would fall outside the rotated image.
+
+    Differences with the old implementation:
+        - The crop output is no longer forced to a fixed size such as 640x640.
+        - The output resolution is proportional to the rotated OBB size.
+        - The aspect ratio of the detected face region is preserved.
+        - Context scaling is automatically reduced when needed.
+
+    Important note:
+        Rotating the full image can still expose areas outside the original
+        support. To avoid inventing visible synthetic context, this function
+        uses a transparent validity mask and then crops only inside the valid
+        rotated support. If the requested context does not fit, the margin is
+        reduced automatically.
+
+    Args:
+        base_img: Source image as a NumPy array of shape (H, W, C).
+        poly42: Detected OBB polygon as a NumPy array of shape (4, 2).
+        angle_rad: Rotation angle in radians. Positive values follow the
+            OpenCV convention used by getRotationMatrix2D after conversion
+            to degrees.
+        desired_scale_crop: Desired multiplicative context factor around
+            the detected OBB. A value of 1.0 means no extra context.
+        pivot: Rotation pivot point. Supported values are:
+            - "center": rotate around polygon center
+            - "tl": rotate around the ordered top-left vertex
+        max_binary_search_steps: Number of iterations used to find the
+            largest valid context factor after rotation.
+        max_output_side: Optional maximum size for the longest side of the
+            output crop. If provided, the crop is downscaled while preserving
+            aspect ratio. If None, the natural proportional size is kept.
+
+    Returns:
+        An oriented crop as a NumPy array, or None if the crop cannot be
+        extracted robustly.
+    """
+    crop_data = get_oriented_face_crop_with_transform(
+        base_img=base_img,
+        poly42=poly42,
+        angle_rad=angle_rad,
+        desired_scale_crop=desired_scale_crop,
+        pivot=pivot,
+        max_binary_search_steps=max_binary_search_steps,
+        max_output_side=max_output_side,
+    )
+    if crop_data is None:
+        return None
+    return crop_data["crop"]
 
 
 def plot_gt_angle_histograms_counts(

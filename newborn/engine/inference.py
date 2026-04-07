@@ -1,5 +1,6 @@
 import math
 import logging
+import json
 from pathlib import Path
 from typing import Tuple, List, Dict, Any, Union, Optional, Callable
 
@@ -37,7 +38,7 @@ from utils.visualize import (
     xywhr_to_poly42_shape,
     scale_polys,
     scale_xywhr_boxes,
-    get_oriented_face_crop,
+    get_oriented_face_crop_with_transform,
     denormalize_image,
     plot_boxplots,
     plot_child_confusion_matrix,
@@ -53,6 +54,35 @@ from data_setup.augmentations import wrap_to_pi
 # -----------------------------------------------------------------------------
 # I. Model Checkpoint and Anchor Preparation
 # -----------------------------------------------------------------------------
+
+
+def _optional_float_at(values: Optional[np.ndarray], index: int) -> Optional[float]:
+    """
+    Return a Python float from a 1D NumPy array if the index is valid.
+
+    Args:
+        values: Optional NumPy array with per-detection scalar values.
+        index: Detection index to read.
+
+    Returns:
+        The value converted to float, or None when not available.
+    """
+    if values is None or values.size <= index:
+        return None
+    return float(values[index])
+
+
+def _matrix_to_nested_list(matrix: np.ndarray) -> List[List[float]]:
+    """
+    Convert a transform matrix into a JSON-serializable nested list.
+
+    Args:
+        matrix: NumPy array representing a 2D matrix.
+
+    Returns:
+        Matrix values as a list of row lists of Python floats.
+    """
+    return [[float(v) for v in row] for row in np.asarray(matrix, dtype=np.float64)]
 
 
 def load_model_checkpoint(
@@ -1686,12 +1716,13 @@ def export_predictions(
     output_scale: str = "original",  # "original" | "resized"
 ) -> None:
     """
-    Export model predictions as annotated images and text files.
+    Export model predictions as annotated images, labels, and face crops.
 
     This function performs inference on a dataset and saves:
     1. Annotated images with detected faces and their orientations
     2. Text files with detection coordinates and metadata
-    3. Cropped face images per detection
+    3. Cropped face images grouped by predicted class
+    4. Canonical crop exports for all detections with metadata and manifest
 
     The output can be saved in two coordinate scales:
     - "original": Native resolution of input images
@@ -1714,15 +1745,28 @@ def export_predictions(
     Outputs:
         - out_dir/images/: Directory with annotated images
         - out_dir/labels/: Directory with text files containing detections
-        - out_dir/crops/: Directory with cropped face images per class
+        - out_dir/crops/<class_name>/: Directory with cropped face images per class
+        - out_dir/crops/all_detections/: Canonical crop image + metadata export
     """
 
     # Create output directories
     out_imgs = Path(out_dir) / "images"
     out_lbls = Path(out_dir) / "labels"
     out_crops = Path(out_dir) / "crops"
-    for d in (out_imgs, out_lbls, out_crops):
+    out_all_detections = out_crops / "all_detections"
+    out_all_det_images = out_all_detections / "images"
+    out_all_det_metadata = out_all_detections / "metadata"
+    for d in (
+        out_imgs,
+        out_lbls,
+        out_crops,
+        out_all_detections,
+        out_all_det_images,
+        out_all_det_metadata,
+    ):
         d.mkdir(parents=True, exist_ok=True)
+
+    all_detection_manifest: List[Dict[str, Any]] = []
 
     # Setup model and anchors
     model.eval()
@@ -1817,6 +1861,9 @@ def export_predictions(
                             out_b.get("boxes")
                         )  # (N,5) -> cx,cy,w,h,theta
                         labels_np = to_numpy(out_b.get("labels"))
+                        face_scores_np = to_numpy(out_b.get("face_score"))
+                        child_scores_np = to_numpy(out_b.get("child_score"))
+                        orient_scores_np = to_numpy(out_b.get("orient_score"))
                         scores_np = to_numpy(out_b.get("final_score"))
                         polys_np = to_numpy(out_b.get("polygons"))  # (N,8) or (N,4,2)
                         final_keep_np = to_numpy(out_b.get("final_keep"))
@@ -1829,6 +1876,18 @@ def export_predictions(
 
                             if labels_np is not None and labels_np.size > 0:
                                 labels_np = labels_np[keep]
+
+                            if face_scores_np is not None and face_scores_np.size > 0:
+                                face_scores_np = face_scores_np[keep]
+
+                            if child_scores_np is not None and child_scores_np.size > 0:
+                                child_scores_np = child_scores_np[keep]
+
+                            if (
+                                orient_scores_np is not None
+                                and orient_scores_np.size > 0
+                            ):
+                                orient_scores_np = orient_scores_np[keep]
 
                             if scores_np is not None and scores_np.size > 0:
                                 scores_np = scores_np[keep]
@@ -1938,7 +1997,7 @@ def export_predictions(
                             )
 
                             # Extract an oriented crop of the face using the polygon and rotation angle.
-                            crop_img = get_oriented_face_crop(
+                            crop_data = get_oriented_face_crop_with_transform(
                                 base_img=base_img,
                                 poly42=poly,
                                 angle_rad=theta,
@@ -1947,8 +2006,10 @@ def export_predictions(
                             )
 
                             # Skip if crop extraction failed
-                            if crop_img is None:
+                            if crop_data is None:
                                 continue
+
+                            crop_img = crop_data["crop"]
 
                             # Determine class index and name for this detection (fallback to 0)
                             cls_idx = (
@@ -1963,6 +2024,62 @@ def export_predictions(
                             # Save the crop as a JPEG with an index in the filename
                             Image.fromarray(crop_img).save(
                                 cls_dir / f"{stem}_{j:02d}.jpg"
+                            )
+
+                            crop_id = f"{stem}__det_{j:03d}"
+                            canonical_image_rel = Path("images") / f"{crop_id}.jpg"
+                            canonical_metadata_rel = (
+                                Path("metadata") / f"{crop_id}.json"
+                            )
+
+                            Image.fromarray(crop_img).save(
+                                out_all_detections / canonical_image_rel
+                            )
+
+                            metadata = {
+                                "crop_id": crop_id,
+                                "source_image_path": str(p),
+                                "source_image_name": p.name,
+                                "detection_index": int(j),
+                                "predicted_class_id": cls_idx,
+                                "predicted_class_name": cls_name,
+                                "final_score": _optional_float_at(scores_np, j),
+                                "face_score": _optional_float_at(face_scores_np, j),
+                                "child_score": _optional_float_at(child_scores_np, j),
+                                "orientation_score": _optional_float_at(
+                                    orient_scores_np, j
+                                ),
+                                "predicted_angle_rad": float(theta),
+                                "polygon_original_xy": poly.astype(np.float64).tolist(),
+                                "crop_size_wh": [
+                                    int(crop_data["crop_size_wh"][0]),
+                                    int(crop_data["crop_size_wh"][1]),
+                                ],
+                                "output_scale": output_scale,
+                                "transform_orig_to_crop": _matrix_to_nested_list(
+                                    crop_data["transform_orig_to_crop"]
+                                ),
+                                "transform_crop_to_orig": _matrix_to_nested_list(
+                                    crop_data["transform_crop_to_orig"]
+                                ),
+                            }
+
+                            with open(
+                                out_all_detections / canonical_metadata_rel,
+                                "w",
+                                encoding="utf-8",
+                            ) as f:
+                                json.dump(metadata, f, indent=2)
+
+                            all_detection_manifest.append(
+                                {
+                                    "crop_id": crop_id,
+                                    "image_path": canonical_image_rel.as_posix(),
+                                    "metadata_path": canonical_metadata_rel.as_posix(),
+                                    "predicted_class_id": cls_idx,
+                                    "predicted_class_name": cls_name,
+                                    "final_score": _optional_float_at(scores_np, j),
+                                }
                             )
 
                     pbar_imgs.update(1)
@@ -1980,6 +2097,12 @@ def export_predictions(
     tqdm.write(f"Images: {out_imgs}")
     tqdm.write(f"Labels: {out_lbls}")
     tqdm.write(f"Crops : {out_crops}")
+
+    manifest_path = out_all_detections / "manifest.json"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(all_detection_manifest, f, indent=2)
+
+    tqdm.write(f"All detections manifest: {manifest_path}")
 
 
 def export_distance_report(
